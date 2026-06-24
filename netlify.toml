@@ -7,3 +7,9 @@
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
+
+# Fonction planifiée : le cron est déclaré en inline dans
+# netlify/functions/refresh-matches.mjs (export const config = { schedule }).
+# Il tourne tous les jours à 04:00 UTC pour faire grossir l'historique stocké.
+# Netlify Blobs (store "cosmo-history") est activé automatiquement sur un site
+# Netlify standard, aucune config supplémentaire n'est requise ici.

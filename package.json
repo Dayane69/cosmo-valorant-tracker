@@ -1,0 +1,23 @@
+{
+  "name": "cosmo-valorant-tracker",
+  "version": "1.0.0",
+  "description": "Tracker Valorant personnalisé pour la squad COSMO (HenrikDev + Netlify).",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check app.js && node --check netlify/functions/valo.mjs && node --check netlify/functions/refresh-matches.mjs && node --check netlify/functions/historique.mjs && node --check netlify/functions/lib/refresh-core.mjs"
+  },
+  "keywords": [
+    "valorant",
+    "tracker",
+    "henrikdev",
+    "netlify"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "@netlify/blobs": "^8.2.0"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

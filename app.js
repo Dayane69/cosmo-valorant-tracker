@@ -2,15 +2,10 @@
 const PROXY = p => `/.netlify/functions/valo?path=${encodeURIComponent(p)}`;
 const MEDIA = "https://media.valorant-api.com/agents";
 
-const ROSTER = [
-  {agent:"Cypher",    role:"Sentinelle", uuid:"117ed9e3-49f3-6512-3ccf-0cada7e3823b", color:"#9aa7b2", name:"Arsh26",    tag:"2826"},
-  {agent:"Brimstone", role:"Contrôleur", uuid:"9f0d8ba9-4140-b941-57d3-a7ad57c6b417", color:"#e07b2c", name:"SevenDayy", tag:"6340"},
-  {agent:"Breach",    role:"Initiateur", uuid:"5f8d3a7f-467b-97f3-062c-13acf203c006", color:"#c8623a", name:"Gogemine",  tag:"0202"},
-  {agent:"Jett",      role:"Duelliste",  uuid:"add6443a-41bd-e414-f6ad-e58d267f4e95", color:"#74e0dd", name:"kingsto",   tag:"0000"},
-  {agent:"Chamber",   role:"Sentinelle", uuid:"22697a3d-45bf-8dd7-4fec-84a9e28c69d7", color:"#e3b341", name:"joker",     tag:"prft9"},
-  {agent:"Phoenix",   role:"Duelliste",  uuid:"eb93336a-449b-9c1b-0a54-a891f7921d69", color:"#ff8262", name:"abd",       tag:"wesh"},
-  {agent:"Son Goku",  role:"Saiyan",     customImg:"https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExdDA1cjBwcHBrZmt2OGRjMDBvNGoyeTBpbXc1Zjk2d3c1cDc5dmZwMCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/BODTGPaN9Pw9mt5J1L/giphy.gif", color:"#ff8c00", name:"Giorno77",  tag:"5800"},
-];
+// Roster chargé depuis roster.json (source de vérité unique, partagée avec la
+// fonction planifiée refresh-matches). Rempli au démarrage par loadRoster().
+let ROSTER = [];
+let DEFAULT_REGION = "eu";
 
 const REACTIONS = {
   S:{emoji:"🔥",cap:"Insane",gif:""},
@@ -21,13 +16,16 @@ const REACTIONS = {
   F:{emoji:"💩",cap:"La honte",gif:""},
 };
 
-let STATE = { puuid:null, matches:[], name:"", tag:"" };
+// allMatches = historique combiné complet (matches v4 frais + blob accumulé),
+// matches = tranche actuellement affichée (pagination côté client).
+let STATE = { puuid:null, allMatches:[], matches:[], name:"", tag:"" };
 const TRIB = { matches: [], active: 0, n: 10 };
 const LB = { n: 10 };
 const VS = { a: 0, b: 1 };
 let CURRENT_MODE = 'all';
-let PROFILE_SIZE = 20;                                  // nombre de parties demandées pour le profil
-const PROFILE_SIZE_STEP = 15, PROFILE_SIZE_MAX = 50;    // pas du "charger plus" + plafond qu'on tente
+const FRESH_SIZE = 20;                                  // matches v4 récupérés pour la fraîcheur
+let PROFILE_SHOWN = FRESH_SIZE;                         // nb de parties affichées (pagination locale)
+const PROFILE_SIZE_STEP = 15;                          // pas du bouton "charger plus"
 let MAPS = null;                                        // cache nom de map -> image splash
 let AGENTS = null;                                      // cache nom d'agent -> icône (tête)
 let TIERS = null;                                       // cache nom de palier -> icône de rang
@@ -75,6 +73,34 @@ async function api(path){
   const r=await fetch(PROXY(path));
   if(!r.ok){ const e=new Error('http '+r.status); e.status=r.status; throw e; }
   return r.json();
+}
+
+// Identifiant / horodatage stables d'un match brut (matches v3/v4 ou stored-matches).
+function matchID(m){ const md=(m&&m.metadata)||{}; return md.match_id||md.matchid||md.matchId||null; }
+function matchTime(m){ const md=(m&&m.metadata)||{}; const t=new Date(md.started_at||md.game_start_iso||md.game_start||0).getTime(); return isNaN(t)?0:t; }
+
+// Fusionne plusieurs listes de matchs bruts en dédoublonnant par matchid.
+// Les listes passées en premier sont prioritaires (les données fraîches v4
+// l'emportent sur la version stockée). Tri du plus récent au plus ancien.
+function combineMatches(...lists){
+  const byId=new Map(); const extra=[];
+  lists.forEach(list=>(list||[]).forEach(m=>{
+    const id=matchID(m);
+    if(id){ if(!byId.has(id)) byId.set(id,m); }
+    else extra.push(m);
+  }));
+  return [...byId.values(), ...extra].sort((a,b)=>matchTime(b)-matchTime(a));
+}
+
+// Récupère l'historique accumulé côté serveur (blob via la fonction historique).
+// Repli silencieux sur [] : le blob peut être vide tant que le cron n'a pas tourné.
+async function fetchHistorique(name, tag){
+  try{
+    const r=await fetch(`/.netlify/functions/historique?name=${enc(name)}&tag=${enc(tag)}`);
+    if(!r.ok) return [];
+    const d=await r.json();
+    return Array.isArray(d) ? d : (d.matches||d.data||[]);
+  }catch(e){ return []; }
 }
 // Charge une fois la liste des maps (nom -> image splash) depuis valorant-api. Repli silencieux si indispo.
 async function ensureMaps(){
@@ -380,8 +406,9 @@ function showMatch(i){
 
 function openProfile(idx){
   const m=ROSTER[idx];
-  STATE={puuid:null,matches:[],name:m.name,tag:m.tag};
-  PROFILE_SIZE = 20;
+  if(!m) return;
+  STATE={puuid:null,allMatches:[],matches:[],name:m.name,tag:m.tag};
+  PROFILE_SHOWN = FRESH_SIZE;
 
   const bustSrc = m.customImg || `${MEDIA}/${m.uuid}/bustportrait.png`;
 
@@ -408,10 +435,11 @@ async function loadProfile(){
   try{
     const acc=await api(`/valorant/v2/account/${n}/${t}`);
     STATE.puuid=acc.data&&acc.data.puuid;
-    const [mmrR,histR,matchR]=await Promise.allSettled([
+    const [mmrR,histR,matchR,blobR]=await Promise.allSettled([
       api(`/valorant/v3/mmr/${region}/pc/${n}/${t}`),
       api(`/valorant/v2/mmr-history/${region}/pc/${n}/${t}`),
-      api(`/valorant/v4/matches/${region}/pc/${n}/${t}?size=${PROFILE_SIZE}`) // taille ajustable via "charger plus"
+      api(`/valorant/v4/matches/${region}/pc/${n}/${t}?size=${FRESH_SIZE}`), // données fraîches du moment
+      fetchHistorique(STATE.name, STATE.tag)                                  // historique accumulé (blob)
     ]);
     // Caches médias : têtes d'agents (scoreboard), icônes de rang et fonds de map
     await Promise.all([ensureTiers(), ensureAgents(), ensureMaps()]);
@@ -423,9 +451,13 @@ async function loadProfile(){
            peak:(d.peak&&d.peak.tier&&d.peak.tier.name)||(d.highest_rank&&d.highest_rank.patched_tier)||''}; }
     let hist=[]; if(histR.status==='fulfilled'){ const d=histR.value.data; hist=(d&&d.history)||d||[]; }
 
-    // On conserve toutes les parties renvoyées (jusqu'à PROFILE_SIZE)
-    if(matchR.status==='fulfilled') STATE.matches=(matchR.value.data||[]).map(m=>normMatch(m));
-    
+    // Fusion : matches v4 frais + blob accumulé, dédoublonnés par matchid, triés du + récent au + ancien.
+    const fresh=matchR.status==='fulfilled'?(matchR.value.data||[]):[];
+    const blob =blobR.status==='fulfilled'?(blobR.value||[]):[];
+    STATE.allMatches=combineMatches(fresh, blob).map(m=>normMatch(m));
+    PROFILE_SHOWN=Math.min(FRESH_SIZE, STATE.allMatches.length);
+    STATE.matches=STATE.allMatches.slice(0, PROFILE_SHOWN);
+
     // L'indice COSMO général reste sur les 8 dernières
     const scored=STATE.matches.slice(0,8).filter(M=>M.me);
     const overall=scored.length?Math.round(scored.reduce((s,M)=>s+M.me.score100,0)/scored.length):0;
@@ -458,36 +490,31 @@ async function loadProfile(){
 }
 
 /* ===================== CHARGER PLUS DE PARTIES ===================== */
-function updateMoreBtn(prevLen){
+// Le bouton reflète la taille réelle de l'historique combiné (frais + blob).
+// Quand tout est affiché (le blob ne grossit plus malgré le cron), on désactive
+// le bouton avec un message honnête plutôt que de laisser croire à un chargement infini.
+function updateMoreBtn(){
   const btn=$('btnMore'); if(!btn) return;
-  const len=STATE.matches.length;
-  // plus rien à charger si: l'API a renvoyé moins que demandé, on a atteint le plafond, ou rien de neuf n'est arrivé
-  const capReached = len < PROFILE_SIZE || PROFILE_SIZE >= PROFILE_SIZE_MAX || (prevLen!=null && len<=prevLen);
-  if(capReached){
+  const total=(STATE.allMatches||[]).length;
+  const shown=Math.min(PROFILE_SHOWN, total);
+  if(shown>=total){
     btn.disabled=true;
-    btn.textContent=`Tout l'historique dispo est chargé (${len} parties)`;
+    btn.textContent=`Tout l'historique dispo est chargé (${total} partie${total>1?'s':''})`;
   }else{
     btn.disabled=false;
-    btn.textContent=`Charger plus de parties (${len} affichées)`;
+    btn.textContent=`Charger plus de parties (${shown}/${total} affichées)`;
   }
 }
 
-async function loadMoreMatches(){
-  const btn=$('btnMore');
-  if(!STATE.name || PROFILE_SIZE>=PROFILE_SIZE_MAX) return;
-  const prevLen=STATE.matches.length;
-  PROFILE_SIZE=Math.min(PROFILE_SIZE+PROFILE_SIZE_STEP, PROFILE_SIZE_MAX);
-  if(btn){ btn.disabled=true; btn.textContent='Chargement…'; }
-  const region=REGION(), n=enc(STATE.name), t=enc(STATE.tag);
-  try{
-    const r=await api(`/valorant/v4/matches/${region}/pc/${n}/${t}?size=${PROFILE_SIZE}`);
-    STATE.matches=(r.data||[]).map(m=>normMatch(m));
-    await Promise.all([ensureMaps(), ensureAgents()]);
-    renderList();
-    updateMoreBtn(prevLen);
-  }catch(e){
-    if(btn){ btn.disabled=false; btn.textContent='Erreur, réessayer'; }
-  }
+// Pagination côté client : on révèle plus de parties déjà présentes dans
+// l'historique combiné, sans nouvel appel API.
+function loadMoreMatches(){
+  const total=(STATE.allMatches||[]).length;
+  if(PROFILE_SHOWN>=total) return;
+  PROFILE_SHOWN=Math.min(PROFILE_SHOWN+PROFILE_SIZE_STEP, total);
+  STATE.matches=STATE.allMatches.slice(0, PROFILE_SHOWN);
+  renderList();
+  updateMoreBtn();
 }
 
 /* ===================== LOGIQUE TRIBUNAL & JAUGE ===================== */
@@ -608,27 +635,38 @@ function renderTribMembers() {
     </button>`).join('');
 }
 
+// Récupère les matchs de toute la squad : pour chaque membre, on combine les
+// parties classées fraîches (v4) avec l'historique accumulé (blob), dédoublonné
+// par matchid. Sert au tribunal ET au leaderboard.
+// Le blob contient tous les modes : on garde ici uniquement le competitive pour
+// préserver le caractère « ranked-only » du tribunal et du leaderboard.
+async function loadSquadMatches(region) {
+  const reqs = ROSTER.map(m => Promise.allSettled([
+    api(`/valorant/v4/matches/${region}/pc/${enc(m.name)}/${enc(m.tag)}?mode=competitive&size=15`),
+    fetchHistorique(m.name, m.tag)
+  ]));
+  const results = await Promise.all(reqs);
+  return results.map((pair, i) => {
+    const member = ROSTER[i];
+    const fresh = pair[0].status === 'fulfilled' ? (pair[0].value.data || []) : [];
+    const blob  = pair[1].status === 'fulfilled' ? (pair[1].value || []) : [];
+    const data  = combineMatches(fresh, blob);
+    const norm  = data.map(m => normMatch(m, member)).filter(M => (M.mode || '').toLowerCase() === 'competitive');
+    return { member, data, norm };
+  });
+}
+
 async function loadTribunal() {
   $('home').hidden = true;
   $('profile').hidden = true;
   $('leaderboard').hidden = true;
   $('tribunal').hidden = false;
   $('appTrib').hidden = true;
-  
-  statusTrib('load', 'Convocation du tribunal (récupération des 15 dernières parties classées de chaque membre)...');
+
+  statusTrib('load', 'Convocation du tribunal (analyse des parties classées de chaque membre)...');
   const region = REGION();
   try {
-    const reqs = ROSTER.map(m => api(`/valorant/v4/matches/${region}/pc/${enc(m.name)}/${enc(m.tag)}?mode=competitive&size=15`));
-    const results = await Promise.allSettled(reqs);
-
-    TRIB.matches = results.map((r, i) => {
-      return { member: ROSTER[i], data: r.status === 'fulfilled' ? (r.value.data || []) : [] };
-    });
-
-    TRIB.matches.forEach(tm => {
-       tm.norm = tm.data.map(m => normMatch(m, tm.member));
-    });
-
+    TRIB.matches = await loadSquadMatches(region);
     TRIB.active = 0;
     renderTribMembers();
     resetStage('Trib');
@@ -664,13 +702,7 @@ async function loadLeaderboard() {
   statusLb('load', 'Récupération des dernières parties classées de toute la squad…');
   const region = REGION();
   try {
-    const reqs = ROSTER.map(m => api(`/valorant/v4/matches/${region}/pc/${enc(m.name)}/${enc(m.tag)}?mode=competitive&size=15`));
-    const results = await Promise.allSettled(reqs);
-    TRIB.matches = results.map((r, i) => {
-      const data = r.status === 'fulfilled' ? (r.value.data || []) : [];
-      const member = ROSTER[i];
-      return { member, data, norm: data.map(m => normMatch(m, member)) };
-    });
+    TRIB.matches = await loadSquadMatches(region);
     clearStatusLb();
     renderLeaderboard();
     $('appLb').hidden = false;
@@ -885,6 +917,41 @@ function pickVs(e) {
   renderVs();
 }
 
+/* ===================== ROSTER (source unique) ===================== */
+// Charge roster.json (membres + région par défaut), source de vérité partagée
+// avec la fonction planifiée. Repli silencieux si indisponible.
+async function loadRoster(){
+  try{
+    const r=await fetch('roster.json');
+    if(r.ok){
+      const d=await r.json();
+      ROSTER=Array.isArray(d)?d:(d.members||[]);
+      if(d && d.region) DEFAULT_REGION=d.region;
+    }
+  }catch(e){ /* roster indispo : la grille restera vide */ }
+  const sel=$('region'); if(sel && DEFAULT_REGION) sel.value=DEFAULT_REGION;
+}
+
+// Construit les cartes de l'accueil à partir du ROSTER (plus de duplication en HTML).
+function renderRoster(){
+  const host=$('roster'); if(!host) return;
+  host.innerHTML=ROSTER.map((m,i)=>{
+    const mono=esc(m.mono||(m.agent||'').slice(0,2));
+    const portrait=m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`;
+    const custom=m.customImg?' custom':'';
+    const numTxt=String(i+1).padStart(2,'0');
+    return `<button class="agentcard${custom}" style="--c:${esc(m.color)}" data-idx="${i}">
+      <div class="glow"></div><div class="num mono">${numTxt}</div>
+      <div class="monogram">${mono}</div>
+      <img class="portrait" src="${esc(portrait)}" alt="${esc(m.agent)}">
+      <div class="scrim"></div>
+      <div class="info"><div class="arole">${esc(m.role)}</div><div class="aname">${esc(m.agent)}</div>
+        <div class="rid">${esc(m.name)}<b>#${esc(m.tag)}</b></div><div class="rankchip" id="rank-${i}">rang…</div></div>
+    </button>`;
+  }).join('');
+  wireRosterImgs();
+}
+
 /* ===================== WIRING ===================== */
 function wireRosterImgs(){
   document.querySelectorAll('.agentcard .portrait').forEach(img=>{
@@ -955,11 +1022,14 @@ function wireStatic(){
 }
 
 /* ===================== INIT ===================== */
-function init(){
-  wireRosterImgs();
+async function init(){
+  await loadRoster();   // source de vérité : doit être chargée avant de bâtir la grille
+  renderRoster();
   wireStatic();
   drawGauge('gaugeTrib');
   fillRanks();
 }
-if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init);
-else init();
+if(typeof document!=='undefined'){
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init);
+  else init();
+}
