@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Netlify
+.netlify/
+
+# Environment / secrets (la clé HenrikDev ne doit JAMAIS être commit)
+.env
+.env.*
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

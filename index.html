@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>COSMO — Valo Tracker</title>
+<style>
+  :root{
+    --bg:#0a0f15; --bg2:#0d141c; --panel:#121b24; --panel2:#18222d; --line:#243240;
+    --txt:#e9eef4; --muted:#8696a6; --dim:#56636f;
+    --amber:#f2b234; --cyan:#56d8c9; --red:#ff4655; --win:#56d8c9; --loss:#ff5d5d;
+    --bad:#ff4655; --unlucky:#56d8c9; --cracked:#f2b234;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--txt);font-family:var(--sans);line-height:1.45}
+  body{min-height:100vh}
+  button{font-family:inherit;cursor:pointer;border:0;background:none;color:inherit}
+  input,select{font-family:var(--mono)}
+  :focus-visible{outline:2px solid var(--amber);outline-offset:2px;border-radius:5px}
+  .mono{font-family:var(--mono)}
+  [hidden]{display:none!important}
+  @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+  /* ============ HOME / AGENT SELECT ============ */
+  #home{min-height:100vh;
+    background:
+      radial-gradient(900px 480px at 50% -10%,rgba(86,216,201,.10),transparent 60%),
+      repeating-linear-gradient(125deg,transparent 0 38px,rgba(86,216,201,.025) 38px 39px),
+      repeating-linear-gradient(55deg,transparent 0 38px,rgba(86,216,201,.025) 38px 39px),
+      linear-gradient(180deg,#0b141c,#080d12);
+    padding:26px 18px 60px}
+  .hwrap{max-width:1160px;margin:0 auto}
+  .hhead{text-align:center;margin-bottom:8px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.4em;text-transform:uppercase;color:var(--cyan);opacity:.85}
+  .banner{display:inline-block;background:var(--red);color:#fff;font-weight:800;font-size:30px;letter-spacing:.22em;
+    padding:9px 40px;margin:12px 0 6px;clip-path:polygon(6% 0,100% 0,94% 100%,0 100%)}
+  .htag{font-family:var(--mono);font-size:12.5px;color:var(--muted);letter-spacing:.04em}
+  .gear{position:absolute;top:20px;right:20px;display:flex;gap:8px}
+  .gear button{font-family:var(--mono);font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:rgba(0,0,0,.25)}
+  .gear button:hover{border-color:var(--cyan);color:var(--txt)}
+  .gear #btnTribunal{border-color:rgba(86,216,201,.4);color:var(--unlucky);background:rgba(86,216,201,.05)}
+  .gear #btnTribunal:hover{border-color:var(--unlucky);background:rgba(86,216,201,.15);color:#fff}
+  
+  .roster{display:grid;grid-template-columns:repeat(auto-fit, minmax(190px, 1fr));gap:14px;margin-top:30px}
+  
+  .agentcard{position:relative;height:380px;border-radius:16px;overflow:hidden;text-align:left;
+    background:linear-gradient(180deg,#0e1922,#0a1118);border:1px solid var(--line);
+    transition:transform .25s ease,border-color .25s ease,box-shadow .25s ease}
+  .agentcard:hover{transform:translateY(-6px);border-color:var(--c);box-shadow:0 16px 40px -18px var(--c)}
+  .agentcard .glow{position:absolute;inset:0;background:radial-gradient(120% 60% at 50% 0%,color-mix(in srgb,var(--c) 32%,transparent),transparent 70%);opacity:.5;transition:opacity .25s}
+  .agentcard:hover .glow{opacity:1}
+  .agentcard .portrait{position:absolute;left:50%;bottom:74px;transform:translateX(-50%);height:300px;width:auto;filter:drop-shadow(0 18px 22px rgba(0,0,0,.55));transition:transform .25s ease}
+  .agentcard:hover .portrait{transform:translateX(-50%) scale(1.05)}
+  .agentcard .monogram{position:absolute;left:50%;top:120px;transform:translateX(-50%);font-family:var(--mono);font-size:54px;font-weight:800;color:var(--c);opacity:.25;display:none}
+  .agentcard.noimg .monogram{display:block}
+  .agentcard.custom .portrait{left:0;top:0;width:100%;height:100%;transform:none;object-fit:cover;filter:none;bottom:auto}
+  .agentcard.custom:hover .portrait{transform:scale(1.05)}
+  .agentcard .scrim{position:absolute;left:0;right:0;bottom:0;height:170px;background:linear-gradient(180deg,transparent,rgba(7,11,15,.92) 55%)}
+  .agentcard .info{position:absolute;left:0;right:0;bottom:0;padding:14px 15px}
+  .agentcard .arole{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--c)}
+  .agentcard .aname{font-size:21px;font-weight:800;letter-spacing:-.01em;margin-top:1px}
+  .agentcard .rid{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:2px}
+  .agentcard .rid b{color:var(--dim);font-weight:500}
+  .agentcard .rankchip{display:inline-flex;align-items:center;gap:6px;margin-top:9px;font-family:var(--mono);font-size:11px;background:rgba(255,255,255,.06);border:1px solid var(--line);border-radius:7px;padding:4px 9px;color:var(--amber)}
+  .agentcard .rankchip .rankicon{width:20px;height:20px;object-fit:contain;flex:none}
+  .agentcard .num{position:absolute;top:12px;left:14px;font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:.1em}
+  .sheet{max-width:1160px;margin:18px auto 0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px}
+  .sheet .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .field input,.field select{background:var(--bg);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:9px 11px;font-size:13px}
+  .secnote{font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:10px}
+
+  /* ============ PROFILE / TRACKER ============ */
+  #profile{padding:20px 16px 70px;background:radial-gradient(1000px 520px at 85% -5%,rgba(86,216,201,.05),transparent 60%),var(--bg)}
+  .pwrap{max-width:1040px;margin:0 auto}
+  .back{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.06em;margin-bottom:16px}
+  .back:hover{color:var(--cyan)}
+  .phead{display:flex;align-items:center;gap:16px;border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:20px}
+  .pbust{width:84px;height:84px;border-radius:14px;flex:none;overflow:hidden;position:relative;background:linear-gradient(160deg,var(--panel2),#0a0f14);border:1px solid var(--line)}
+  .pbust img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 16%}
+  .pbust.custom img{object-position:center}
+  .pbust .mg{position:absolute;inset:0;display:none;place-items:center;font-family:var(--mono);font-weight:800;font-size:26px;color:var(--pc)}
+  .pbust.noimg .mg{display:grid}
+  .phead .eb{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase}
+  .phead h1{margin:2px 0 0;font-size:23px;font-weight:800;text-transform:uppercase;letter-spacing:-.01em}
+  .phead h1 b{color:var(--muted);font-weight:500}
+  .ptools{margin-left:auto;display:flex;gap:8px}
+  .btn{background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:9px 14px;font-family:var(--mono);font-size:12px}
+  .btn:hover{border-color:var(--amber)}
+
+  .status{border-radius:10px;padding:13px 15px;font-size:13.5px;margin-bottom:20px;display:none}
+  .status.show{display:block}
+  .status.load{background:var(--panel);border:1px solid var(--line);color:var(--muted);font-family:var(--mono)}
+  .status.err{background:rgba(255,93,93,.08);border:1px solid rgba(255,93,93,.4);color:#ffb3b3}
+  .status.err b{color:#fff}
+  .status .act{margin-top:8px;font-size:12px}
+
+  .hero{display:grid;grid-template-columns:.85fr 1.3fr;gap:14px;margin-bottom:14px}
+  @media(max-width:740px){.hero{grid-template-columns:1fr}}
+  .card{background:linear-gradient(180deg,#141f2a,#101822);border:1px solid var(--line);border-radius:14px;padding:17px}
+  .card h2{margin:0 0 13px;font-size:11.5px;font-family:var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+  .card h2 em{font-style:normal;color:var(--dim);font-size:11px}
+  .full{margin-bottom:14px}
+  .tabs-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+
+  /* ... elements du tracker ... */
+  .rankbox{display:flex;align-items:center;gap:15px}
+  .tier{width:60px;height:60px;border-radius:13px;flex:none;display:grid;place-items:center;text-align:center;font-family:var(--mono);font-weight:800;font-size:12px;line-height:1.05;background:linear-gradient(155deg,var(--panel2),#0a0f14);border:1px solid var(--line);color:var(--amber);overflow:hidden}
+  .tier.hasimg{background:none;border:0}
+  .tier img{width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 4px 10px rgba(0,0,0,.45))}
+  .rankinfo{flex:1;min-width:0}
+  .rankinfo .big{font-size:22px;font-weight:800}
+  .bar{height:8px;background:var(--panel2);border-radius:6px;margin-top:9px;overflow:hidden}
+  .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--amber),#ffd36b);transition:width .9s ease}
+  .rankinfo .meta{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:8px}
+  .indice{margin-top:14px;display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .indice .num{font-size:19px;font-weight:800}
+
+  .verdict-hero{--sc:#56d8c9;position:relative;overflow:hidden;
+    background:radial-gradient(130% 150% at 100% 0%,color-mix(in srgb,var(--sc) 13%,transparent),transparent 55%),linear-gradient(180deg,#141f2a,#101822);
+    border-color:color-mix(in srgb,var(--sc) 32%,var(--line));
+    box-shadow:0 0 0 1px color-mix(in srgb,var(--sc) 14%,transparent),0 16px 44px -24px var(--sc)}
+  .vh-grid{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+  .vh-score{display:flex;flex-direction:column;align-items:center;gap:7px;flex:none}
+  .vh-tier{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.07em}
+  .vh-body{flex:1;min-width:180px}
+  .vh-top{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
+  .reschip{font-family:var(--mono);font-weight:800;font-size:12px;padding:5px 11px;border-radius:7px;letter-spacing:.05em}
+  .reschip.w{background:rgba(86,216,201,.13);color:var(--win)} .reschip.l{background:rgba(255,93,93,.13);color:var(--loss)}
+  .vh-top .map{font-weight:700;font-size:16px} .vh-top .mode{font-family:var(--mono);font-size:12px;color:var(--dim)}
+  .vh-line{font-family:var(--mono);font-size:13.5px;color:var(--muted);margin-bottom:9px} .vh-line b{color:var(--txt)}
+  .vh-verdict{font-size:17px;font-weight:800;line-height:1.25}
+  .vh-verdict.good{color:var(--amber)} .vh-verdict.bad{color:var(--red)} .vh-verdict.mid{color:var(--txt)}
+  .vh-react{flex:none;margin-left:auto;text-align:center;align-self:center}
+  .react .emoji{font-size:36px;line-height:1;animation:bob 1.7s ease-in-out infinite}
+  .react img{width:84px;height:84px;object-fit:cover;border-radius:12px;border:1px solid var(--line)}
+  .react .cap{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-top:4px}
+  @keyframes bob{0%,100%{transform:translateY(0) rotate(-4deg)}50%{transform:translateY(-6px) rotate(4deg)}}
+
+  .scorebadge{position:relative;display:inline-flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:800;overflow:visible}
+  .score-hero{width:90px;height:90px;border-radius:20px;font-size:29px;color:var(--sc);border:2px solid var(--sc);
+    background:radial-gradient(circle at 50% 35%,color-mix(in srgb,var(--sc) 22%,transparent),transparent 70%)}
+  .score-hero .out{position:absolute;bottom:10px;left:0;right:0;text-align:center;font-size:9px;font-weight:600;color:var(--muted);letter-spacing:.1em}
+  .score-mini{width:48px;height:36px;border-radius:9px;font-size:14px;color:var(--sc);border:1px solid var(--sc);background:color-mix(in srgb,var(--sc) 10%,transparent)}
+  .flair-fire{box-shadow:0 0 22px -4px rgba(255,120,40,.55)}
+  .flair-stink{box-shadow:0 0 22px -6px rgba(120,170,40,.45)}
+  .flame{position:absolute;bottom:-7px;width:12px;height:17px;border-radius:50% 50% 50% 50%/65% 65% 35% 35%;
+    background:linear-gradient(to top,#ffd24a,#ff6a2b 55%,rgba(255,80,30,0));filter:blur(.6px);transform-origin:bottom center;
+    animation:flick .8s ease-in-out infinite alternate;pointer-events:none}
+  @keyframes flick{from{transform:scaleY(.8) translateY(0);opacity:.9}to{transform:scaleY(1.3) translateY(-7px);opacity:.3}}
+  .squig{position:absolute;top:-9px;font-size:12px;opacity:0;pointer-events:none;animation:rise 2.2s ease-in infinite}
+  @keyframes rise{0%{transform:translateY(8px) scale(.7);opacity:0}25%{opacity:.95}100%{transform:translateY(-26px) scale(1.15);opacity:0}}
+
+  .spark{margin:4px 0 12px}
+  .hist{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
+  .hpill{flex:none;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;text-align:center;font-family:var(--mono);min-width:60px}
+  .hpill .m{font-size:10px;color:var(--dim);white-space:nowrap} .hpill .v{font-size:13px;font-weight:700;margin-top:2px}
+  .v.up{color:var(--win)} .v.dn{color:var(--loss)}
+  .rrchart{display:block;margin:2px 0 12px}
+  .rrchart .ax{font-family:var(--mono);font-size:11px;fill:var(--muted)}
+  .rrchart .axt{font-family:var(--mono);font-size:10px;fill:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+
+  .mrow{position:relative;overflow:hidden;display:grid;grid-template-columns:34px 1fr auto auto;gap:12px;align-items:center;padding:11px 9px;border-top:1px solid var(--line);cursor:pointer;border-radius:9px}
+  .mrow:first-of-type{border-top:0}
+  .mrow:hover,.mrow.sel{background:var(--panel2)}
+  .mrow > *:not(.mbg){position:relative;z-index:1}
+  .mbg{position:absolute;inset:0;z-index:0;background-size:cover;background-position:center 30%;opacity:.16;pointer-events:none;
+    -webkit-mask-image:linear-gradient(90deg,transparent,#000 22%,#000 78%,transparent);mask-image:linear-gradient(90deg,transparent,#000 22%,#000 78%,transparent)}
+  .mrow:hover .mbg,.mrow.sel .mbg{opacity:.30}
+  .res{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;font-family:var(--mono);font-weight:800;font-size:12px}
+  .res.w{background:rgba(86,216,201,.12);color:var(--win)} .res.l{background:rgba(255,93,93,.12);color:var(--loss)}
+  .minfo b{font-size:14px} .minfo span{display:block;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+  .mscore{font-family:var(--mono);font-weight:700;font-size:15px}
+
+  .sb{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+  .sb th{text-align:right;color:var(--dim);font-weight:600;font-size:10px;letter-spacing:.07em;text-transform:uppercase;padding:6px 7px;border-bottom:1px solid var(--line)}
+  .sb th:first-child,.sb td:first-child{text-align:left}
+  .sb td{padding:9px 7px;border-bottom:1px solid var(--line);text-align:right;color:var(--muted)}
+  .sb td b{color:var(--txt)}
+  .sb tr.me td{background:rgba(242,178,52,.07)}
+  .agent{display:flex;align-items:center;gap:9px;text-align:left}
+  .ag{width:30px;height:30px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);display:grid;place-items:center;font-size:10px;color:var(--amber);font-weight:700;flex:none;overflow:hidden;position:relative}
+  .ag img{width:100%;height:100%;object-fit:cover;display:block}
+  .ag span{display:none}
+  .ag.noimg span{display:block}
+  .pn b{color:var(--txt);font-weight:700;font-size:13px} .pn span{color:var(--dim)}
+  .scell{font-weight:800}
+  .teamlabel{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;padding:14px 7px 5px;color:var(--muted)}
+  .teamlabel.blue{color:var(--cyan)} .teamlabel.red{color:var(--red)}
+  .verdict-line{display:inline-block;margin-top:3px;font-size:11px;padding:2px 7px;border-radius:5px}
+  .verdict-line.bad{background:rgba(255,93,93,.13);color:#ff9b9b} .verdict-line.good{background:rgba(242,178,52,.14);color:var(--amber)}
+  .foot{text-align:center;font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:26px}
+
+  /* ============ STYLES TRIBUNAL / UNLUCKY OR BAD ============ */
+  .members{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0 20px}
+  .chip{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:8px 14px;font-size:13px;color:var(--muted);transition:all .2s}
+  .chip.on{border-color:var(--c);color:var(--txt);box-shadow:0 6px 20px -10px var(--c)}
+  .chip b{color:var(--dim);font-weight:500}
+
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;font-family:var(--mono);font-size:13px;background:var(--panel2)}
+  .seg button{padding:9px 18px;color:var(--muted);letter-spacing:.04em;transition:all .15s}
+  .seg button.on{background:var(--unlucky);color:#0a0d16;font-weight:700}
+
+  .stage{background:linear-gradient(155deg, var(--panel2), #0a0f14);border:1px solid var(--line);border-radius:18px;padding:22px 18px 26px;position:relative;overflow:hidden}
+  .gauge{width:100%;max-width:420px;margin:0 auto;display:block}
+  .znlabel{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:700}
+
+  .verdict-box{min-height:120px;margin-top:6px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .vword{font-size:54px;font-weight:900;letter-spacing:-.02em;text-transform:uppercase;opacity:0;transform:scale(.6)}
+  .vword.show{animation:slam .5s cubic-bezier(.2,1.4,.4,1) forwards}
+  @keyframes slam{0%{opacity:0;transform:scale(.5)}60%{opacity:1;transform:scale(1.12)}100%{opacity:1;transform:scale(1)}}
+  .vline{font-family:var(--mono);font-size:13px;color:var(--txt);margin-top:8px;opacity:0;transition:opacity .4s .25s}
+  .vline.show{opacity:1}
+  .vpct{font-family:var(--mono);font-size:13px;color:var(--muted);margin-top:2px;opacity:0;transition:opacity .4s .35s}
+  .vpct.show{opacity:1}
+
+  .reveal{margin-top:18px;background:var(--unlucky);color:#0a0d16;font-weight:800;letter-spacing:.04em;
+    border-radius:11px;padding:14px 28px;font-size:15px;transition:transform .15s,filter .2s}
+  .reveal:hover{filter:brightness(1.07)} .reveal:active{transform:scale(.97)}
+  .reveal:disabled{opacity:.5;cursor:default}
+
+  .flash{position:absolute;inset:0;background:var(--c,#fff);opacity:0;pointer-events:none;border-radius:18px}
+  .flash.go{animation:fl .45s ease-out}
+  @keyframes fl{0%{opacity:.0}25%{opacity:.22}100%{opacity:0}}
+  
+  #tribunal{padding:20px 16px 70px;background:radial-gradient(900px 500px at 50% -12%,rgba(86,216,201,.08),transparent 60%),var(--bg)}
+
+  /* ============ LEADERBOARD ============ */
+  #leaderboard{padding:20px 16px 70px;background:radial-gradient(900px 500px at 50% -12%,rgba(242,178,52,.08),transparent 60%),var(--bg)}
+  .gear #btnLeaderboard{border-color:rgba(242,178,52,.4);color:var(--amber);background:rgba(242,178,52,.05)}
+  .gear #btnLeaderboard:hover{border-color:var(--amber);background:rgba(242,178,52,.15);color:#fff}
+  .lb-box{background:linear-gradient(180deg,#141f2a,#101822);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:14px}
+  .lb-row{display:grid;grid-template-columns:54px 52px 1fr auto auto auto;gap:14px;align-items:center;padding:14px 18px;border-top:1px solid var(--line);position:relative}
+  .lb-row:first-child{border-top:0}
+  .lb-rank{font-family:var(--mono);font-size:18px;font-weight:800;text-align:center;color:var(--dim)}
+  .lb-rank.medal{font-size:30px}
+  .lb-bust{width:50px;height:50px;border-radius:10px;overflow:hidden;position:relative;background:linear-gradient(160deg,var(--panel2),#0a0f14);border:1px solid var(--line)}
+  .lb-bust img{position:absolute;width:130%;left:-15%;top:-6%}
+  .lb-name b{font-size:16px;font-weight:800;letter-spacing:-.01em;display:block}
+  .lb-name span{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+  .lb-stat{font-family:var(--mono);text-align:right;min-width:54px}
+  .lb-stat .v{font-size:17px;font-weight:800;line-height:1}
+  .lb-stat .l{font-size:9.5px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;margin-top:4px}
+  .lb-row.top1{background:linear-gradient(90deg,rgba(242,178,52,.14),transparent 70%);box-shadow:inset 4px 0 0 var(--amber)}
+  .lb-row.top2{background:linear-gradient(90deg,rgba(180,180,180,.10),transparent 70%);box-shadow:inset 4px 0 0 #b5b5b5}
+  .lb-row.top3{background:linear-gradient(90deg,rgba(205,127,50,.10),transparent 70%);box-shadow:inset 4px 0 0 #cd7f32}
+  .lb-row.empty{opacity:.45}
+  @media(max-width:600px){
+    .lb-row{grid-template-columns:44px 46px 1fr auto auto;gap:10px;padding:12px 14px}
+    .lb-stat.hide-sm{display:none}
+  }
+
+  .badges{display:grid;grid-template-columns:repeat(auto-fit, minmax(170px, 1fr));gap:12px;margin:14px 0 4px;text-align:left}
+  .badge{position:relative;background:linear-gradient(180deg,#141f2a,#101822);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:center;overflow:hidden;transition:transform .2s, border-color .2s, box-shadow .2s}
+  .badge:hover{transform:translateY(-3px);border-color:color-mix(in srgb, var(--c) 50%, var(--line));box-shadow:0 10px 30px -16px var(--c)}
+  .badge::before{content:'';position:absolute;inset:0;background:radial-gradient(80% 60% at 50% 0,color-mix(in srgb,var(--c) 22%,transparent),transparent 70%);pointer-events:none}
+  .badge>*{position:relative}
+  .badge .b-emoji{font-size:32px;line-height:1}
+  .badge .b-title{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-top:7px}
+  .badge .b-winner{font-size:15px;font-weight:800;margin-top:7px;letter-spacing:-.01em}
+  .badge .b-value{font-family:var(--mono);font-size:18px;font-weight:800;color:var(--c);margin-top:1px}
+  .badge .b-desc{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:4px}
+
+  /* VS / 1v1 */
+  .vs-pickers{display:flex;flex-direction:column;gap:8px;margin-bottom:6px}
+  .vs-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .vs-side-label{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);min-width:64px}
+  .vs-chips{margin:0;justify-content:flex-start;flex:1}
+  .vs-heads{display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;margin:16px 0 6px}
+  .vs-head{padding:11px 14px;border-radius:10px;background:linear-gradient(160deg,color-mix(in srgb,var(--c) 10%,var(--panel2)),var(--panel));border:1px solid color-mix(in srgb,var(--c) 28%,var(--line));text-align:center}
+  .vs-head .nm{font-size:16px;font-weight:800}
+  .vs-head .sub{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:1px}
+  .vs-head .smp{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:4px;letter-spacing:.06em}
+  .vs-divider{font-family:var(--mono);font-size:18px;font-weight:800;color:var(--dim);letter-spacing:.1em}
+  .vs-table{width:100%;border-collapse:collapse;margin-top:6px}
+  .vs-table td{padding:10px 8px;text-align:center;border-bottom:1px solid var(--line);font-family:var(--mono)}
+  .vs-table td:first-child{text-align:right} .vs-table td:last-child{text-align:left}
+  .vs-table td.vs-v{font-size:16px;font-weight:800}
+  .vs-table td.vs-v.w{position:relative;color:var(--win)!important}
+  .vs-table td.vs-v.w::after{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--win);margin-left:7px;vertical-align:middle;box-shadow:0 0 8px var(--win)}
+  .vs-table td.vs-l{color:var(--muted);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;width:110px;font-weight:600}
+  .vs-verdict{display:inline-block;margin:14px 0 4px;font-family:var(--mono);font-size:13px;color:var(--cyan);padding:9px 16px;background:rgba(86,216,201,.07);border:1px solid rgba(86,216,201,.25);border-radius:9px;font-weight:700}
+  .vs-empty{padding:20px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:13px}
+
+  /* DUOS */
+  .duo-box{background:linear-gradient(180deg,#141f2a,#101822);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-top:6px}
+  .duo-row{display:grid;grid-template-columns:1fr auto auto auto;gap:14px;padding:13px 16px;align-items:center;border-top:1px solid var(--line)}
+  .duo-row:first-child{border-top:0}
+  .duo-pair{font-size:15px;font-weight:700}
+  .duo-x{margin:0 8px;color:var(--dim);font-family:var(--mono);font-weight:400}
+  .duo-stat{font-family:var(--mono);text-align:right;min-width:62px}
+  .duo-stat b{display:block;font-size:15px;font-weight:800}
+  .duo-stat span{display:block;font-size:9.5px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;margin-top:1px}
+  .duo-empty{padding:20px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:13px}
+  @media(max-width:600px){ .duo-row{grid-template-columns:1fr auto auto;gap:10px;padding:11px 13px} .duo-stat.hide-sm{display:none} }
+</style>
+</head>
+<body>
+
+<!-- ===================== HOME ===================== -->
+<section id="home">
+  <div class="gear">
+    <button id="btnLeaderboard">🏆 Leaderboard</button>
+    <button id="btnTribunal">⚖ Tribunal COSMO</button>
+    <button id="btnGear">⚙ Paramètres</button>
+  </div>
+  <div class="hwrap">
+    <div class="hhead">
+      <div class="eyebrow">Agent select</div>
+      <div class="banner">COSMO</div>
+      <div class="htag">Choisis ton joueur pour ouvrir son tracker</div>
+    </div>
+    <div class="sheet" id="sheet" hidden>
+      <div class="row">
+        <div class="field"><label for="region">Région (toute la team)</label>
+          <select id="region"><option value="eu">eu</option><option value="na">na</option><option value="ap">ap</option><option value="kr">kr</option><option value="latam">latam</option><option value="br">br</option></select></div>
+        <button class="btn" id="btnRanks">Rafraîchir les rangs</button>
+      </div>
+      <div class="secnote">La clé HenrikDev vit côté serveur (fonction Netlify), elle n'apparaît jamais dans la page.</div>
+    </div>
+    <div class="roster" id="roster">
+      <button class="agentcard" style="--c:#9aa7b2" data-idx="0">
+        <div class="glow"></div><div class="num mono">01</div>
+        <div class="monogram">Cy</div>
+        <img class="portrait" src="https://media.valorant-api.com/agents/117ed9e3-49f3-6512-3ccf-0cada7e3823b/fullportrait.png" alt="Cypher">
+        <div class="scrim"></div>
+        <div class="info"><div class="arole">Sentinelle</div><div class="aname">Cypher</div>
+          <div class="rid">Arsh26<b>#2826</b></div><div class="rankchip" id="rank-0">rang…</div></div>
+      </button>
+      <button class="agentcard" style="--c:#e07b2c" data-idx="1">
+        <div class="glow"></div><div class="num mono">02</div>
+        <div class="monogram">Br</div>
+        <img class="portrait" src="https://media.valorant-api.com/agents/9f0d8ba9-4140-b941-57d3-a7ad57c6b417/fullportrait.png" alt="Brimstone">
+        <div class="scrim"></div>
+        <div class="info"><div class="arole">Contrôleur</div><div class="aname">Brimstone</div>
+          <div class="rid">SevenDayy<b>#6340</b></div><div class="rankchip" id="rank-1">rang…</div></div>
+      </button>
+      <button class="agentcard" style="--c:#c8623a" data-idx="2">
+        <div class="glow"></div><div class="num mono">03</div>
+        <div class="monogram">Br</div>
+        <img class="portrait" src="https://media.valorant-api.com/agents/5f8d3a7f-467b-97f3-062c-13acf203c006/fullportrait.png" alt="Breach">
+        <div class="scrim"></div>
+        <div class="info"><div class="arole">Initiateur</div><div class="aname">Breach</div>
+          <div class="rid">Gogemine<b>#0202</b></div><div class="rankchip" id="rank-2">rang…</div></div>
+      </button>
+      <button class="agentcard" style="--c:#74e0dd" data-idx="3">
+        <div class="glow"></div><div class="num mono">04</div>
+        <div class="monogram">Je</div>
+        <img class="portrait" src="https://media.valorant-api.com/agents/add6443a-41bd-e414-f6ad-e58d267f4e95/fullportrait.png" alt="Jett">
+        <div class="scrim"></div>
+        <div class="info"><div class="arole">Duelliste</div><div class="aname">Jett</div>
+          <div class="rid">kingsto<b>#0000</b></div><div class="rankchip" id="rank-3">rang…</div></div>
+      </button>
+      <button class="agentcard" style="--c:#e3b341" data-idx="4">
+        <div class="glow"></div><div class="num mono">05</div>
+        <div class="monogram">Ch</div>
+        <img class="portrait" src="https://media.valorant-api.com/agents/22697a3d-45bf-8dd7-4fec-84a9e28c69d7/fullportrait.png" alt="Chamber">
+        <div class="scrim"></div>
+        <div class="info"><div class="arole">Sentinelle</div><div class="aname">Chamber</div>
+          <div class="rid">joker<b>#prft9</b></div><div class="rankchip" id="rank-4">rang…</div></div>
+      </button>
+      <button class="agentcard" style="--c:#ff8262" data-idx="5">
+        <div class="glow"></div><div class="num mono">06</div>
+        <div class="monogram">Ph</div>
+        <img class="portrait" src="https://media.valorant-api.com/agents/eb93336a-449b-9c1b-0a54-a891f7921d69/fullportrait.png" alt="Phoenix">
+        <div class="scrim"></div>
+        <div class="info"><div class="arole">Duelliste</div><div class="aname">Phoenix</div>
+          <div class="rid">abd<b>#wesh</b></div><div class="rankchip" id="rank-5">rang…</div></div>
+      </button>
+      <button class="agentcard custom" style="--c:#ff8c00" data-idx="6">
+        <div class="glow"></div><div class="num mono">07</div>
+        <div class="monogram">Go</div>
+        <img class="portrait" src="https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExdDA1cjBwcHBrZmt2OGRjMDBvNGoyeTBpbXc1Zjk2d3c1cDc5dmZwMCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/BODTGPaN9Pw9mt5J1L/giphy.gif" alt="Goku">
+        <div class="scrim"></div>
+        <div class="info"><div class="arole">Saiyan</div><div class="aname">Son Goku</div>
+          <div class="rid">Giorno77<b>#5800</b></div><div class="rankchip" id="rank-6">rang…</div></div>
+      </button>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== PROFILE ===================== -->
+<section id="profile" hidden>
+  <div class="pwrap">
+    <button class="back" id="btnBack">← Retour à COSMO</button>
+    <div class="phead" id="phead"></div>
+    <div class="status" id="status"></div>
+    <div id="app" hidden>
+      <div class="hero">
+        <div class="card"><h2>Rang <em>mmr · history</em></h2><div id="rank"></div></div>
+        <div class="card verdict-hero" id="vcard"><h2>Dernier match <em>indice + verdict</em></h2><div id="verdict"></div></div>
+      </div>
+      
+      <div class="card full"><h2>Progression RR <em>derniers matchs</em></h2><div id="curve"></div></div>
+      
+      <!-- LISTE DES MATCHS AVEC ONGLETS -->
+      <div class="card full">
+        <h2 class="tabs-header">
+          <span>Matchs récents <em>indice /100 · clique pour le détail</em></span>
+          <div class="seg" id="modeTabs" style="margin:0;">
+            <button data-mode="all" class="on">Tous</button>
+            <button data-mode="competitive">Classé</button>
+            <button data-mode="unrated">Non classé</button>
+            <button data-mode="deathmatch">DM</button>
+            <button data-mode="other">Autres</button>
+          </div>
+        </h2>
+        <div id="ml"></div>
+        <div style="text-align:center;margin-top:14px;">
+          <button class="btn" id="btnMore">Charger plus de parties</button>
+        </div>
+      </div>
+      
+      <div class="hero" id="statsSplit" style="grid-template-columns:1fr 1fr;">
+        <div class="card"><h2>Stats par agent <em>selon le filtre · trié par fréquence</em></h2><div id="agentStats"></div></div>
+        <div class="card"><h2>Stats par map <em>selon le filtre · trié par fréquence</em></h2><div id="mapStats"></div></div>
+      </div>
+
+      <div class="card full"><h2>Scoreboard <em id="sbsub">sélectionné</em></h2><div id="sb"></div></div>
+      <div class="foot">Base v1 · vannes et seuils en exemples, on les réglera ensemble. Tu peux mettre tes propres GIF dans REACTIONS.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== TRIBUNAL (ÉQUIPE) ===================== -->
+<section id="tribunal" hidden>
+  <div class="pwrap">
+    <button class="back" id="btnBackTrib">← Retour à l'accueil</button>
+    <div class="phead" style="margin-bottom:12px; border-bottom:0; justify-content:center; text-align:center;">
+      <div>
+        <div class="eyebrow" style="color:var(--unlucky)">COSMO Tribunal</div>
+        <h1 style="margin:8px 0 2px;font-size:30px;font-weight:900;letter-spacing:-.02em;text-transform:uppercase">Unlucky <span style="color:var(--dim);font-weight:600">or</span> Bad</h1>
+        <div class="tag" style="font-family:var(--mono);font-size:12.5px;color:var(--muted)">Analyse de la team sur les dernières parties classées</div>
+      </div>
+    </div>
+    
+    <div class="status" id="statusTrib"></div>
+    
+    <div id="appTrib" hidden style="text-align:center;">
+      <div class="members" id="tribMembers"></div>
+      
+      <div class="seg" id="segTrib" style="margin-bottom:14px;">
+        <button data-n="5">5 parties</button>
+        <button data-n="10" class="on">10 parties</button>
+        <button data-n="15">15 parties</button>
+      </div>
+      
+      <div class="stage" id="stageTrib" style="--c: var(--muted); max-width: 500px; margin: 0 auto;">
+        <div class="flash" id="flashTrib"></div>
+        <svg class="gauge" id="gaugeTrib" viewBox="0 0 400 232" aria-hidden="true"></svg>
+        <div class="verdict-box">
+          <div class="vword" id="vwTrib">?</div>
+          <div class="vline" id="vlTrib"></div>
+          <div class="vpct" id="vpTrib"></div>
+        </div>
+      </div>
+      
+      <button class="reveal" id="revTrib">Révéler le verdict</button>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== LEADERBOARD ===================== -->
+<section id="leaderboard" hidden>
+  <div class="pwrap">
+    <button class="back" id="btnBackLb">← Retour à l'accueil</button>
+    <div class="phead" style="margin-bottom:12px; border-bottom:0; justify-content:center; text-align:center;">
+      <div>
+        <div class="eyebrow" style="color:var(--amber)">COSMO Leaderboard</div>
+        <h1 style="margin:8px 0 2px;font-size:30px;font-weight:900;letter-spacing:-.02em;text-transform:uppercase">Classement squad</h1>
+        <div class="tag" style="font-family:var(--mono);font-size:12.5px;color:var(--muted)">Indice moyen des dernières parties classées · qui porte l'équipe</div>
+      </div>
+    </div>
+
+    <div class="status" id="statusLb"></div>
+
+    <div id="appLb" hidden style="text-align:center;">
+      <div class="seg" id="segLb" style="margin-bottom:6px;">
+        <button data-n="5">5 parties</button>
+        <button data-n="10" class="on">10 parties</button>
+        <button data-n="15">15 parties</button>
+      </div>
+      <div class="badges" id="lbBadges"></div>
+      <div class="lb-box" id="lbList"></div>
+
+      <div class="card full" style="margin-top:16px;text-align:left;">
+        <h2 class="tabs-header"><span>Comparateur 1v1 <em>sur les <span id="vsPeriod">10</span> dernières ranked</em></span></h2>
+        <div class="vs-pickers">
+          <div class="vs-row"><span class="vs-side-label">Joueur 1</span><div class="members vs-chips" id="vsPickerA"></div></div>
+          <div class="vs-row"><span class="vs-side-label">Joueur 2</span><div class="members vs-chips" id="vsPickerB"></div></div>
+        </div>
+        <div id="vsResult"></div>
+      </div>
+
+      <div class="card full" style="margin-top:14px;text-align:left;">
+        <h2 class="tabs-header"><span>Duos détectés <em>matchs où deux membres étaient dans la même équipe</em></span></h2>
+        <div id="duoList"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script src="app.js" defer></script>
+</body>
+</html>
