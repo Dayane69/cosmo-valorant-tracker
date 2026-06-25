@@ -102,6 +102,33 @@ async function fetchHistorique(name, tag){
     return Array.isArray(d) ? d : (d.matches||d.data||[]);
   }catch(e){ return []; }
 }
+
+// Déclenche manuellement le rafraîchissement serveur (même logique que le cron),
+// via l'endpoint protégé refresh-now. Le secret est saisi par l'utilisateur et
+// mémorisé localement (jamais en dur dans le code).
+const REFRESH_TOKEN_KEY = 'cosmo_refresh_token';
+function getSavedToken(){ try{ return localStorage.getItem(REFRESH_TOKEN_KEY)||''; }catch(e){ return ''; } }
+async function triggerRefreshNow(){
+  const inp=$('refreshToken'), out=$('refreshStatus'), btn=$('btnRefreshNow');
+  const token=((inp&&inp.value)||'').trim();
+  if(!token){ if(out) out.textContent='Entre la clé de rafraîchissement (REFRESH_TOKEN) configurée sur Netlify.'; return; }
+  try{ localStorage.setItem(REFRESH_TOKEN_KEY, token); }catch(e){}
+  if(btn) btn.disabled=true;
+  if(out) out.textContent='Rafraîchissement en cours… (ça peut prendre quelques secondes)';
+  try{
+    const r=await fetch(`/.netlify/functions/refresh-now?key=${enc(token)}`, { method:'POST' });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok || d.ok===false){
+      if(out) out.textContent='Échec : '+((d&&d.error)||('http '+r.status));
+    }else{
+      if(out) out.textContent=`Terminé ✓ — ${d.ok} joueur(s) OK, ${d.fail} échec(s), +${d.added} match(s) ajouté(s).`;
+    }
+  }catch(e){
+    if(out) out.textContent='Erreur réseau : '+((e&&e.message)||e);
+  }finally{
+    if(btn) btn.disabled=false;
+  }
+}
 // Charge une fois la liste des maps (nom -> image splash) depuis valorant-api. Repli silencieux si indispo.
 async function ensureMaps(){
   if(MAPS) return MAPS;
@@ -964,6 +991,8 @@ function wireRosterImgs(){
 function wireStatic(){
   $('btnGear').addEventListener('click',toggleSheet);
   $('btnRanks').addEventListener('click',fillRanks);
+  $('btnRefreshNow')?.addEventListener('click', triggerRefreshNow);
+  const tokInp=$('refreshToken'); if(tokInp) tokInp.value=getSavedToken();
   $('btnBack').addEventListener('click',showHome);
   $('btnBackTrib').addEventListener('click',showHome);
   $('btnBackLb').addEventListener('click',showHome);

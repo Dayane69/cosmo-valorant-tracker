@@ -30,6 +30,7 @@ afin de garder la clé API **hors du navigateur**.
     └── functions/
         ├── valo.mjs                 # proxy serverless vers HenrikDev (cache la clé)
         ├── refresh-matches.mjs      # fonction PLANIFIÉE (cron quotidien)
+        ├── refresh-now.mjs          # déclenchement manuel (protégé par REFRESH_TOKEN)
         ├── historique.mjs           # lecture de l'historique accumulé (blob)
         └── lib/refresh-core.mjs     # logique de fusion/refresh (testable, sans dépendance)
 ```
@@ -63,6 +64,22 @@ parties fraîches de `matches` v4, dédoublonnées par `matchid`.
 > HenrikDev (30 req/min en Basic, 90 en Advanced). L'échec d'un membre est loggé
 > sans interrompre la boucle.
 
+### Déclenchement manuel (sans attendre le cron)
+
+`netlify/functions/refresh-now.mjs` rejoue la même logique à la demande, protégée
+par le secret `REFRESH_TOKEN` (variable d'env Netlify).
+
+- **Depuis le site** : ⚙ Paramètres → champ *Clé de rafraîchissement* (on y colle
+  la valeur de `REFRESH_TOKEN`) → bouton **« ⟳ Enregistrer l'historique maintenant »**.
+  Le secret est mémorisé localement dans le navigateur (jamais dans le code).
+- **En direct (curl)** :
+  ```bash
+  curl -X POST "https://cosmo-valo.netlify.app/.netlify/functions/refresh-now?key=LE_SECRET"
+  ```
+
+Sans `REFRESH_TOKEN` configuré, l'endpoint renvoie 500 (désactivé) et le bouton
+reste inopérant — le cron quotidien suffit alors.
+
 ### Netlify Blobs
 Le store clé-valeur **Netlify Blobs** est activé automatiquement sur un site
 Netlify standard — aucune configuration supplémentaire n'est requise. (Vérifier
@@ -75,12 +92,13 @@ premier déploiement.)
 2. Récupère une clé API sur le [Discord HenrikDev](https://docs.henrikdev.xyz/authentication-and-authorization).
 3. Dans **Site settings → Environment variables**, ajoute :
 
-   | Variable     | Valeur                  |
-   | ------------ | ----------------------- |
-   | `HENRIK_KEY` | ta clé API HenrikDev    |
+   | Variable        | Valeur                                   | Obligatoire ? |
+   | --------------- | ---------------------------------------- | ------------- |
+   | `HENRIK_KEY`    | ta clé API HenrikDev                     | oui           |
+   | `REFRESH_TOKEN` | un secret au choix (pour le bouton ⟳)    | optionnel     |
 
-   > La clé est lue **uniquement** côté serveur dans `netlify/functions/valo.mjs`.
-   > Elle n'apparaît jamais dans le code envoyé au navigateur.
+   > Ces clés sont lues **uniquement** côté serveur (fonctions Netlify).
+   > Elles n'apparaissent jamais dans le code envoyé au navigateur.
 
 4. Déploie. C'est tout — pas d'étape de build, le site est statique.
 
