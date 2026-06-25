@@ -287,6 +287,24 @@ function normalizeAny(raw, targetState = STATE){
   return normMatch(raw, targetState); // repli défensif (guards en place)
 }
 
+// Index match_id -> infos RR/rang, depuis l'historique MMR (ranked récent uniquement).
+// change = RR gagné/perdu sur la game, tierName/icon = rang du joueur à ce moment-là.
+function rrIndexFromHistory(hist){
+  const idx={};
+  (hist||[]).forEach(h=>{
+    const id=h.match_id||h.matchid||h.matchId||h.id;
+    if(!id) return;
+    const change = h.last_change!=null ? num(h.last_change)
+                 : (h.mmr_change_to_last_game!=null ? num(h.mmr_change_to_last_game) : null);
+    const tierName = (h.tier&&h.tier.name) || (typeof h.tier==='string'?h.tier:'') || h.currenttierpatched || '';
+    const icon = (h.images&&(h.images.large||h.images.small))
+              || (tierName && TIERS ? TIERS[tierName.toLowerCase()] : null) || null;
+    const rr = h.ranking_in_tier!=null ? num(h.ranking_in_tier) : (h.rr!=null ? num(h.rr) : null);
+    idx[id]={ change, tierName, icon, rr };
+  });
+  return idx;
+}
+
 /* ===================== HOME & PROFIL ===================== */
 async function fillRanks(){
   await ensureTiers();
@@ -442,6 +460,18 @@ function renderStatsCards(filtered){
   renderStatsTable('mapStats',   groupStats(filtered, M => M.map),      'Map');
 }
 
+// Cellule "rang au moment de la partie + RR gagné/perdu" pour une ligne d'historique.
+// Toujours rendue (même vide) pour garder l'alignement de la grille ; remplie quand
+// la partie est présente dans l'historique MMR (ranked récent).
+function rrCell(rr){
+  if(!rr || rr.change==null) return '<div class="mrr"></div>';
+  const c=rr.change, sign=c>0?'+':'';
+  const icon=rr.icon?`<img class="mrr-icon" src="${esc(rr.icon)}" alt="${esc(rr.tierName||'')}" title="${esc(rr.tierName||'')}" loading="lazy">`:'';
+  return `<div class="mrr" title="${esc(rr.tierName||'')}${rr.rr!=null?' · '+rr.rr+' RR':''}">
+    ${icon}<span class="mrr-delta ${c>=0?'up':'dn'}">${sign}${c}</span>
+  </div>`;
+}
+
 function renderList(){
   const filtered = filterByMode(STATE.matches, CURRENT_MODE);
   renderStatsCards(filtered);
@@ -460,6 +490,7 @@ function renderList(){
       <div class="res ${M.result}">${M.result==='w'?'V':'D'}</div>
       <div class="minfo"><b>${esc(M.map)}</b><span>${esc(M.mode)} · ${s?esc(s.agent):'—'} · ${s?s.k+'/'+s.d+'/'+s.a:''} · ${relTime(M.started)}</span></div>
       <div class="mscore" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${M.myScore}–${M.oppScore}</div>
+      ${rrCell(M.rr)}
       <div class="scorebadge score-mini flair-${f}" style="--sc:${t.c}">${s?sc100:'—'}${flairHTML(f)}</div>
     </div>`;
   }).join('');
@@ -553,6 +584,9 @@ async function loadProfile(){
     const fresh=matchR.status==='fulfilled'?(matchR.value.data||[]):[];
     const blob =blobR.status==='fulfilled'?(blobR.value||[]):[];
     STATE.allMatches=combineMatches(fresh, blob).map(m=>normalizeAny(m)).filter(Boolean);
+    // Join RR/rang par match_id (parties classées présentes dans l'historique MMR).
+    const rrIdx=rrIndexFromHistory(hist);
+    STATE.allMatches.forEach(M=>{ if(M&&M.id&&rrIdx[M.id]) M.rr=rrIdx[M.id]; });
     PROFILE_SHOWN=Math.min(FRESH_SIZE, STATE.allMatches.length);
     STATE.matches=STATE.allMatches.slice(0, PROFILE_SHOWN);
 

@@ -55,7 +55,10 @@ function makeFetch() {
       const path = new URL(url, "http://localhost").searchParams.get("path") || "";
       if (path.includes("/account/")) return jsonRes({ data: { puuid: "p1" } });
       if (path.includes("/mmr/")) return jsonRes({ data: { current: { tier: { name: "Gold 2" }, rr: 42, images: { large: "http://img/large.png" } } } });
-      if (path.includes("/mmr-history/")) return jsonRes({ data: { history: [] } });
+      if (path.includes("/mmr-history/")) return jsonRes({ data: { history: [
+        { match_id: "m1", last_change: 18, ranking_in_tier: 42, tier: { id: 13, name: "Gold 2" }, images: { large: "http://img/g2.png" } },
+        { match_id: "m2", last_change: -15, ranking_in_tier: 24, tier: { id: 13, name: "Gold 2" }, images: { large: "http://img/g2.png" } },
+      ] } });
       if (path.includes("/v4/matches/")) return jsonRes({ data: [rawMatch("m1", "2026-06-24T10:00:00Z"), rawMatch("m2", "2026-06-23T10:00:00Z")] });
       return jsonRes({ data: [] });
     }
@@ -120,6 +123,22 @@ test("le profil s'ouvre et fusionne frais + blob sans doublon (m1, m2, m3)", asy
   const agImg = doc.querySelector("#sb .ag img");
   assert.ok(agImg, "une image d'agent est présente dans le scoreboard");
   assert.match(agImg.getAttribute("src"), /uuid-(cypher|jett)\/displayicon\.png/);
+});
+
+test("RR gagné/perdu + rang affichés sur les parties classées de l'historique", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  // m1 (le plus récent) = +18, m2 = -15 ; m3 n'est pas dans l'historique MMR -> rien
+  const deltas = [...doc.querySelectorAll("#ml .mrr-delta")].map((e) => e.textContent.trim());
+  assert.deepEqual(deltas, ["+18", "-15"], "deux deltas RR, dans l'ordre récent->ancien");
+  const first = doc.querySelector("#ml .mrow:first-child");
+  assert.ok(first.querySelector(".mrr-delta.up"), "la 1re partie est un gain (classe up)");
+  assert.ok(first.querySelector(".mrr-icon"), "l'icône de rang au moment de la partie est présente");
+  // 3 parties affichées mais seulement 2 ont des infos RR
+  assert.equal(doc.querySelectorAll("#ml .mrow").length, 3);
+  assert.equal(doc.querySelectorAll("#ml .mrr-delta").length, 2);
 });
 
 test("normalizeAny gère le format stored-matches v1 (teams objet) sans crasher", async () => {

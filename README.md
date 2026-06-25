@@ -10,7 +10,7 @@ afin de garder la clé API **hors du navigateur**.
 ## ✨ Fonctionnalités
 
 - **Agent select** — une carte par membre de la squad avec le portrait de son agent fétiche et son rang affiché en direct (avec l'icône du palier).
-- **Profil joueur** — rang actuel (icône + RR), indice COSMO /100, progression du RR, liste des matchs filtrable par mode, et un scoreboard détaillé montrant **la tête de chaque agent**.
+- **Profil joueur** — rang actuel (icône + RR), indice COSMO /100, progression du RR, liste des matchs filtrable par mode, et un scoreboard détaillé montrant **la tête de chaque agent**. Chaque partie classée affiche aussi le **RR gagné/perdu** et le **rang du joueur au moment de la game** (depuis l'historique MMR ; donc sur les parties classées récentes que l'API renvoie).
 - **Indice COSMO /100** — un score de perf maison calculé à partir de l'ACS, du différentiel de dégâts, du K/D, de l'ADR et du HS%.
 - **Tribunal COSMO** — la jauge *Unlucky or Bad* qui juge tes dernières parties classées.
 - **Leaderboard** — classement de la squad, badges (Carry, Bourreau, Headhunter…), comparateur 1v1 et détection des duos.
