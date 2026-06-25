@@ -103,6 +103,17 @@ async function fetchHistorique(name, tag){
   }catch(e){ return []; }
 }
 
+// Sauvegarde l'historique de CE joueur dans le blob, à l'ouverture de son profil.
+// Réparti les écritures (1 joueur à la fois) : les membres jamais visités par le
+// refresh massif (coupé par le rate limit) finissent par être enregistrés ici.
+// Fire-and-forget : un échec (429, etc.) ne doit pas perturber l'affichage.
+function saveHistorique(name, tag, region){
+  // trigger non passé : matches v4 vient d'être appelé par loadProfile, inutile de re-déclencher.
+  try{
+    fetch(`/.netlify/functions/save-history?name=${enc(name)}&tag=${enc(tag)}&region=${enc(region)}`, { method:'POST' }).catch(()=>{});
+  }catch(e){}
+}
+
 // Déclenche manuellement le rafraîchissement serveur (même logique que le cron),
 // via l'endpoint protégé refresh-now. Le secret est saisi par l'utilisateur et
 // mémorisé localement (jamais en dur dans le code).
@@ -129,48 +140,49 @@ async function triggerRefreshNow(){
     if(btn) btn.disabled=false;
   }
 }
-// Charge une fois la liste des maps (nom -> image splash) depuis valorant-api. Repli silencieux si indispo.
+// Caches valorant-api : on ne mémorise QUE en cas de succès, pour qu'un échec
+// transitoire (réseau, blip) ne désactive pas définitivement les icônes.
+
+// Maps : nom -> image splash.
 async function ensureMaps(){
   if(MAPS) return MAPS;
-  MAPS = {};
   try{
     const r = await fetch('https://valorant-api.com/v1/maps');
     if(r.ok){
-      const d = await r.json();
-      (d.data||[]).forEach(mp=>{ if(mp.displayName && mp.splash) MAPS[mp.displayName.toLowerCase()] = mp.splash; });
+      const d = await r.json(), map = {};
+      (d.data||[]).forEach(mp=>{ if(mp.displayName && mp.splash) map[mp.displayName.toLowerCase()] = mp.splash; });
+      MAPS = map;
     }
   }catch(e){ /* pas de fond de carte, tant pis */ }
-  return MAPS;
+  return MAPS || {};
 }
-// Charge une fois la liste des agents (nom -> icône / tête) depuis valorant-api.
-// Sert à afficher la vraie tête de l'agent dans le scoreboard (au lieu de 2 lettres).
+// Agents : nom -> icône (tête). Repli quand la partie ne fournit pas l'UUID de l'agent.
 async function ensureAgents(){
   if(AGENTS) return AGENTS;
-  AGENTS = {};
   try{
     const r = await fetch('https://valorant-api.com/v1/agents?isPlayableCharacter=true');
     if(r.ok){
-      const d = await r.json();
-      (d.data||[]).forEach(ag=>{ if(ag.displayName && ag.displayIcon) AGENTS[ag.displayName.toLowerCase()] = ag.displayIcon; });
+      const d = await r.json(), map = {};
+      (d.data||[]).forEach(ag=>{ if(ag.displayName && ag.displayIcon) map[ag.displayName.toLowerCase()] = ag.displayIcon; });
+      AGENTS = map;
     }
   }catch(e){ /* pas d'icônes d'agent, on garde les initiales */ }
-  return AGENTS;
+  return AGENTS || {};
 }
-// Charge une fois les paliers compétitifs (nom -> icône de rang) depuis valorant-api.
-// Sert de repli quand l'API HenrikDev ne fournit pas l'image du rang.
+// Paliers compétitifs : nom -> icône de rang. Repli quand HenrikDev ne donne pas l'image.
 async function ensureTiers(){
   if(TIERS) return TIERS;
-  TIERS = {};
   try{
     const r = await fetch('https://valorant-api.com/v1/competitivetiers');
     if(r.ok){
-      const d = await r.json();
+      const d = await r.json(), map = {};
       const eps = d.data||[];
       const latest = eps[eps.length-1];                 // dernier épisode = paliers à jour
-      ((latest&&latest.tiers)||[]).forEach(t=>{ if(t.tierName && t.largeIcon) TIERS[t.tierName.trim().toLowerCase()] = t.largeIcon; });
+      ((latest&&latest.tiers)||[]).forEach(t=>{ if(t.tierName && t.largeIcon) map[t.tierName.trim().toLowerCase()] = t.largeIcon; });
+      TIERS = map;
     }
   }catch(e){ /* pas d'icônes de rang, on garde le texte */ }
-  return TIERS;
+  return TIERS || {};
 }
 // Récupère l'icône d'un rang : priorité aux images HenrikDev, repli sur valorant-api.
 function rankIcon(cur, tierName){
@@ -187,7 +199,10 @@ function statline(p,rounds){
   const rec=num(st.damage&&st.damage.received);
   const acs=rounds?Math.round(score/rounds):0, adr=rounds?Math.round(dmg/rounds):0;
   const dd=rounds?Math.round((dmg-rec)/rounds):0, kd=k/Math.max(d,1);
-  const o={k,d,a,hs,acs,adr,dd,kd,name:p.name||'?',tag:p.tag||'',team:p.team_id,agent:(p.agent&&p.agent.name)||'?'};
+  const ag=p.agent||{};
+  const o={k,d,a,hs,acs,adr,dd,kd,name:p.name||'?',tag:p.tag||'',team:p.team_id,
+    agent:ag.name||(typeof p.agent==='string'?p.agent:'?'),
+    agentId:ag.id||ag.uuid||''};
   o.score100=perfScore(o);
   return o;
 }
@@ -411,7 +426,10 @@ function showMatch(i){
     const me=s.name.toLowerCase()===STATE.name.toLowerCase()&&s.tag.toLowerCase()===STATE.tag.toLowerCase();
     const t=tierOf(s.score100);
     const initials=esc((s.agent||'?').slice(0,2));
-    const aIcon=AGENTS && AGENTS[(s.agent||'').toLowerCase()];
+    // Tête de l'agent : d'abord l'UUID présent dans la partie (robuste, sans dépendre
+    // d'un fetch), sinon la table nom -> icône, sinon les initiales.
+    const aIcon=(s.agentId ? `${MEDIA}/${s.agentId}/displayicon.png` : '')
+      || (AGENTS && AGENTS[(s.agent||'').toLowerCase()]) || '';
     const agCell=aIcon
       ? `<div class="ag" title="${esc(s.agent)}"><img src="${esc(aIcon)}" alt="${esc(s.agent)}" loading="lazy" onerror="this.closest('.ag').classList.add('noimg');this.remove();"><span>${initials}</span></div>`
       : `<div class="ag noimg" title="${esc(s.agent)}"><span>${initials}</span></div>`;
@@ -511,6 +529,8 @@ async function loadProfile(){
     }
     clearStatus(); $('app').hidden=false;
     updateMoreBtn();
+    // Fait grossir le blob de ce joueur en arrière-plan (réparti les écritures).
+    saveHistorique(STATE.name, STATE.tag, region);
   }catch(e){
     status('err','<b>Erreur API :</b> '+(e.message||'network'));
   }

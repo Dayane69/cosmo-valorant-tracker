@@ -18,9 +18,9 @@ function rawMatch(id, iso, won = true, mode = "Competitive") {
   return {
     metadata: { match_id: id, started_at: iso, map: { name: "Ascent" }, queue: { name: mode } },
     players: [
-      { puuid: "p1", name: "Arsh26", tag: "2826", team_id: "Blue", agent: { name: "Cypher" },
+      { puuid: "p1", name: "Arsh26", tag: "2826", team_id: "Blue", agent: { id: "uuid-cypher", name: "Cypher" },
         stats: { kills: 15, deaths: 10, assists: 5, score: 5000, headshots: 20, bodyshots: 30, legshots: 5, damage: { dealt: 4000, received: 3000 } } },
-      { puuid: "e1", name: "Foe", tag: "9999", team_id: "Red", agent: { name: "Jett" },
+      { puuid: "e1", name: "Foe", tag: "9999", team_id: "Red", agent: { id: "uuid-jett", name: "Jett" },
         stats: { kills: 10, deaths: 12, assists: 3, score: 3500, headshots: 10, bodyshots: 25, legshots: 5, damage: { dealt: 3000, received: 3500 } } },
     ],
     teams: [
@@ -51,6 +51,7 @@ function makeFetch() {
       // blob accumulé : m2 (doublon) + m3 (nouveau, plus ancien)
       return jsonRes({ matches: [rawMatch("m2", "2026-06-23T10:00:00Z"), rawMatch("m3", "2026-06-22T10:00:00Z")] });
     }
+    if (url.includes("/.netlify/functions/save-history")) return jsonRes({ ok: true, added: 0, total: 3 });
 
     if (url.includes("valorant-api.com/v1/agents")) return jsonRes({ data: [{ displayName: "Cypher", displayIcon: "ic" }, { displayName: "Jett", displayIcon: "ij" }] });
     if (url.includes("valorant-api.com/v1/competitivetiers")) return jsonRes({ data: [{ tiers: [{ tierName: "Gold 2", largeIcon: "gi" }] }] });
@@ -102,6 +103,10 @@ test("le profil s'ouvre et fusionne frais + blob sans doublon (m1, m2, m3)", asy
   // fresh [m1,m2] + blob [m2,m3] => 3 matchs uniques
   assert.equal(T.getState().allMatches.length, 3, "historique combiné dédoublonné = 3");
   assert.equal(doc.querySelectorAll("#ml .mrow").length, 3, "3 lignes de match rendues");
+  // la tête de l'agent (via l'UUID de la partie) est rendue dans le scoreboard
+  const agImg = doc.querySelector("#sb .ag img");
+  assert.ok(agImg, "une image d'agent est présente dans le scoreboard");
+  assert.match(agImg.getAttribute("src"), /uuid-(cypher|jett)\/displayicon\.png/);
 });
 
 test("le tribunal reste ranked-only après ajout de l'historique", async () => {

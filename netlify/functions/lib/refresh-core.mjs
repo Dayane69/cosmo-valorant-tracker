@@ -47,18 +47,22 @@ async function fetchJSON(fetchImpl, url, headers) {
   return res.json();
 }
 
-// Pour un membre : déclenche d'abord matches v4 (ce qui fait grossir le cache
-// HenrikDev côté serveur), puis récupère tout l'historique stocké.
-export async function refreshMember(member, { fetchImpl, apiKey, region }) {
+// Pour un membre : déclenche (optionnellement) matches v4 — ce qui fait grossir
+// le cache HenrikDev côté serveur — puis récupère tout l'historique stocké.
+// trigger=false quand l'appel v4 a déjà été fait juste avant (ex: ouverture de
+// profil côté front) : on économise alors une requête.
+export async function refreshMember(member, { fetchImpl, apiKey, region, trigger = true }) {
   const headers = { Authorization: apiKey };
   const r = region || member.region || "eu";
-  // 1) matches v4 — alimente le stockage HenrikDev (peu importe qui déclenche l'appel)
-  await fetchJSON(
-    fetchImpl,
-    `${HENRIK_BASE}/valorant/v4/matches/${r}/pc/${enc(member.name)}/${enc(member.tag)}?size=10`,
-    headers
-  ).catch(() => null); // un échec ici ne doit pas empêcher la lecture du stock existant
-  // 2) stored-matches — tout l'historique déjà stocké pour ce joueur
+  if (trigger) {
+    // matches v4 — alimente le stockage HenrikDev (peu importe qui déclenche l'appel)
+    await fetchJSON(
+      fetchImpl,
+      `${HENRIK_BASE}/valorant/v4/matches/${r}/pc/${enc(member.name)}/${enc(member.tag)}?size=10`,
+      headers
+    ).catch(() => null); // un échec ici ne doit pas empêcher la lecture du stock existant
+  }
+  // stored-matches — tout l'historique déjà stocké pour ce joueur
   const stored = await fetchJSON(
     fetchImpl,
     `${HENRIK_BASE}/valorant/v1/stored-matches/${r}/${enc(member.name)}/${enc(member.tag)}`,
@@ -67,24 +71,30 @@ export async function refreshMember(member, { fetchImpl, apiKey, region }) {
   return (stored && stored.data) || [];
 }
 
+// Rafraîchit UN membre et écrit son blob (fusion par matchid). Utilisé par le cron,
+// par le bouton manuel, et par la sauvegarde à l'ouverture d'un profil.
+export async function refreshOne({ member, getStore, fetchImpl, apiKey, region, trigger = true }) {
+  const store = getStore("cosmo-history");
+  const key = blobKey(member.name, member.tag);
+  const fresh = await refreshMember(member, { fetchImpl, apiKey, region, trigger });
+  const existing = (await store.get(key, { type: "json" })) || [];
+  const merged = mergeStored(existing, fresh);
+  await store.setJSON(key, merged);
+  return { added: Math.max(0, merged.length - existing.length), total: merged.length };
+}
+
 // Boucle principale du cron : séquentielle et espacée pour rester dans le rate
 // limit HenrikDev. L'échec d'un membre est loggé mais ne stoppe pas la boucle.
 export async function runRefresh({ roster, region, getStore, fetchImpl, apiKey, log = console, delayMs = 200, sleep }) {
   if (!apiKey) throw new Error("HENRIK_KEY manquante");
-  const store = getStore("cosmo-history");
   const wait = sleep || ((ms) => new Promise((res) => setTimeout(res, ms)));
   let ok = 0, fail = 0, added = 0;
 
   for (const member of roster) {
-    const key = blobKey(member.name, member.tag);
     try {
-      const fresh = await refreshMember(member, { fetchImpl, apiKey, region });
-      const existing = (await store.get(key, { type: "json" })) || [];
-      const merged = mergeStored(existing, fresh);
-      await store.setJSON(key, merged);
-      const gain = merged.length - existing.length;
-      added += Math.max(0, gain);
-      log.log(`[refresh] ${member.name}#${member.tag}: +${gain} (total ${merged.length})`);
+      const { added: gain, total } = await refreshOne({ member, getStore, fetchImpl, apiKey, region, trigger: true });
+      added += gain;
+      log.log(`[refresh] ${member.name}#${member.tag}: +${gain} (total ${total})`);
       ok++;
     } catch (e) {
       fail++;

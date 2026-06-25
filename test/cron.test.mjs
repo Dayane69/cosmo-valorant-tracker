@@ -2,7 +2,7 @@
 // Vérifie que deux exécutions successives sur les mêmes données ne dupliquent rien.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runRefresh, mergeStored, blobKey } from "../netlify/functions/lib/refresh-core.mjs";
+import { runRefresh, refreshOne, mergeStored, blobKey } from "../netlify/functions/lib/refresh-core.mjs";
 
 // --- Mock Netlify Blobs (clé -> valeur JSON, en mémoire) ---
 function memoryStores() {
@@ -77,6 +77,24 @@ test("un nouveau match est ajouté sans toucher aux existants", async () => {
   assert.equal(r2.added, 1);
   const key = blobKey("Arsh26", "2826");
   assert.equal(stores.get("cosmo-history").get(key).length, 2);
+});
+
+test("refreshOne avec trigger:false n'appelle pas matches v4 (économise une requête)", async () => {
+  const stored = { arsh26: [mkMatch("m1", "2026-06-20T10:00:00Z")] };
+  let v4Calls = 0, storedCalls = 0;
+  const fetchImpl = async (url) => {
+    if (url.includes("/valorant/v4/matches/")) { v4Calls++; return { ok: true, status: 200, json: async () => ({ data: [] }) }; }
+    storedCalls++;
+    const parts = url.split("/stored-matches/")[1].split("?")[0].split("/");
+    const name = decodeURIComponent(parts[1]).toLowerCase();
+    return { ok: true, status: 200, json: async () => ({ data: stored[name] || [] }) };
+  };
+  const { getStore, stores } = memoryStores();
+  const res = await refreshOne({ member: { name: "Arsh26", tag: "2826" }, getStore, fetchImpl, apiKey: "FAKE", region: "eu", trigger: false });
+  assert.equal(v4Calls, 0, "aucun appel matches v4");
+  assert.equal(storedCalls, 1, "un seul appel stored-matches");
+  assert.equal(res.total, 1);
+  assert.equal(stores.get("cosmo-history").get(blobKey("Arsh26", "2826")).length, 1);
 });
 
 test("mergeStored : dédoublonnage par matchid + tri décroissant", () => {
