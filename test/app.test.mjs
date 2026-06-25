@@ -32,6 +32,19 @@ function rawMatch(id, iso, won = true, mode = "Competitive") {
 
 const jsonRes = (obj) => ({ ok: true, status: 200, json: async () => obj });
 
+// Format compact "stored-matches v1" : meta + stats (1 joueur) + teams:{red,blue} (objet).
+function storedV1(id, iso, myScore = 13, oppScore = 7, mode = "Competitive") {
+  return {
+    meta: { id, map: { name: "Ascent" }, mode, started_at: iso },
+    stats: {
+      puuid: "p1", team: "Red", character: { id: "uuid-cypher", name: "Cypher" },
+      score: 5000, kills: 18, deaths: 12, assists: 5,
+      shots: { head: 100, body: 200, leg: 10 }, damage: { made: 3500, received: 3000 },
+    },
+    teams: { red: myScore, blue: oppScore },
+  };
+}
+
 // fetch simulé : roster.json, proxy valo (account/mmr/matches), historique, valorant-api.
 function makeFetch() {
   return async (input) => {
@@ -48,8 +61,8 @@ function makeFetch() {
     }
 
     if (url.includes("/.netlify/functions/historique")) {
-      // blob accumulé : m2 (doublon) + m3 (nouveau, plus ancien)
-      return jsonRes({ matches: [rawMatch("m2", "2026-06-23T10:00:00Z"), rawMatch("m3", "2026-06-22T10:00:00Z")] });
+      // blob accumulé au format stored-matches v1 : m2 (doublon) + m3 (nouveau)
+      return jsonRes({ matches: [storedV1("m2", "2026-06-23T10:00:00Z"), storedV1("m3", "2026-06-22T10:00:00Z")] });
     }
     if (url.includes("/.netlify/functions/save-history")) return jsonRes({ ok: true, added: 0, total: 3 });
 
@@ -71,7 +84,7 @@ async function boot() {
 
   let code = readFileSync(join(root, "app.js"), "utf8");
   // Épilogue de test : expose les fonctions + un accès à l'état interne.
-  code += "\nglobalThis.__t = { combineMatches, computeVerdict, openProfile, loadProfile, loadSquadMatches, init, getState: () => STATE, getRoster: () => ROSTER };";
+  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, init, getState: () => STATE, getRoster: () => ROSTER };";
   vm.runInContext(code, ctx);
   const T = ctx.__t;
   await T.init(); // garantit roster chargé + grille construite
@@ -107,6 +120,25 @@ test("le profil s'ouvre et fusionne frais + blob sans doublon (m1, m2, m3)", asy
   const agImg = doc.querySelector("#sb .ag img");
   assert.ok(agImg, "une image d'agent est présente dans le scoreboard");
   assert.match(agImg.getAttribute("src"), /uuid-(cypher|jett)\/displayicon\.png/);
+});
+
+test("normalizeAny gère le format stored-matches v1 (teams objet) sans crasher", async () => {
+  const { T } = await boot();
+  const M = T.normalizeAny(storedV1("s1", "2026-06-10T10:00:00Z", 13, 7));
+  assert.ok(M, "objet normalisé renvoyé");
+  assert.equal(M.id, "s1");
+  assert.equal(M.result, "w");
+  assert.equal(M.myScore, 13);
+  assert.equal(M.oppScore, 7);
+  assert.equal(M.mode.toLowerCase(), "competitive");
+  assert.equal(M.me.k, 18);
+  assert.equal(M.me.agentId, "uuid-cypher");
+});
+
+test("combineMatches dédoublonne un même match présent en v4 et en v1", async () => {
+  const { T } = await boot();
+  const merged = T.combineMatches([rawMatch("dup", "2026-06-24T10:00:00Z")], [storedV1("dup", "2026-06-24T10:00:00Z")]);
+  assert.equal(merged.length, 1, "même matchid en v4 et v1 -> une seule entrée");
 });
 
 test("le tribunal reste ranked-only après ajout de l'historique", async () => {

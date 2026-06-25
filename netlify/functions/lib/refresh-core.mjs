@@ -5,17 +5,22 @@
 const HENRIK_BASE = "https://api.henrikdev.xyz";
 const enc = encodeURIComponent;
 
-// Identifiant stable d'un match, quel que soit le format (matches v3/v4, stored-matches).
+// Identifiant stable d'un match, quel que soit le format.
+// matches v3/v4 -> metadata ; stored-matches v1 -> meta (avec meta.id).
 export function matchID(m) {
-  const md = (m && m.metadata) || {};
-  return md.match_id || md.matchid || md.matchId || null;
+  const md = (m && (m.metadata || m.meta)) || {};
+  return md.match_id || md.matchid || md.matchId || md.id || null;
 }
 
 // Horodatage d'un match (ms), pour trier du plus récent au plus ancien.
+// Tolérant : ISO (started_at / game_start_iso) ou epoch (game_start, en secondes
+// OU millisecondes selon la version de l'API).
 export function matchTime(m) {
-  const md = (m && m.metadata) || {};
-  const t = new Date(md.started_at || md.game_start_iso || md.game_start || 0).getTime();
-  return Number.isNaN(t) ? 0 : t;
+  const md = (m && (m.metadata || m.meta)) || {};
+  const iso = md.started_at || md.game_start_iso;
+  if (iso) { const t = new Date(iso).getTime(); if (!Number.isNaN(t)) return t; }
+  if (typeof md.game_start === "number") return md.game_start < 1e12 ? md.game_start * 1000 : md.game_start;
+  return 0;
 }
 
 // Clé de blob normalisée pour un joueur (insensible à la casse).

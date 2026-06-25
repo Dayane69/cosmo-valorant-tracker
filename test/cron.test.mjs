@@ -2,7 +2,7 @@
 // Vérifie que deux exécutions successives sur les mêmes données ne dupliquent rien.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runRefresh, refreshOne, mergeStored, blobKey } from "../netlify/functions/lib/refresh-core.mjs";
+import { runRefresh, refreshOne, mergeStored, matchID, matchTime, blobKey } from "../netlify/functions/lib/refresh-core.mjs";
 
 // --- Mock Netlify Blobs (clé -> valeur JSON, en mémoire) ---
 function memoryStores() {
@@ -95,6 +95,16 @@ test("refreshOne avec trigger:false n'appelle pas matches v4 (économise une req
   assert.equal(storedCalls, 1, "un seul appel stored-matches");
   assert.equal(res.total, 1);
   assert.equal(stores.get("cosmo-history").get(blobKey("Arsh26", "2826")).length, 1);
+});
+
+test("matchID / matchTime gèrent le format stored-matches v1 (meta + game_start)", () => {
+  const v1 = { meta: { id: "abc", game_start: 1718000000 } }; // epoch en secondes
+  assert.equal(matchID(v1), "abc");
+  assert.equal(matchTime(v1), 1718000000 * 1000);
+  // epoch déjà en millisecondes : conservé tel quel
+  assert.equal(matchTime({ meta: { game_start: 1718000000000 } }), 1718000000000);
+  // ISO classique
+  assert.equal(matchTime({ metadata: { started_at: "2026-06-20T10:00:00Z" } }), Date.parse("2026-06-20T10:00:00Z"));
 });
 
 test("mergeStored : dédoublonnage par matchid + tri décroissant", () => {

@@ -75,9 +75,20 @@ async function api(path){
   return r.json();
 }
 
-// Identifiant / horodatage stables d'un match brut (matches v3/v4 ou stored-matches).
-function matchID(m){ const md=(m&&m.metadata)||{}; return md.match_id||md.matchid||md.matchId||null; }
-function matchTime(m){ const md=(m&&m.metadata)||{}; const t=new Date(md.started_at||md.game_start_iso||md.game_start||0).getTime(); return isNaN(t)?0:t; }
+// Identifiant / horodatage stables d'un match brut, quel que soit le format
+// (matches v3/v4 -> metadata ; stored-matches v1 -> meta).
+function matchID(m){ const md=(m&&(m.metadata||m.meta))||{}; return md.match_id||md.matchid||md.matchId||md.id||null; }
+// Horodatage (ms) tolérant : ISO (started_at / game_start_iso) ou epoch (game_start,
+// en secondes OU millisecondes selon la version de l'API).
+function tsMs(md){
+  if(!md) return 0;
+  const iso=md.started_at||md.game_start_iso;
+  if(iso){ const t=new Date(iso).getTime(); if(!isNaN(t)) return t; }
+  if(typeof md.game_start==='number') return md.game_start<1e12 ? md.game_start*1000 : md.game_start;
+  return 0;
+}
+function matchTime(m){ return tsMs((m&&(m.metadata||m.meta))||{}); }
+function msToIso(ms){ return ms ? new Date(ms).toISOString() : ''; }
 
 // Fusionne plusieurs listes de matchs bruts en dédoublonnant par matchid.
 // Les listes passées en premier sont prioritaires (les données fraîches v4
@@ -206,11 +217,14 @@ function statline(p,rounds){
   o.score100=perfScore(o);
   return o;
 }
+// Normalise une partie au format "matches v4" (metadata + players[] + teams[]).
 function normMatch(m, targetState = STATE){
-  const meta=m.metadata||{}, players=m.players||[], teams=m.teams||[];
+  const meta=m.metadata||{};
+  const players=Array.isArray(m.players)?m.players:[];
+  const teams=Array.isArray(m.teams)?m.teams:[];
   const me=players.find(p=>p.puuid===targetState.puuid)
         || players.find(p=>(p.name||'').toLowerCase()===targetState.name.toLowerCase()&&(p.tag||'').toLowerCase()===targetState.tag.toLowerCase());
-  
+
   const sorted = [...players].sort((a,b) => (num(b.stats?.score) - num(a.stats?.score)));
   const meIndex = me ? sorted.findIndex(p => p.puuid === me.puuid || ((p.name||'').toLowerCase()===(me.name||'').toLowerCase() && (p.tag||'').toLowerCase()===(me.tag||'').toLowerCase())) : -1;
   const placement = meIndex !== -1 ? meIndex + 1 : null;
@@ -219,19 +233,58 @@ function normMatch(m, targetState = STATE){
   const rwon=t=>t&&t.rounds?num(t.rounds.won):0, rlost=t=>t&&t.rounds?num(t.rounds.lost):0;
   const myTeam=me?T(me.team_id):null, oppTeam=teams.find(t=>myTeam&&t.team_id!==myTeam.team_id);
   let rounds=myTeam?rwon(myTeam)+rlost(myTeam):(rwon(T('Red'))+rwon(T('Blue')));
-  if(!rounds) rounds=(m.rounds&&m.rounds.length)||24;
+  if(!rounds) rounds=(Array.isArray(m.rounds)&&m.rounds.length)||24;
   let result='?';
   if(myTeam) result=(typeof myTeam.won==='boolean')?(myTeam.won?'w':'l'):(rwon(myTeam)>=rwon(oppTeam)?'w':'l');
-  
+
   const meStat = me ? statline(me, rounds) : null;
   if(meStat) meStat.placement = placement;
 
+  const startedMs=tsMs(meta);
   return {players,rounds,
     map:(meta.map&&meta.map.name)||meta.map||'—',
     mode:(meta.queue&&meta.queue.name)||meta.queue||meta.mode||'—',
-    started:meta.started_at||meta.game_start_iso,
+    started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
+    startedMs,
+    id: meta.match_id||meta.matchid||meta.matchId||null,
     myScore:rwon(myTeam), oppScore:rwon(oppTeam), result,
     me:meStat, myTeamId:me?me.team_id:'Blue'};
+}
+
+// Normalise une partie au format "stored-matches v1" (meta + stats + teams:{red,blue}).
+// Ce format est compact (uniquement le joueur interrogé), pas la liste complète.
+function normStored(entry, targetState = STATE){
+  const meta=entry.meta||{}, st=entry.stats||{}, tms=entry.teams||{};
+  const teamKey=(st.team||'').toLowerCase();
+  const myScore=num(tms[teamKey]);
+  const oppScore=num(tms[teamKey==='red'?'blue':'red']);
+  let rounds=myScore+oppScore; if(!rounds) rounds=24;
+  const result=myScore>oppScore?'w':(myScore<oppScore?'l':'?');
+  const ch=st.character||{}, shots=st.shots||{}, dmg=st.damage||{};
+  // On reconstruit un "player" brut pour réutiliser statline (mêmes calculs partout).
+  const player={ puuid:st.puuid, name:targetState.name||st.name||'?', tag:targetState.tag||'', team_id:st.team,
+    agent:{ id:ch.id||ch.uuid||'', name:ch.name||'?' },
+    stats:{ kills:num(st.kills), deaths:num(st.deaths), assists:num(st.assists), score:num(st.score),
+      headshots:num(shots.head), bodyshots:num(shots.body), legshots:num(shots.leg),
+      damage:{ dealt:num(dmg.made), received:num(dmg.received) } } };
+  const meStat=statline(player, rounds);
+  meStat.placement=null; // pas d'info de classement dans ce format compact
+  const startedMs=tsMs(meta);
+  return { players:[player], rounds,
+    map:(meta.map&&meta.map.name)||meta.map||'—',
+    mode:(meta.queue&&meta.queue.name)||meta.mode||'—',
+    started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
+    startedMs,
+    id: meta.id||meta.match_id||null,
+    myScore, oppScore, result, me:meStat, myTeamId:st.team||'Blue' };
+}
+
+// Détecte le format puis normalise. v4 = "metadata", stored v1 = "meta"+"stats".
+function normalizeAny(raw, targetState = STATE){
+  if(!raw || typeof raw!=='object') return null;
+  if(raw.metadata) return normMatch(raw, targetState);
+  if(raw.meta && raw.stats) return normStored(raw, targetState);
+  return normMatch(raw, targetState); // repli défensif (guards en place)
 }
 
 /* ===================== HOME & PROFIL ===================== */
@@ -499,7 +552,7 @@ async function loadProfile(){
     // Fusion : matches v4 frais + blob accumulé, dédoublonnés par matchid, triés du + récent au + ancien.
     const fresh=matchR.status==='fulfilled'?(matchR.value.data||[]):[];
     const blob =blobR.status==='fulfilled'?(blobR.value||[]):[];
-    STATE.allMatches=combineMatches(fresh, blob).map(m=>normMatch(m));
+    STATE.allMatches=combineMatches(fresh, blob).map(m=>normalizeAny(m)).filter(Boolean);
     PROFILE_SHOWN=Math.min(FRESH_SIZE, STATE.allMatches.length);
     STATE.matches=STATE.allMatches.slice(0, PROFILE_SHOWN);
 
@@ -698,7 +751,7 @@ async function loadSquadMatches(region) {
     const fresh = pair[0].status === 'fulfilled' ? (pair[0].value.data || []) : [];
     const blob  = pair[1].status === 'fulfilled' ? (pair[1].value || []) : [];
     const data  = combineMatches(fresh, blob);
-    const norm  = data.map(m => normMatch(m, member)).filter(M => (M.mode || '').toLowerCase() === 'competitive');
+    const norm  = data.map(m => normalizeAny(m, member)).filter(M => M && (M.mode || '').toLowerCase() === 'competitive');
     return { member, data, norm };
   });
 }
