@@ -162,6 +162,14 @@
   .rrchart{display:block;margin:2px 0 12px}
   .rrchart .ax{font-family:var(--mono);font-size:11px;fill:var(--muted)}
   .rrchart .axt{font-family:var(--mono);font-size:10px;fill:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+  /* Infobulle de survol du graphique RR */
+  .rrwrap{position:relative}
+  .rrtip{position:absolute;transform:translate(-50%,-130%);background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    padding:6px 9px;font-family:var(--mono);font-size:11.5px;color:var(--txt);pointer-events:none;white-space:nowrap;z-index:5;box-shadow:0 8px 20px -10px #000}
+  .rrtip[hidden]{display:none}
+  .rrtip b{display:block;font-size:12px;margin-bottom:1px}
+  .rrtip span{display:block;color:var(--muted)}
+  .rrtip .d{font-weight:700;margin-top:2px} .rrtip .d.up{color:var(--win)} .rrtip .d.dn{color:var(--loss)}
 
   .mrow{position:relative;overflow:hidden;display:grid;grid-template-columns:34px 1fr auto auto auto;gap:12px;align-items:center;padding:11px 9px;border-top:1px solid var(--line);cursor:pointer;border-radius:9px}
   .mrow:first-of-type{border-top:0}
@@ -463,6 +471,6 @@
   </div>
 </section>
 
-<script src="app.js" defer></script>
+<script src="app.js?v=20260629" defer></script>
 </body>
 </html>

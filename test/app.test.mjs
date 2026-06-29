@@ -125,6 +125,24 @@ test("le profil s'ouvre et fusionne frais + blob sans doublon (m1, m2, m3)", asy
   assert.match(agImg.getAttribute("src"), /uuid-(cypher|jett)\/displayicon\.png/);
 });
 
+test("survol du graphique RR : infobulle avec la valeur (partie + RR)", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const svg = doc.querySelector("#curve .rrchart");
+  const hit = doc.querySelector("#curve .rrhit");
+  const tip = doc.querySelector("#curve .rrtip");
+  assert.ok(svg && hit && tip, "graphique + zone de survol + infobulle présents");
+  // jsdom n'a pas de layout : on simule la taille rendue du SVG.
+  svg.getBoundingClientRect = () => ({ left: 0, top: 0, right: 640, bottom: 250, width: 640, height: 250 });
+  hit.dispatchEvent(new dom.window.MouseEvent("mousemove", { clientX: 600, clientY: 60, bubbles: true }));
+  assert.equal(tip.hidden, false, "infobulle visible au survol");
+  assert.match(tip.textContent, /RR/, "l'infobulle indique une valeur de RR");
+  hit.dispatchEvent(new dom.window.MouseEvent("mouseleave", { bubbles: true }));
+  assert.equal(tip.hidden, true, "infobulle masquée quand la souris quitte le graphique");
+});
+
 test("RR gagné/perdu + rang affichés sur les parties classées de l'historique", async () => {
   const { dom, T } = await boot();
   T.openProfile(0);

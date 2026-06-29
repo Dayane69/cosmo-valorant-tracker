@@ -388,11 +388,17 @@ function renderCurve(hist){
   let dots='';
   pts.forEach((v,i)=>{ const up=i===0?null:v-pts[i-1]; const col=up===null?'var(--amber)':(up>=0?'var(--win)':'var(--loss)'); dots+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="3.2" fill="${col}" stroke="#0a0f15" stroke-width="1.5"/>`; });
 
+  // Métadonnées par point, pour le survol (quelle partie, combien de RR).
+  const meta=pts.map((v,i)=>({ px:X(i), py:Y(v), v, change:num(list[i].last_change),
+    map:(list[i].map&&list[i].map.name)||'', tier:(list[i].tier&&list[i].tier.name)||list[i].currenttierpatched||'',
+    label:i===n-1?'partie récente':`il y a ${n-1-i} partie${n-1-i>1?'s':''}` }));
+
   const yTitle=`<text x="13" y="${mT+ph/2}" transform="rotate(-90 13 ${mT+ph/2})" text-anchor="middle" class="axt">RR / elo</text>`;
   const xTitle=`<text x="${mL+pw/2}" y="${H-1}" text-anchor="middle" class="axt">parties (ancien → récent)</text>`;
   const pills=list.map(h=>{const c=num(h.last_change);return `<div class="hpill"><div class="m">${esc((h.map&&h.map.name)||'')}</div><div class="v ${c>=0?'up':'dn'}">${c>=0?'+':''}${c}</div></div>`;}).join('');
 
   box.innerHTML=`
+    <div class="rrwrap" style="position:relative">
     <svg class="rrchart" width="100%" viewBox="0 0 ${W} ${H}" role="img" aria-label="Progression du RR">
       <defs><linearGradient id="rrfill" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="var(--amber)" stop-opacity="0.28"/><stop offset="100%" stop-color="var(--amber)" stop-opacity="0"/>
@@ -401,8 +407,41 @@ function renderCurve(hist){
       <polygon points="${area}" fill="url(#rrfill)"/>
       <polyline points="${line}" fill="none" stroke="var(--amber)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
       ${dots}${ylab}${xlab}${yTitle}${xTitle}
+      <line class="rrguide" x1="0" y1="${mT}" x2="0" y2="${mT+ph}" stroke="var(--txt)" stroke-width="1" opacity="0" stroke-dasharray="3 3"/>
+      <circle class="rrcursor" r="5" fill="var(--amber)" stroke="#0a0f15" stroke-width="2" opacity="0"/>
+      <rect class="rrhit" x="${mL}" y="${mT}" width="${pw}" height="${ph}" fill="transparent" style="cursor:crosshair"/>
     </svg>
+    <div class="rrtip" hidden></div>
+    </div>
     <div class="hist">${pills}</div>`;
+
+  wireCurveHover(box, meta, W, H);
+}
+
+// Survol du graphique RR : ligne-guide + point + infobulle (partie + RR).
+function wireCurveHover(box, meta, W, H){
+  if(!meta.length) return;
+  const svg=box.querySelector('.rrchart'), hit=box.querySelector('.rrhit');
+  const guide=box.querySelector('.rrguide'), cursor=box.querySelector('.rrcursor'), tip=box.querySelector('.rrtip');
+  if(!svg||!hit||!tip) return;
+  const move=e=>{
+    const rect=svg.getBoundingClientRect(); if(!rect.width) return;
+    const vx=(e.clientX-rect.left)*(W/rect.width);               // px souris -> coordonnées viewBox
+    let best=meta[0];
+    for(const m of meta){ if(Math.abs(m.px-vx)<Math.abs(best.px-vx)) best=m; }
+    guide.setAttribute('x1',best.px); guide.setAttribute('x2',best.px); guide.setAttribute('opacity','0.5');
+    cursor.setAttribute('cx',best.px); cursor.setAttribute('cy',best.py); cursor.setAttribute('opacity','1');
+    const scale=rect.width/W;
+    const c=best.change, sign=c>=0?'+':'';
+    tip.innerHTML=`<b>${esc(best.map||best.label)}</b><span>${Math.round(best.v)} RR${best.tier?' · '+esc(best.tier):''}</span>`
+      +`<span class="d ${c>=0?'up':'dn'}">${sign}${c} RR</span>`;
+    tip.hidden=false;
+    tip.style.left=(best.px*scale)+'px';
+    tip.style.top=(best.py*scale)+'px';
+  };
+  const leave=()=>{ tip.hidden=true; guide.setAttribute('opacity','0'); cursor.setAttribute('opacity','0'); };
+  hit.addEventListener('mousemove',move);
+  hit.addEventListener('mouseleave',leave);
 }
 
 function filterByMode(matches, mode){
@@ -510,12 +549,14 @@ function showMatch(i){
     const me=s.name.toLowerCase()===STATE.name.toLowerCase()&&s.tag.toLowerCase()===STATE.tag.toLowerCase();
     const t=tierOf(s.score100);
     const initials=esc((s.agent||'?').slice(0,2));
-    // Tête de l'agent : d'abord l'UUID présent dans la partie (robuste, sans dépendre
-    // d'un fetch), sinon la table nom -> icône, sinon les initiales.
-    const aIcon=(s.agentId ? `${MEDIA}/${s.agentId}/displayicon.png` : '')
-      || (AGENTS && AGENTS[(s.agent||'').toLowerCase()]) || '';
-    const agCell=aIcon
-      ? `<div class="ag" title="${esc(s.agent)}"><img src="${esc(aIcon)}" alt="${esc(s.agent)}" loading="lazy" onerror="this.closest('.ag').classList.add('noimg');this.remove();"><span>${initials}</span></div>`
+    // Tête de l'agent avec repli en cascade : UUID de la partie -> table nom->icône
+    // -> initiales. L'onerror passe au repli suivant au lieu d'abandonner direct.
+    const idIcon=s.agentId ? `${MEDIA}/${s.agentId}/displayicon.png` : '';
+    const nameIcon=(AGENTS && AGENTS[(s.agent||'').toLowerCase()]) || '';
+    const primary=idIcon||nameIcon;
+    const fallback=(idIcon && nameIcon && nameIcon!==idIcon) ? nameIcon : '';
+    const agCell=primary
+      ? `<div class="ag" title="${esc(s.agent)}"><img src="${esc(primary)}" data-fb="${esc(fallback)}" alt="${esc(s.agent)}" loading="lazy" onerror="var f=this.dataset.fb; if(f){this.dataset.fb='';this.src=f;} else {this.closest('.ag').classList.add('noimg');this.remove();}"><span>${initials}</span></div>`
       : `<div class="ag noimg" title="${esc(s.agent)}"><span>${initials}</span></div>`;
     return `<tr class="${me?'me':''}">
       <td><div class="agent">${agCell}

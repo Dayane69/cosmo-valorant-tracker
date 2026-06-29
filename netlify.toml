@@ -8,6 +8,21 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
+# Toujours revalider les fichiers clés pour qu'un nouveau déploiement arrive
+# tout de suite dans le navigateur (évite un app.js mis en cache trop longtemps).
+[[headers]]
+  for = "/app.js"
+  [headers.values]
+    cache-control = "public, max-age=0, must-revalidate"
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    cache-control = "public, max-age=0, must-revalidate"
+[[headers]]
+  for = "/roster.json"
+  [headers.values]
+    cache-control = "public, max-age=0, must-revalidate"
+
 # Fonction planifiée : le cron est déclaré en inline dans
 # netlify/functions/refresh-matches.mjs (export const config = { schedule }).
 # Il tourne tous les jours à 04:00 UTC pour faire grossir l'historique stocké.
