@@ -195,8 +195,11 @@
   .sb{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
   .sb th{text-align:right;color:var(--dim);font-weight:600;font-size:10px;letter-spacing:.07em;text-transform:uppercase;padding:6px 7px;border-bottom:1px solid var(--line)}
   .sb th:first-child,.sb td:first-child{text-align:left}
+  .sb th.pcol,.sb td.pcol{text-align:left}
   .sb td{padding:9px 7px;border-bottom:1px solid var(--line);text-align:right;color:var(--muted)}
   .sb td b{color:var(--txt)}
+  .sb td.pos{color:var(--dim);font-weight:700;white-space:nowrap}
+  .sb td.pos.top{color:var(--amber)}
   .sb tr.me td{background:rgba(242,178,52,.07)}
   .agent{display:flex;align-items:center;gap:9px;text-align:left}
   .ag{width:30px;height:30px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);display:grid;place-items:center;font-size:10px;color:var(--amber);font-weight:700;flex:none;overflow:hidden;position:relative}
@@ -471,6 +474,6 @@
   </div>
 </section>
 
-<script src="app.js?v=20260629" defer></script>
+<script src="app.js?v=20260630" defer></script>
 </body>
 </html>

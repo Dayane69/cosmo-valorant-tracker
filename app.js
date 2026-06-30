@@ -538,12 +538,17 @@ function renderList(){
   if(filtered.length > 0) showMatch(STATE.matches.indexOf(filtered[0]));
 }
 
+// Rang ordinal en français : 1 -> "1er", sinon "Ne".
+function ordinalFr(n){ return n===1 ? '1er' : n+'e'; }
+
 function showMatch(i){
   document.querySelectorAll('.mrow').forEach(el=>el.classList.toggle('sel', +el.dataset.idx === i));
   const M=STATE.matches[i];
   if(!M) return;
   $('sbsub').textContent=`${M.map} · ${M.result==='w'?'victoire':'défaite'} ${M.myScore}–${M.oppScore}`;
   const all=M.players.map(p=>statline(p,M.rounds));
+  // Classement par ACS décroissant sur TOUS les joueurs de la partie (1er, 2e, …).
+  [...all].sort((a,b)=>b.acs-a.acs).forEach((s,idx)=>{ s.acsRank=idx+1; });
   const blue=all.filter(s=>s.team===M.myTeamId), red=all.filter(s=>s.team!==M.myTeamId);
   const sbRows = rows => rows.map(s=>{
     const me=s.name.toLowerCase()===STATE.name.toLowerCase()&&s.tag.toLowerCase()===STATE.tag.toLowerCase();
@@ -559,7 +564,8 @@ function showMatch(i){
       ? `<div class="ag" title="${esc(s.agent)}"><img src="${esc(primary)}" data-fb="${esc(fallback)}" alt="${esc(s.agent)}" loading="lazy" onerror="var f=this.dataset.fb; if(f){this.dataset.fb='';this.src=f;} else {this.closest('.ag').classList.add('noimg');this.remove();}"><span>${initials}</span></div>`
       : `<div class="ag noimg" title="${esc(s.agent)}"><span>${initials}</span></div>`;
     return `<tr class="${me?'me':''}">
-      <td><div class="agent">${agCell}
+      <td class="pos${s.acsRank===1?' top':''}">${ordinalFr(s.acsRank)}</td>
+      <td class="pcol"><div class="agent">${agCell}
         <div class="pn"><b>${esc(s.name)}</b> <span>#${esc(s.tag)}</span></div></div></td>
       <td class="scell" style="color:${t.c}">${s.score100}</td>
       <td style="color:${sc((s.acs-130)/2)}"><b>${s.acs}</b></td>
@@ -569,9 +575,9 @@ function showMatch(i){
       <td style="color:${sc(s.adr-90)}">${s.adr}</td></tr>`;
   }).join('');
   
-  $('sb').innerHTML=`<table class="sb"><thead><tr><th>Joueur</th><th>Indice</th><th>ACS</th><th>K/D/A</th><th>+/–</th><th>HS%</th><th>ADR</th></tr></thead>
-    <tbody><tr><td colspan="7" class="teamlabel blue">Ta team — ${M.myScore} rounds</td></tr>${sbRows(blue)}
-    <tr><td colspan="7" class="teamlabel red">Adverse — ${M.oppScore} rounds</td></tr>${sbRows(red)}</tbody></table>`;
+  $('sb').innerHTML=`<table class="sb"><thead><tr><th>#</th><th class="pcol">Joueur</th><th>Indice</th><th>ACS</th><th>K/D/A</th><th>+/–</th><th>HS%</th><th>ADR</th></tr></thead>
+    <tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${M.myScore} rounds</td></tr>${sbRows(blue)}
+    <tr><td colspan="8" class="teamlabel red">Adverse — ${M.oppScore} rounds</td></tr>${sbRows(red)}</tbody></table>`;
 }
 
 function openProfile(idx){

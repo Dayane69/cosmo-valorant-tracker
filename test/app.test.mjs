@@ -125,6 +125,19 @@ test("le profil s'ouvre et fusionne frais + blob sans doublon (m1, m2, m3)", asy
   assert.match(agImg.getAttribute("src"), /uuid-(cypher|jett)\/displayicon\.png/);
 });
 
+test("le scoreboard affiche le classement par ACS (1er, 2e, …)", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  // m1 : Arsh26 (score 5000) > Foe (score 3500) -> Arsh26 1er, Foe 2e
+  const positions = [...doc.querySelectorAll("#sb td.pos")].map((e) => e.textContent.trim());
+  assert.ok(positions.includes("1er"), "le meilleur ACS est marqué 1er");
+  assert.ok(positions.includes("2e"), "le second ACS est marqué 2e");
+  const top = doc.querySelector("#sb td.pos.top");
+  assert.ok(top && top.textContent.trim() === "1er", "le 1er a la classe de mise en avant");
+});
+
 test("survol du graphique RR : infobulle avec la valeur (partie + RR)", async () => {
   const { dom, T } = await boot();
   T.openProfile(0);
