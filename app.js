@@ -23,6 +23,9 @@ const TRIB = { matches: [], active: 0, n: 10 };
 const LB = { n: 10 };
 const VS = { a: 0, b: 1 };
 let CURRENT_MODE = 'all';
+const MATCH_DETAILS = {};                               // cache id -> match complet (détail chargé à la demande)
+const DETAIL_PENDING = {};                              // id -> true pendant le chargement du détail
+let SELECTED_IDX = -1;                                  // ligne d'historique actuellement ouverte
 const FRESH_SIZE = 20;                                  // matches v4 récupérés pour la fraîcheur
 let PROFILE_SHOWN = FRESH_SIZE;                         // nb de parties affichées (pagination locale)
 const PROFILE_SIZE_STEP = 15;                          // pas du bouton "charger plus"
@@ -270,7 +273,7 @@ function normStored(entry, targetState = STATE){
   const meStat=statline(player, rounds);
   meStat.placement=null; // pas d'info de classement dans ce format compact
   const startedMs=tsMs(meta);
-  return { players:[player], rounds,
+  return { players:[player], rounds, partial:true,   // format compact : 1 seul joueur, détail complet chargeable à la demande
     map:(meta.map&&meta.map.name)||meta.map||'—',
     mode:(meta.queue&&meta.queue.name)||meta.mode||'—',
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
@@ -541,15 +544,36 @@ function renderList(){
 // Rang ordinal en français : 1 -> "1er", sinon "Ne".
 function ordinalFr(n){ return n===1 ? '1er' : n+'e'; }
 
+// Charge à la demande le détail complet d'un match (tous les joueurs) via match-by-id.
+// Sert aux parties venues du blob (format compact), pour reconstituer le scoreboard.
+async function fetchMatchDetail(id){
+  if(!id || (id in MATCH_DETAILS)) return MATCH_DETAILS[id];
+  MATCH_DETAILS[id]=null; // marque "en cours" pour éviter les appels en double
+  try{
+    const r=await api(`/valorant/v4/match/${REGION()}/pc/${enc(id)}`);
+    const raw=(r&&r.data)||r;
+    // On garde le match BRUT : il est re-normalisé selon le profil affiché (un même
+    // match peut figurer dans l'historique de deux membres -> "ta team" diffère).
+    MATCH_DETAILS[id]=(raw && Array.isArray(raw.players) && raw.players.length>1) ? raw : null;
+  }catch(e){ MATCH_DETAILS[id]=null; }
+  return MATCH_DETAILS[id];
+}
+
 function showMatch(i){
   document.querySelectorAll('.mrow').forEach(el=>el.classList.toggle('sel', +el.dataset.idx === i));
   const M=STATE.matches[i];
   if(!M) return;
-  $('sbsub').textContent=`${M.map} · ${M.result==='w'?'victoire':'défaite'} ${M.myScore}–${M.oppScore}`;
-  const all=M.players.map(p=>statline(p,M.rounds));
+  SELECTED_IDX=i;
+  // Pour une partie du blob (compacte), on normalise le détail complet (s'il est
+  // chargé) selon le profil courant, sinon on garde la version compacte.
+  const rawDetail=(M.partial && M.id && MATCH_DETAILS[M.id]) ? MATCH_DETAILS[M.id] : null;
+  const detail = rawDetail ? normMatch(rawDetail) : M;
+  const partialNow = !!M.partial && !rawDetail;
+  $('sbsub').textContent=`${detail.map} · ${detail.result==='w'?'victoire':'défaite'} ${detail.myScore}–${detail.oppScore}`;
+  const all=detail.players.map(p=>statline(p,detail.rounds));
   // Classement par ACS décroissant sur TOUS les joueurs de la partie (1er, 2e, …).
   [...all].sort((a,b)=>b.acs-a.acs).forEach((s,idx)=>{ s.acsRank=idx+1; });
-  const blue=all.filter(s=>s.team===M.myTeamId), red=all.filter(s=>s.team!==M.myTeamId);
+  const blue=all.filter(s=>s.team===detail.myTeamId), red=all.filter(s=>s.team!==detail.myTeamId);
   const sbRows = rows => rows.map(s=>{
     const me=s.name.toLowerCase()===STATE.name.toLowerCase()&&s.tag.toLowerCase()===STATE.tag.toLowerCase();
     const t=tierOf(s.score100);
@@ -563,8 +587,11 @@ function showMatch(i){
     const agCell=primary
       ? `<div class="ag" title="${esc(s.agent)}"><img src="${esc(primary)}" data-fb="${esc(fallback)}" alt="${esc(s.agent)}" loading="lazy" onerror="var f=this.dataset.fb; if(f){this.dataset.fb='';this.src=f;} else {this.closest('.ag').classList.add('noimg');this.remove();}"><span>${initials}</span></div>`
       : `<div class="ag noimg" title="${esc(s.agent)}"><span>${initials}</span></div>`;
+    const posCell = partialNow
+      ? `<td class="pos">—</td>`
+      : `<td class="pos${s.acsRank===1?' top':''}">${ordinalFr(s.acsRank)}</td>`;
     return `<tr class="${me?'me':''}">
-      <td class="pos${s.acsRank===1?' top':''}">${ordinalFr(s.acsRank)}</td>
+      ${posCell}
       <td class="pcol"><div class="agent">${agCell}
         <div class="pn"><b>${esc(s.name)}</b> <span>#${esc(s.tag)}</span></div></div></td>
       <td class="scell" style="color:${t.c}">${s.score100}</td>
@@ -575,9 +602,23 @@ function showMatch(i){
       <td style="color:${sc(s.adr-90)}">${s.adr}</td></tr>`;
   }).join('');
   
+  // Note pour les parties du blob : détail en cours de chargement ou indisponible.
+  let note='';
+  if(partialNow){
+    note = (M.id in MATCH_DETAILS && MATCH_DETAILS[M.id]===null && !DETAIL_PENDING[M.id])
+      ? `<div class="sbnote">Détail complet indisponible pour cette partie (trop ancienne ou hors API).</div>`
+      : `<div class="sbnote">Chargement du scoreboard complet…</div>`;
+  }
+
   $('sb').innerHTML=`<table class="sb"><thead><tr><th>#</th><th class="pcol">Joueur</th><th>Indice</th><th>ACS</th><th>K/D/A</th><th>+/–</th><th>HS%</th><th>ADR</th></tr></thead>
-    <tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${M.myScore} rounds</td></tr>${sbRows(blue)}
-    <tr><td colspan="8" class="teamlabel red">Adverse — ${M.oppScore} rounds</td></tr>${sbRows(red)}</tbody></table>`;
+    <tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
+    <tr><td colspan="8" class="teamlabel red">Adverse — ${detail.oppScore} rounds</td></tr>${sbRows(red)}</tbody></table>${note}`;
+
+  // Charge le détail complet à la demande, puis ré-affiche si cette partie est toujours ouverte.
+  if(M.partial && M.id && !(M.id in MATCH_DETAILS)){
+    DETAIL_PENDING[M.id]=true;
+    fetchMatchDetail(M.id).finally(()=>{ delete DETAIL_PENDING[M.id]; if(SELECTED_IDX===i) showMatch(i); });
+  }
 }
 
 function openProfile(idx){

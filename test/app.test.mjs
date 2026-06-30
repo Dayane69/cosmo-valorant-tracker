@@ -32,6 +32,22 @@ function rawMatch(id, iso, won = true, mode = "Competitive") {
 
 const jsonRes = (obj) => ({ ok: true, status: 200, json: async () => obj });
 
+// Détail complet d'un match (match-by-id) : 3 joueurs -> classement ACS 1er/2e/3e.
+function fullMatchById() {
+  const mk = (puuid, name, team, score) => ({
+    puuid, name, tag: "0", team_id: team, agent: { id: "uuid-x", name: "Sova" },
+    stats: { kills: 10, deaths: 10, assists: 5, score, headshots: 10, bodyshots: 20, legshots: 5, damage: { dealt: 2000, received: 2000 } },
+  });
+  return {
+    metadata: { match_id: "m3", started_at: "2026-06-22T10:00:00Z", map: { name: "Ascent" }, queue: { name: "Competitive" } },
+    players: [mk("p1", "Arsh26", "Blue", 5000), mk("pX", "Mate", "Blue", 4000), mk("pY", "Foe", "Red", 3000)],
+    teams: [
+      { team_id: "Blue", won: true, rounds: { won: 13, lost: 7 } },
+      { team_id: "Red", won: false, rounds: { won: 7, lost: 13 } },
+    ],
+  };
+}
+
 // Format compact "stored-matches v1" : meta + stats (1 joueur) + teams:{red,blue} (objet).
 function storedV1(id, iso, myScore = 13, oppScore = 7, mode = "Competitive") {
   return {
@@ -60,6 +76,7 @@ function makeFetch() {
         { match_id: "m2", last_change: -15, ranking_in_tier: 24, tier: { id: 13, name: "Gold 2" }, images: { large: "http://img/g2.png" } },
       ] } });
       if (path.includes("/v4/matches/")) return jsonRes({ data: [rawMatch("m1", "2026-06-24T10:00:00Z"), rawMatch("m2", "2026-06-23T10:00:00Z")] });
+      if (path.includes("/v4/match/")) return jsonRes({ data: fullMatchById() }); // détail complet (match-by-id)
       return jsonRes({ data: [] });
     }
 
@@ -87,7 +104,7 @@ async function boot() {
 
   let code = readFileSync(join(root, "app.js"), "utf8");
   // Épilogue de test : expose les fonctions + un accès à l'état interne.
-  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, init, getState: () => STATE, getRoster: () => ROSTER };";
+  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, showMatch, fetchMatchDetail, init, getState: () => STATE, getRoster: () => ROSTER };";
   vm.runInContext(code, ctx);
   const T = ctx.__t;
   await T.init(); // garantit roster chargé + grille construite
@@ -136,6 +153,27 @@ test("le scoreboard affiche le classement par ACS (1er, 2e, …)", async () => {
   assert.ok(positions.includes("2e"), "le second ACS est marqué 2e");
   const top = doc.querySelector("#sb td.pos.top");
   assert.ok(top && top.textContent.trim() === "1er", "le 1er a la classe de mise en avant");
+});
+
+test("partie du blob : le détail complet (tous les joueurs + rang ACS) se charge à la demande", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const idx = T.getState().matches.findIndex((M) => M.id === "m3" && M.partial);
+  assert.ok(idx >= 0, "m3 vient bien du blob (format compact, partial)");
+
+  // Rendu synchrone : tant que le détail n'est pas chargé, positions inconnues ('—').
+  T.showMatch(idx);
+  assert.ok([...doc.querySelectorAll("#sb td.pos")].some((e) => e.textContent.trim() === "—"),
+    "positions inconnues avant chargement du détail");
+
+  // Laisse le chargement à la demande + le ré-affichage automatique se faire.
+  await new Promise((r) => setTimeout(r, 50));
+  const positions = [...doc.querySelectorAll("#sb td.pos")].map((e) => e.textContent.trim());
+  assert.ok(positions.includes("1er") && positions.includes("3e"),
+    "après chargement : scoreboard complet avec classement ACS");
+  assert.ok(!positions.includes("—"), "plus de position inconnue une fois le détail chargé");
 });
 
 test("survol du graphique RR : infobulle avec la valeur (partie + RR)", async () => {
