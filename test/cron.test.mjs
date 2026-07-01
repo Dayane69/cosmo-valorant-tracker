@@ -2,7 +2,7 @@
 // Vérifie que deux exécutions successives sur les mêmes données ne dupliquent rien.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runRefresh, refreshOne, mergeStored, matchID, matchTime, blobKey } from "../netlify/functions/lib/refresh-core.mjs";
+import { runRefresh, refreshOne, refreshMember, mergeStored, matchID, matchTime, blobKey } from "../netlify/functions/lib/refresh-core.mjs";
 
 // --- Mock Netlify Blobs (clé -> valeur JSON, en mémoire) ---
 function memoryStores() {
@@ -113,6 +113,21 @@ test("mergeStored : dédoublonnage par matchid + tri décroissant", () => {
   const merged = mergeStored(existing, fresh);
   assert.equal(merged.length, 2, "le doublon 'a' n'apparaît qu'une fois");
   assert.equal(merged[0].metadata.match_id, "b", "le plus récent en premier");
+});
+
+test("refreshMember réessaie après un 429 puis réussit", async () => {
+  let calls = 0;
+  const fetchImpl = async (url) => {
+    if (url.includes("/stored-matches/")) {
+      calls++;
+      if (calls === 1) return { ok: false, status: 429, headers: { get: () => null }, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ data: [mkMatch("a", "2026-06-20T10:00:00Z")] }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ data: [] }) };
+  };
+  const data = await refreshMember({ name: "x", tag: "1" }, { fetchImpl, apiKey: "K", region: "eu", trigger: false, sleep: async () => {}, retries: 2 });
+  assert.equal(calls, 2, "un retry après le 429");
+  assert.equal(data.length, 1);
 });
 
 test("un membre en échec API ne fait pas planter la boucle", async () => {

@@ -34,6 +34,8 @@ export default async (req) => {
     const res = await refreshOne({ member, getStore, fetchImpl: fetch, apiKey, region, trigger });
     return json({ ok: true, ...res }, 200);
   } catch (e) {
-    return json({ ok: false, error: String((e && e.message) || e) }, 500);
+    // On propage le 429 pour que le client puisse temporiser et réessayer.
+    const status = e && e.status === 429 ? 429 : 500;
+    return json({ ok: false, error: String((e && e.message) || e) }, status);
   }
 };

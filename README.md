@@ -66,19 +66,22 @@ parties fraîches de `matches` v4, dédoublonnées par `matchid`.
 
 ### Déclenchement manuel (sans attendre le cron)
 
-`netlify/functions/refresh-now.mjs` rejoue la même logique à la demande, protégée
-par le secret `REFRESH_TOKEN` (variable d'env Netlify).
-
-- **Depuis le site** : ⚙ Paramètres → champ *Clé de rafraîchissement* (on y colle
-  la valeur de `REFRESH_TOKEN`) → bouton **« ⟳ Enregistrer l'historique maintenant »**.
-  Le secret est mémorisé localement dans le navigateur (jamais dans le code).
-- **En direct (curl)** :
+- **Depuis le site (recommandé)** : ⚙ Paramètres → **« ⟳ Sauvegarder l'historique
+  de la squad »**. Le navigateur appelle `save-history` **un joueur à la fois**,
+  espacé (~1,8 s) avec retry sur 429, et affiche la progression. Comme chaque appel
+  est une fonction Netlify courte, on évite à la fois la rafale (rate limit) et la
+  limite de 10 s d'exécution → **tous** les membres sont bien enregistrés, quel que
+  soit leur nombre. Aucun secret requis (endpoint restreint au roster).
+- **En direct / script (curl)** : `netlify/functions/refresh-now.mjs` rejoue toute
+  la boucle côté serveur, protégé par le secret `REFRESH_TOKEN` (variable d'env) :
   ```bash
   curl -X POST "https://cosmo-valo.netlify.app/.netlify/functions/refresh-now?key=LE_SECRET"
   ```
+  ⚠️ Une seule fonction fait alors toute la boucle : sur beaucoup de membres, elle
+  peut buter sur la limite de 10 s / le rate limit — préfère le bouton du site.
 
-Sans `REFRESH_TOKEN` configuré, l'endpoint renvoie 500 (désactivé) et le bouton
-reste inopérant — le cron quotidien suffit alors.
+Le cron quotidien **tourne l'ordre des membres chaque jour** : si une exécution est
+coupée, ce ne sont pas toujours les mêmes joueurs qui passent en dernier.
 
 ### Netlify Blobs
 Le store clé-valeur **Netlify Blobs** est activé automatiquement sur un site

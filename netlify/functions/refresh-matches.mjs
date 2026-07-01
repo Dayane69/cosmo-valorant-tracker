@@ -13,7 +13,7 @@ import { runRefresh } from "./lib/refresh-core.mjs";
 
 export default async () => {
   const apiKey = process.env.HENRIK_KEY;
-  const members = roster.members || roster;
+  const all = roster.members || roster;
   const region = roster.region || "eu";
 
   if (!apiKey) {
@@ -22,6 +22,11 @@ export default async () => {
       headers: { "content-type": "application/json" },
     });
   }
+
+  // Rotation quotidienne de l'ordre : si un jour la boucle est coupée (rate limit /
+  // limite de 10s), ce ne sont pas toujours les mêmes membres qui passent en dernier.
+  const offset = all.length ? (Math.floor(Date.now() / 86400000) % all.length) : 0;
+  const members = all.slice(offset).concat(all.slice(0, offset));
 
   try {
     const res = await runRefresh({ roster: members, region, getStore, fetchImpl: fetch, apiKey });

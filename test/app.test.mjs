@@ -104,7 +104,7 @@ async function boot() {
 
   let code = readFileSync(join(root, "app.js"), "utf8");
   // Épilogue de test : expose les fonctions + un accès à l'état interne.
-  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, showMatch, fetchMatchDetail, init, getState: () => STATE, getRoster: () => ROSTER };";
+  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, showMatch, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, init, getState: () => STATE, getRoster: () => ROSTER };";
   vm.runInContext(code, ctx);
   const T = ctx.__t;
   await T.init(); // garantit roster chargé + grille construite
@@ -153,6 +153,27 @@ test("le scoreboard affiche le classement par ACS (1er, 2e, …)", async () => {
   assert.ok(positions.includes("2e"), "le second ACS est marqué 2e");
   const top = doc.querySelector("#sb td.pos.top");
   assert.ok(top && top.textContent.trim() === "1er", "le 1er a la classe de mise en avant");
+});
+
+test("la sauvegarde manuelle enregistre TOUS les membres, un par un", async () => {
+  const { T, ctx } = await boot();
+  T.setSaveSpacing(0); // pas d'attente entre joueurs dans le test
+  let saveCalls = 0;
+  const names = new Set();
+  ctx.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/save-history")) {
+      saveCalls++;
+      names.add(new URL(url, "http://x").searchParams.get("name"));
+      return { ok: true, status: 200, json: async () => ({ ok: true, added: 0, total: 0 }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  const res = await T.saveAllHistory();
+  assert.equal(res.ok, 7, "les 7 membres sont sauvegardés");
+  assert.equal(res.fail, 0, "aucun échec");
+  assert.equal(saveCalls, 7, "un appel save-history par membre");
+  assert.equal(names.size, 7, "chaque membre distinct est traité");
 });
 
 test("partie du blob : le détail complet (tous les joueurs + rang ACS) se charge à la demande", async () => {

@@ -46,42 +46,53 @@ export function mergeStored(existing, fresh) {
   return all;
 }
 
-async function fetchJSON(fetchImpl, url, headers) {
-  const res = await fetchImpl(url, { headers });
-  if (!res.ok) { const e = new Error("HTTP " + res.status); e.status = res.status; throw e; }
-  return res.json();
+// Fetch JSON avec retry borné sur 429 (rate limit), en respectant Retry-After.
+// Les temps d'attente sont plafonnés pour rester sous la limite d'exécution Netlify.
+async function fetchJSON(fetchImpl, url, headers, { retries = 2, sleep } = {}) {
+  const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetchImpl(url, { headers });
+    if (res.ok) return res.json();
+    if (res.status === 429 && attempt < retries) {
+      const ra = Number(res.headers && res.headers.get && res.headers.get("retry-after")) || 0;
+      await wait(ra > 0 ? Math.min(ra * 1000, 3000) : 800 * (attempt + 1));
+      continue;
+    }
+    const e = new Error("HTTP " + res.status); e.status = res.status; throw e;
+  }
 }
 
 // Pour un membre : déclenche (optionnellement) matches v4 — ce qui fait grossir
 // le cache HenrikDev côté serveur — puis récupère tout l'historique stocké.
 // trigger=false quand l'appel v4 a déjà été fait juste avant (ex: ouverture de
 // profil côté front) : on économise alors une requête.
-export async function refreshMember(member, { fetchImpl, apiKey, region, trigger = true }) {
+export async function refreshMember(member, { fetchImpl, apiKey, region, trigger = true, sleep, retries }) {
   const headers = { Authorization: apiKey };
   const r = region || member.region || "eu";
+  const opts = { sleep, retries };
   if (trigger) {
     // matches v4 — alimente le stockage HenrikDev (peu importe qui déclenche l'appel)
     await fetchJSON(
       fetchImpl,
       `${HENRIK_BASE}/valorant/v4/matches/${r}/pc/${enc(member.name)}/${enc(member.tag)}?size=10`,
-      headers
+      headers, opts
     ).catch(() => null); // un échec ici ne doit pas empêcher la lecture du stock existant
   }
   // stored-matches — tout l'historique déjà stocké pour ce joueur
   const stored = await fetchJSON(
     fetchImpl,
     `${HENRIK_BASE}/valorant/v1/stored-matches/${r}/${enc(member.name)}/${enc(member.tag)}`,
-    headers
+    headers, opts
   );
   return (stored && stored.data) || [];
 }
 
 // Rafraîchit UN membre et écrit son blob (fusion par matchid). Utilisé par le cron,
 // par le bouton manuel, et par la sauvegarde à l'ouverture d'un profil.
-export async function refreshOne({ member, getStore, fetchImpl, apiKey, region, trigger = true }) {
+export async function refreshOne({ member, getStore, fetchImpl, apiKey, region, trigger = true, sleep, retries }) {
   const store = getStore("cosmo-history");
   const key = blobKey(member.name, member.tag);
-  const fresh = await refreshMember(member, { fetchImpl, apiKey, region, trigger });
+  const fresh = await refreshMember(member, { fetchImpl, apiKey, region, trigger, sleep, retries });
   const existing = (await store.get(key, { type: "json" })) || [];
   const merged = mergeStored(existing, fresh);
   await store.setJSON(key, merged);
@@ -97,7 +108,7 @@ export async function runRefresh({ roster, region, getStore, fetchImpl, apiKey, 
 
   for (const member of roster) {
     try {
-      const { added: gain, total } = await refreshOne({ member, getStore, fetchImpl, apiKey, region, trigger: true });
+      const { added: gain, total } = await refreshOne({ member, getStore, fetchImpl, apiKey, region, trigger: true, sleep });
       added += gain;
       log.log(`[refresh] ${member.name}#${member.tag}: +${gain} (total ${total})`);
       ok++;

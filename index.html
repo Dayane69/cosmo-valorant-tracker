@@ -343,11 +343,9 @@
       <div class="secnote">La clé HenrikDev vit côté serveur (fonction Netlify), elle n'apparaît jamais dans la page.</div>
 
       <div class="row" style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px;">
-        <div class="field"><label for="refreshToken">Clé de rafraîchissement (REFRESH_TOKEN)</label>
-          <input id="refreshToken" type="password" placeholder="secret serveur" autocomplete="off"></div>
-        <button class="btn" id="btnRefreshNow">⟳ Enregistrer l'historique maintenant</button>
+        <button class="btn" id="btnRefreshNow">⟳ Sauvegarder l'historique de la squad</button>
       </div>
-      <div class="secnote" id="refreshStatus">Force le remplissage de l'historique tout de suite (sinon c'est automatique chaque jour à 04:00 UTC).</div>
+      <div class="secnote" id="refreshStatus">Sauvegarde l'historique de chaque joueur un par un (espacé pour respecter la limite de l'API). Sinon c'est automatique chaque jour à 04:00 UTC.</div>
     </div>
     <!-- Cartes générées dynamiquement depuis roster.json par renderRoster() (app.js) -->
     <div class="roster" id="roster"></div>
@@ -475,6 +473,6 @@
   </div>
 </section>
 
-<script src="app.js?v=20260701" defer></script>
+<script src="app.js?v=20260701b" defer></script>
 </body>
 </html>
