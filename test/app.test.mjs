@@ -72,8 +72,8 @@ function makeFetch() {
       if (path.includes("/account/")) return jsonRes({ data: { puuid: "p1" } });
       if (path.includes("/mmr/")) return jsonRes({ data: { current: { tier: { name: "Gold 2" }, rr: 42, images: { large: "http://img/large.png" } } } });
       if (path.includes("/mmr-history/")) return jsonRes({ data: { history: [
-        { match_id: "m1", last_change: 18, ranking_in_tier: 42, tier: { id: 13, name: "Gold 2" }, images: { large: "http://img/g2.png" } },
-        { match_id: "m2", last_change: -15, ranking_in_tier: 24, tier: { id: 13, name: "Gold 2" }, images: { large: "http://img/g2.png" } },
+        { match_id: "m1", last_change: 18, elo: 1345, ranking_in_tier: 42, tier: { id: 13, name: "Gold 2" }, date: "2026-06-24T10:00:00Z" },
+        { match_id: "m2", last_change: -15, elo: 1330, ranking_in_tier: 24, tier: { id: 13, name: "Gold 2" }, date: "2026-06-23T10:00:00Z" },
       ] } });
       if (path.includes("/v4/matches/")) return jsonRes({ data: [rawMatch("m1", "2026-06-24T10:00:00Z"), rawMatch("m2", "2026-06-23T10:00:00Z")] });
       if (path.includes("/v4/match/")) return jsonRes({ data: fullMatchById() }); // détail complet (match-by-id)
@@ -81,13 +81,26 @@ function makeFetch() {
     }
 
     if (url.includes("/.netlify/functions/historique")) {
+      const kind = new URL(url, "http://x").searchParams.get("kind");
+      if (kind === "rr") {
+        // progression RR accumulée (long terme) : 2 vieux points + m1 (doublon avec le live)
+        return jsonRes({ rr: [
+          { id: "r1", elo: 1300, change: 20, ranking_in_tier: 0, tier: { id: 13, name: "Gold 2" }, ts: Date.parse("2026-06-01T10:00:00Z") },
+          { id: "r2", elo: 1320, change: 20, ranking_in_tier: 20, tier: { id: 13, name: "Gold 2" }, ts: Date.parse("2026-06-02T10:00:00Z") },
+          { id: "m1", elo: 1345, change: 18, ranking_in_tier: 42, tier: { id: 13, name: "Gold 2" }, ts: Date.parse("2026-06-24T10:00:00Z") },
+        ] });
+      }
       // blob accumulé au format stored-matches v1 : m2 (doublon) + m3 (nouveau)
       return jsonRes({ matches: [storedV1("m2", "2026-06-23T10:00:00Z"), storedV1("m3", "2026-06-22T10:00:00Z")] });
     }
     if (url.includes("/.netlify/functions/save-history")) return jsonRes({ ok: true, added: 0, total: 3 });
 
     if (url.includes("valorant-api.com/v1/agents")) return jsonRes({ data: [{ displayName: "Cypher", displayIcon: "ic" }, { displayName: "Jett", displayIcon: "ij" }] });
-    if (url.includes("valorant-api.com/v1/competitivetiers")) return jsonRes({ data: [{ tiers: [{ tierName: "Gold 2", largeIcon: "gi" }] }] });
+    if (url.includes("valorant-api.com/v1/competitivetiers")) return jsonRes({ data: [{ tiers: [
+      { tier: 12, tierName: "Gold 1", color: "b5985dff", largeIcon: "g1" },
+      { tier: 13, tierName: "Gold 2", color: "e0b24cff", largeIcon: "gi" },
+      { tier: 14, tierName: "Gold 3", color: "ffd35cff", largeIcon: "g3" },
+    ] }] });
     if (url.includes("valorant-api.com/v1/maps")) return jsonRes({ data: [{ displayName: "Ascent", splash: "sp" }] });
 
     return { ok: false, status: 404, json: async () => ({}) };
@@ -197,6 +210,19 @@ test("partie du blob : le détail complet (tous les joueurs + rang ACS) se charg
   assert.ok(positions.includes("1er") && positions.includes("3e"),
     "après chargement : scoreboard complet avec classement ACS");
   assert.ok(!positions.includes("—"), "plus de position inconnue une fois le détail chargé");
+});
+
+test("le graphique RR est long terme (blob + live) et trace les lignes de paliers", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  // Série = blob (r1, r2, m1) + live (m1, m2) dédoublonné par id -> 4 points
+  const cap = doc.querySelector("#curve .rrcap");
+  assert.ok(cap && /4 parties/.test(cap.textContent), "le graphe couvre tout l'historique accumulé (4 points)");
+  // Ligne(s) de palier : au moins un libellé de rang (mode elo)
+  assert.ok(doc.querySelector("#curve .rrtierlab"), "au moins un libellé de palier est tracé");
+  assert.match(doc.querySelector("#curve .rrtierlab").textContent, /Gold/);
 });
 
 test("survol du graphique RR : infobulle avec la valeur (partie + RR)", async () => {

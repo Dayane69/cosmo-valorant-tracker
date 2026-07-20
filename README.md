@@ -10,7 +10,8 @@ afin de garder la clé API **hors du navigateur**.
 ## ✨ Fonctionnalités
 
 - **Agent select** — une carte par membre de la squad avec le portrait de son agent fétiche et son rang affiché en direct (avec l'icône du palier).
-- **Profil joueur** — rang actuel (icône + RR), indice COSMO /100, progression du RR (avec **infobulle au survol**), liste des matchs filtrable par mode, et un scoreboard détaillé : **tête de chaque agent** et **classement par ACS** (1er, 2e, …). Chaque partie classée affiche aussi le **RR gagné/perdu** et le **rang du joueur au moment de la game** (depuis l'historique MMR). Pour les parties venues du blob (format compact), le scoreboard complet (tous les joueurs) est **chargé à la demande** au clic via l'endpoint match-by-id.
+- **Profil joueur** — rang actuel (icône + RR), indice COSMO /100, liste des matchs filtrable par mode, et un scoreboard détaillé : **tête de chaque agent** et **classement par ACS** (1er, 2e, …). Chaque partie classée affiche aussi le **RR gagné/perdu** et le **rang du joueur au moment de la game**. Pour les parties venues du blob (format compact), le scoreboard complet (tous les joueurs) est **chargé à la demande** au clic via l'endpoint match-by-id.
+- **Progression RR long terme** — un graphique d'**elo** (le MMR qui grimpe à travers les rangs) qui s'appuie sur l'historique MMR **accumulé dans un blob** (`cosmo-rr`) : il grossit jour après jour au lieu d'être plafonné à la courte fenêtre de l'API. Lignes horizontales par **palier de rang** (Gold 2, Gold 3…) avec leur couleur, et **infobulle au survol** (date, rang, elo, ±RR).
 - **Indice COSMO /100** — un score de perf maison calculé à partir de l'ACS, du différentiel de dégâts, du K/D, de l'ADR et du HS%.
 - **Tribunal COSMO** — la jauge *Unlucky or Bad* qui juge tes dernières parties classées.
 - **Leaderboard** — classement de la squad, badges (Carry, Bourreau, Headhunter…), comparateur 1v1 et détection des duos.

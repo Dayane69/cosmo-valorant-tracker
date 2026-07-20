@@ -2,7 +2,7 @@
 // Vérifie que deux exécutions successives sur les mêmes données ne dupliquent rien.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runRefresh, refreshOne, refreshMember, mergeStored, matchID, matchTime, blobKey } from "../netlify/functions/lib/refresh-core.mjs";
+import { runRefresh, refreshOne, refreshMember, mergeStored, mergeRR, normRRentry, matchID, matchTime, blobKey } from "../netlify/functions/lib/refresh-core.mjs";
 
 // --- Mock Netlify Blobs (clé -> valeur JSON, en mémoire) ---
 function memoryStores() {
@@ -18,8 +18,8 @@ function memoryStores() {
   return { getStore, stores };
 }
 
-// --- Mock fetch HenrikDev : matches v4 (noop) + stored-matches (données fixes) ---
-function makeFetch(storedByPlayer) {
+// --- Mock fetch HenrikDev : matches v4 (noop) + stored-matches + mmr-history ---
+function makeFetch(storedByPlayer, rrByPlayer = {}) {
   return async (url) => {
     if (url.includes("/valorant/v4/matches/")) {
       return { ok: true, status: 200, json: async () => ({ data: [] }) };
@@ -30,6 +30,11 @@ function makeFetch(storedByPlayer) {
       const name = decodeURIComponent(parts[1]).toLowerCase();
       const data = storedByPlayer[name] || [];
       return { ok: true, status: 200, json: async () => ({ data }) };
+    }
+    if (url.includes("/valorant/v2/mmr-history/")) {
+      const parts = url.split("/mmr-history/")[1].split("?")[0].split("/");
+      const name = decodeURIComponent(parts[2]).toLowerCase();
+      return { ok: true, status: 200, json: async () => ({ data: { history: rrByPlayer[name] || [] } }) };
     }
     return { ok: false, status: 404, json: async () => ({}) };
   };
@@ -81,9 +86,10 @@ test("un nouveau match est ajouté sans toucher aux existants", async () => {
 
 test("refreshOne avec trigger:false n'appelle pas matches v4 (économise une requête)", async () => {
   const stored = { arsh26: [mkMatch("m1", "2026-06-20T10:00:00Z")] };
-  let v4Calls = 0, storedCalls = 0;
+  let v4Calls = 0, storedCalls = 0, mmrCalls = 0;
   const fetchImpl = async (url) => {
     if (url.includes("/valorant/v4/matches/")) { v4Calls++; return { ok: true, status: 200, json: async () => ({ data: [] }) }; }
+    if (url.includes("/valorant/v2/mmr-history/")) { mmrCalls++; return { ok: true, status: 200, json: async () => ({ data: { history: [] } }) }; }
     storedCalls++;
     const parts = url.split("/stored-matches/")[1].split("?")[0].split("/");
     const name = decodeURIComponent(parts[1]).toLowerCase();
@@ -93,6 +99,7 @@ test("refreshOne avec trigger:false n'appelle pas matches v4 (économise une req
   const res = await refreshOne({ member: { name: "Arsh26", tag: "2826" }, getStore, fetchImpl, apiKey: "FAKE", region: "eu", trigger: false });
   assert.equal(v4Calls, 0, "aucun appel matches v4");
   assert.equal(storedCalls, 1, "un seul appel stored-matches");
+  assert.equal(mmrCalls, 1, "un appel mmr-history (accumulation RR)");
   assert.equal(res.total, 1);
   assert.equal(stores.get("cosmo-history").get(blobKey("Arsh26", "2826")).length, 1);
 });
@@ -105,6 +112,35 @@ test("matchID / matchTime gèrent le format stored-matches v1 (meta + game_start
   assert.equal(matchTime({ meta: { game_start: 1718000000000 } }), 1718000000000);
   // ISO classique
   assert.equal(matchTime({ metadata: { started_at: "2026-06-20T10:00:00Z" } }), Date.parse("2026-06-20T10:00:00Z"));
+});
+
+test("l'historique RR s'accumule dans le blob cosmo-rr, dédoublonné et chronologique", async () => {
+  const roster = [{ name: "Arsh26", tag: "2826" }];
+  const stored = { arsh26: [mkMatch("m1", "2026-06-20T10:00:00Z")] };
+  const rr = { arsh26: [
+    { match_id: "m1", elo: 1342, ranking_in_tier: 42, last_change: 18, tier: { id: 13, name: "Gold 2" }, date: "2026-06-20T10:00:00Z" },
+    { match_id: "m2", elo: 1324, ranking_in_tier: 24, last_change: -18, tier: { id: 13, name: "Gold 2" }, date: "2026-06-21T10:00:00Z" },
+  ] };
+  const { getStore, stores } = memoryStores();
+  const deps = { roster, region: "eu", getStore, fetchImpl: makeFetch(stored, rr), apiKey: "FAKE", log: { log() {}, error() {} }, delayMs: 0 };
+
+  await runRefresh(deps);
+  const rrBlob = stores.get("cosmo-rr").get(blobKey("Arsh26", "2826"));
+  assert.equal(rrBlob.length, 2, "2 points RR stockés");
+  assert.equal(rrBlob[0].elo, 1342, "trié du plus ancien au plus récent");
+  assert.equal(rrBlob[0].tier.name, "Gold 2");
+
+  await runRefresh(deps); // deuxième passage : rien de neuf
+  assert.equal(stores.get("cosmo-rr").get(blobKey("Arsh26", "2826")).length, 2, "pas de doublon RR");
+});
+
+test("mergeRR : dédoublonne par match_id et trie chronologiquement", () => {
+  const a = normRRentry({ match_id: "a", elo: 100, date: "2026-06-20T10:00:00Z" });
+  const a2 = normRRentry({ match_id: "a", elo: 100, date: "2026-06-20T10:00:00Z" });
+  const b = normRRentry({ match_id: "b", elo: 120, date: "2026-06-25T10:00:00Z" });
+  const merged = mergeRR([a], [b, a2]);
+  assert.equal(merged.length, 2, "le doublon 'a' n'apparaît qu'une fois");
+  assert.equal(merged[merged.length - 1].id, "b", "le plus récent en dernier (chronologique)");
 });
 
 test("mergeStored : dédoublonnage par matchid + tri décroissant", () => {

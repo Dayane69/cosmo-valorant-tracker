@@ -32,6 +32,7 @@ const PROFILE_SIZE_STEP = 15;                          // pas du bouton "charger
 let MAPS = null;                                        // cache nom de map -> image splash
 let AGENTS = null;                                      // cache nom d'agent -> icône (tête)
 let TIERS = null;                                       // cache nom de palier -> icône de rang
+let TIER_BY_NUM = null;                                 // cache numéro de palier -> {name,color,icon} (lignes de rang du graphe)
 const ANIM_BUSY = { Trib: false, Prof: false };
 
 const $ = id => document.getElementById(id);
@@ -115,6 +116,42 @@ async function fetchHistorique(name, tag){
     const d=await r.json();
     return Array.isArray(d) ? d : (d.matches||d.data||[]);
   }catch(e){ return []; }
+}
+
+// Récupère l'historique RR accumulé (progression long terme) depuis le blob cosmo-rr.
+async function fetchRRHistory(name, tag){
+  try{
+    const r=await fetch(`/.netlify/functions/historique?name=${enc(name)}&tag=${enc(tag)}&kind=rr`);
+    if(!r.ok) return [];
+    const d=await r.json();
+    return Array.isArray(d) ? d : (d.rr||d.data||[]);
+  }catch(e){ return []; }
+}
+
+// Normalise une entrée d'historique MMR (live) au même format que le blob RR.
+function rrTs(e){
+  if(!e) return 0;
+  if(e.ts!=null && !isNaN(e.ts)) return Number(e.ts);
+  const iso=e.date||e.date_raw;
+  if(iso){ const t=new Date(iso).getTime(); if(!isNaN(t)) return t; }
+  if(typeof e.date_raw==='number') return e.date_raw<1e12 ? e.date_raw*1000 : e.date_raw;
+  return 0;
+}
+function normRRclient(h){
+  const id=h.match_id||h.matchid||h.matchId||h.id||null;
+  const elo=(h.elo!=null && !isNaN(h.elo))?Number(h.elo):null;
+  const rr=h.ranking_in_tier!=null?Number(h.ranking_in_tier):(h.rr!=null?Number(h.rr):null);
+  const change=h.last_change!=null?Number(h.last_change):(h.mmr_change_to_last_game!=null?Number(h.mmr_change_to_last_game):null);
+  const tier=h.tier?{id:(h.tier.id!=null?h.tier.id:null),name:h.tier.name||''}:(h.currenttier!=null?{id:h.currenttier,name:h.currenttierpatched||''}:null);
+  const e={id,elo,rr,change,tier,map:(h.map&&h.map.name)||(h.map||''),date:h.date||h.date_raw||null};
+  e.ts=rrTs({...e,date_raw:h.date_raw});
+  return e;
+}
+// Fusionne la série RR accumulée (blob) et le live, dédoublonné par match_id/date, tri chronologique.
+function mergeRRclient(...lists){
+  const byKey=new Map();
+  lists.forEach(list=>(list||[]).forEach(e=>{ const k=e&&(e.id||(e.ts?'t:'+e.ts:null)); if(k && !byKey.has(k)) byKey.set(k,e); }));
+  return [...byKey.values()].sort((a,b)=>rrTs(a)-rrTs(b));
 }
 
 // Sauvegarde l'historique de CE joueur dans le blob, à l'ouverture de son profil.
@@ -201,11 +238,17 @@ async function ensureTiers(){
   try{
     const r = await fetch('https://valorant-api.com/v1/competitivetiers');
     if(r.ok){
-      const d = await r.json(), map = {};
+      const d = await r.json(), map = {}, byNum = {};
       const eps = d.data||[];
       const latest = eps[eps.length-1];                 // dernier épisode = paliers à jour
-      ((latest&&latest.tiers)||[]).forEach(t=>{ if(t.tierName && t.largeIcon) map[t.tierName.trim().toLowerCase()] = t.largeIcon; });
-      TIERS = map;
+      ((latest&&latest.tiers)||[]).forEach(t=>{
+        if(t.tierName && t.largeIcon) map[t.tierName.trim().toLowerCase()] = t.largeIcon;
+        if(t.tier!=null){                               // numéro de palier -> nom/couleur/icône (lignes du graphe)
+          const col = t.color ? '#'+String(t.color).slice(0,6) : '#8696a6';
+          byNum[t.tier] = { name:(t.tierName||'').trim(), color:col, icon:t.largeIcon||'' };
+        }
+      });
+      TIERS = map; TIER_BY_NUM = byNum;
     }
   }catch(e){ /* pas d'icônes de rang, on garde le texte */ }
   return TIERS || {};
@@ -302,20 +345,15 @@ function normalizeAny(raw, targetState = STATE){
   return normMatch(raw, targetState); // repli défensif (guards en place)
 }
 
-// Index match_id -> infos RR/rang, depuis l'historique MMR (ranked récent uniquement).
+// Index match_id -> infos RR/rang, depuis la série RR normalisée (blob + live).
 // change = RR gagné/perdu sur la game, tierName/icon = rang du joueur à ce moment-là.
-function rrIndexFromHistory(hist){
+function rrIndexFromSeries(series){
   const idx={};
-  (hist||[]).forEach(h=>{
-    const id=h.match_id||h.matchid||h.matchId||h.id;
-    if(!id) return;
-    const change = h.last_change!=null ? num(h.last_change)
-                 : (h.mmr_change_to_last_game!=null ? num(h.mmr_change_to_last_game) : null);
-    const tierName = (h.tier&&h.tier.name) || (typeof h.tier==='string'?h.tier:'') || h.currenttierpatched || '';
-    const icon = (h.images&&(h.images.large||h.images.small))
-              || (tierName && TIERS ? TIERS[tierName.toLowerCase()] : null) || null;
-    const rr = h.ranking_in_tier!=null ? num(h.ranking_in_tier) : (h.rr!=null ? num(h.rr) : null);
-    idx[id]={ change, tierName, icon, rr };
+  (series||[]).forEach(e=>{
+    if(!e || !e.id) return;
+    const tierName = (e.tier&&e.tier.name) || '';
+    const icon = (tierName && TIERS) ? (TIERS[tierName.toLowerCase()]||null) : null;
+    idx[e.id]={ change:e.change, tierName, icon, rr:e.rr };
   });
   return idx;
 }
@@ -371,54 +409,80 @@ function renderRank(mmr,overall){
     <div class="indice">Indice COSMO (8 derniers) <span class="num" style="color:${oT.c}">${overall||'—'}</span><span style="color:${oT.c}">/100 · ${oT.t}</span></div>`;
   setTimeout(()=>{const b=$('rrbar'); if(b) b.style.width=(rr!==null?rr:0)+'%';},60);
 }
-function renderCurve(hist){
+// Graphique de progression RR long terme. `series` = points RR normalisés
+// (blob accumulé + live), triés du plus ancien au plus récent.
+function renderCurve(series){
   const box=$('curve');
-  if(!hist || !hist.length){ box.innerHTML='<div class="vh-line mono">Pas d\'historique RR.</div>'; return; }
-  const list=hist.slice(0,15).reverse();
-  // valeur tracée : elo si dispo, sinon somme cumulée des variations
-  let pts=list.map(h=>(h.elo!=null && !isNaN(h.elo))?Number(h.elo):null);
-  if(pts.every(v=>v===null)){ let acc=0; pts=list.map(h=>{acc+=num(h.last_change);return acc;}); }
-  else { let last=pts.find(v=>v!==null) ?? 0; pts=pts.map(v=>{ if(v!==null) last=v; return last; }); }
+  if(!Array.isArray(series) || !series.length){ box.innerHTML='<div class="vh-line mono">Pas d\'historique RR.</div>'; return; }
 
-  const n=pts.length, W=640,H=250,mL=46,mR=16,mT=16,mB=30, pw=W-mL-mR, ph=H-mT-mB;
+  // Valeur tracée : elo (continu, grimpe à travers les rangs -> permet les lignes de
+  // paliers) si dispo, sinon somme cumulée des +/- RR.
+  const hasElo = series.some(e=>e && e.elo!=null);
+  let pts, chartMode;
+  if(hasElo){
+    let last=null;
+    pts=series.map(e=>{ if(e && e.elo!=null) last=Number(e.elo); return last; });
+    const firstKnown = pts.find(v=>v!=null) ?? 0;
+    pts=pts.map(v=> v==null? firstKnown : v);
+    chartMode='elo';
+  }else{
+    let acc=0; pts=series.map(e=>{ acc+=num(e&&e.change); return acc; }); chartMode='rr';
+  }
+
+  const n=pts.length, W=640,H=250,mL=46,mR=58,mT=16,mB=30, pw=W-mL-mR, ph=H-mT-mB;
   const minV=Math.min(...pts), maxV=Math.max(...pts);
-  const pad=Math.max(2,(maxV-minV)*0.12), lo=minV-pad, hi=maxV+pad, R=Math.max(hi-lo,1);
+  const pad=Math.max(chartMode==='elo'?10:2,(maxV-minV)*0.12), lo=minV-pad, hi=maxV+pad, R=Math.max(hi-lo,1);
   const X=i=> mL + (n<=1? pw/2 : i/(n-1)*pw);
   const Y=v=> mT + (1-(v-lo)/R)*ph;
+  const fmtDate = ts => ts? new Date(ts).toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'}) : '';
 
+  // Grille horizontale : lignes de PALIERS (mode elo) ou grille numérique (repli).
   let grid='', ylab='';
-  for(let g=0; g<=4; g++){
-    const val=lo+R*g/4, yy=Y(val);
-    grid+=`<line x1="${mL}" y1="${yy.toFixed(1)}" x2="${W-mR}" y2="${yy.toFixed(1)}" stroke="var(--line)" stroke-width="1" opacity="${g===0?0.85:0.45}"/>`;
-    ylab+=`<text x="${mL-8}" y="${(yy+3.5).toFixed(1)}" text-anchor="end" class="ax">${Math.round(val)}</text>`;
+  const tierMode = chartMode==='elo' && TIER_BY_NUM;
+  if(tierMode){
+    const kMin=Math.floor(lo/100), kMax=Math.floor(hi/100);
+    for(let k=kMin; k<=kMax; k++){
+      const ti=TIER_BY_NUM[k];
+      if(k*100>=lo && k*100<=hi){ const yy=Y(k*100);
+        grid+=`<line x1="${mL}" y1="${yy.toFixed(1)}" x2="${W-mR}" y2="${yy.toFixed(1)}" stroke="${ti?ti.color:'var(--line)'}" stroke-width="1" opacity="0.4"/>`; }
+      const bLo=Math.max(lo,k*100), bHi=Math.min(hi,(k+1)*100);
+      if(ti && (bHi-bLo)>16){ const ym=Y((bLo+bHi)/2);
+        ylab+=`<text x="${W-mR+5}" y="${(ym+3).toFixed(1)}" class="rrtierlab" fill="${ti.color}">${esc(ti.name)}</text>`; }
+    }
+  }else{
+    for(let g=0; g<=4; g++){ const val=lo+R*g/4, yy=Y(val);
+      grid+=`<line x1="${mL}" y1="${yy.toFixed(1)}" x2="${W-mR}" y2="${yy.toFixed(1)}" stroke="var(--line)" stroke-width="1" opacity="${g===0?0.85:0.45}"/>`;
+      ylab+=`<text x="${mL-8}" y="${(yy+3.5).toFixed(1)}" text-anchor="end" class="ax">${Math.round(val)}</text>`;
+    }
   }
-  let vgrid='';
-  for(let i=0;i<n;i++){ const xx=X(i); vgrid+=`<line x1="${xx.toFixed(1)}" y1="${mT}" x2="${xx.toFixed(1)}" y2="${mT+ph}" stroke="var(--line)" stroke-width="1" opacity="0.16"/>`; }
+
   const xticks=[...new Set(n<=1?[0]:[0,Math.floor((n-1)/2),n-1])];
   let xlab='';
-  xticks.forEach(i=>{ const xx=X(i); const lbl=i===n-1?'récent':`-${n-1-i}`; xlab+=`<text x="${xx.toFixed(1)}" y="${H-10}" text-anchor="middle" class="ax">${lbl}</text>`; });
+  xticks.forEach(i=>{ const xx=X(i); const lbl=fmtDate(series[i]&&series[i].ts) || (i===n-1?'récent':`-${n-1-i}`);
+    xlab+=`<text x="${xx.toFixed(1)}" y="${H-10}" text-anchor="middle" class="ax">${esc(lbl)}</text>`; });
 
   const line=pts.map((v,i)=>`${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(' ');
   const area=`${mL},${mT+ph} ${line} ${X(n-1).toFixed(1)},${mT+ph}`;
   let dots='';
-  pts.forEach((v,i)=>{ const up=i===0?null:v-pts[i-1]; const col=up===null?'var(--amber)':(up>=0?'var(--win)':'var(--loss)'); dots+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="3.2" fill="${col}" stroke="#0a0f15" stroke-width="1.5"/>`; });
+  if(n<=50){ pts.forEach((v,i)=>{ const up=i===0?null:v-pts[i-1]; const col=up===null?'var(--amber)':(up>=0?'var(--win)':'var(--loss)');
+    dots+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="3" fill="${col}" stroke="#0a0f15" stroke-width="1.5"/>`; }); }
 
-  // Métadonnées par point, pour le survol (quelle partie, combien de RR).
-  const meta=pts.map((v,i)=>({ px:X(i), py:Y(v), v, change:num(list[i].last_change),
-    map:(list[i].map&&list[i].map.name)||'', tier:(list[i].tier&&list[i].tier.name)||list[i].currenttierpatched||'',
-    label:i===n-1?'partie récente':`il y a ${n-1-i} partie${n-1-i>1?'s':''}` }));
+  // Métadonnées par point pour le survol.
+  const meta=pts.map((v,i)=>{ const e=series[i]||{}; return { px:X(i), py:Y(v), v, change:num(e.change),
+    tier:(e.tier&&e.tier.name)||'', when:fmtDate(e.ts), mode:chartMode }; });
 
-  const yTitle=`<text x="13" y="${mT+ph/2}" transform="rotate(-90 13 ${mT+ph/2})" text-anchor="middle" class="axt">RR / elo</text>`;
-  const xTitle=`<text x="${mL+pw/2}" y="${H-1}" text-anchor="middle" class="axt">parties (ancien → récent)</text>`;
-  const pills=list.map(h=>{const c=num(h.last_change);return `<div class="hpill"><div class="m">${esc((h.map&&h.map.name)||'')}</div><div class="v ${c>=0?'up':'dn'}">${c>=0?'+':''}${c}</div></div>`;}).join('');
+  const yTitle=`<text x="13" y="${mT+ph/2}" transform="rotate(-90 13 ${mT+ph/2})" text-anchor="middle" class="axt">${chartMode==='elo'?'elo (rang)':'RR cumulé'}</text>`;
+  const xTitle=`<text x="${mL+pw/2}" y="${H-1}" text-anchor="middle" class="axt">parties classées (ancien → récent)</text>`;
+  const pills=series.slice(-15).map(e=>{const c=num(e.change);return `<div class="hpill"><div class="m">${esc(fmtDate(e.ts))}</div><div class="v ${c>=0?'up':'dn'}">${c>=0?'+':''}${c}</div></div>`;}).join('');
 
   box.innerHTML=`
+    <div class="rrcap mono">${n} partie${n>1?'s':''} classée${n>1?'s':''}${chartMode==='elo'?' · progression elo':' · RR cumulé'}</div>
     <div class="rrwrap" style="position:relative">
     <svg class="rrchart" width="100%" viewBox="0 0 ${W} ${H}" role="img" aria-label="Progression du RR">
       <defs><linearGradient id="rrfill" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="var(--amber)" stop-opacity="0.28"/><stop offset="100%" stop-color="var(--amber)" stop-opacity="0"/>
+        <stop offset="0%" stop-color="var(--amber)" stop-opacity="0.26"/><stop offset="100%" stop-color="var(--amber)" stop-opacity="0"/>
       </linearGradient></defs>
-      ${vgrid}${grid}
+      ${grid}
       <polygon points="${area}" fill="url(#rrfill)"/>
       <polyline points="${line}" fill="none" stroke="var(--amber)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
       ${dots}${ylab}${xlab}${yTitle}${xTitle}
@@ -448,8 +512,9 @@ function wireCurveHover(box, meta, W, H){
     cursor.setAttribute('cx',best.px); cursor.setAttribute('cy',best.py); cursor.setAttribute('opacity','1');
     const scale=rect.width/W;
     const c=best.change, sign=c>=0?'+':'';
-    tip.innerHTML=`<b>${esc(best.map||best.label)}</b><span>${Math.round(best.v)} RR${best.tier?' · '+esc(best.tier):''}</span>`
-      +`<span class="d ${c>=0?'up':'dn'}">${sign}${c} RR</span>`;
+    tip.innerHTML=`<b>${esc(best.when||'partie')}</b>`
+      +`<span>${best.tier?esc(best.tier)+' · ':''}${Math.round(best.v)}${best.mode==='elo'?' elo':' RR'}</span>`
+      +(best.change!=null && !isNaN(best.change)?`<span class="d ${c>=0?'up':'dn'}">${sign}${c} RR</span>`:'');
     tip.hidden=false;
     tip.style.left=(best.px*scale)+'px';
     tip.style.top=(best.py*scale)+'px';
@@ -664,11 +729,12 @@ async function loadProfile(){
   try{
     const acc=await api(`/valorant/v2/account/${n}/${t}`);
     STATE.puuid=acc.data&&acc.data.puuid;
-    const [mmrR,histR,matchR,blobR]=await Promise.allSettled([
+    const [mmrR,histR,matchR,blobR,rrBlobR]=await Promise.allSettled([
       api(`/valorant/v3/mmr/${region}/pc/${n}/${t}`),
       api(`/valorant/v2/mmr-history/${region}/pc/${n}/${t}`),
       api(`/valorant/v4/matches/${region}/pc/${n}/${t}?size=${FRESH_SIZE}`), // données fraîches du moment
-      fetchHistorique(STATE.name, STATE.tag)                                  // historique accumulé (blob)
+      fetchHistorique(STATE.name, STATE.tag),                                 // historique matchs accumulé (blob)
+      fetchRRHistory(STATE.name, STATE.tag)                                   // progression RR accumulée (blob)
     ]);
     // Caches médias : têtes d'agents (scoreboard), icônes de rang et fonds de map
     await Promise.all([ensureTiers(), ensureAgents(), ensureMaps()]);
@@ -678,14 +744,18 @@ async function loadProfile(){
       const tierName=(cur.tier&&cur.tier.name)||cur.currenttierpatched||'';
       mmr={tier:tierName, rr:(cur.rr!=null?cur.rr:cur.ranking_in_tier), elo:cur.elo, icon:rankIcon(cur,tierName),
            peak:(d.peak&&d.peak.tier&&d.peak.tier.name)||(d.highest_rank&&d.highest_rank.patched_tier)||''}; }
-    let hist=[]; if(histR.status==='fulfilled'){ const d=histR.value.data; hist=(d&&d.history)||d||[]; }
+
+    // Série RR = live mmr-history + blob accumulé (long terme), fusionnés par match_id/date.
+    let liveHist=[]; if(histR.status==='fulfilled'){ const d=histR.value.data; liveHist=(d&&d.history)||d||[]; }
+    const rrBlob = rrBlobR.status==='fulfilled' ? (rrBlobR.value||[]) : [];
+    const rrSeries = mergeRRclient(rrBlob, (liveHist||[]).map(normRRclient));
 
     // Fusion : matches v4 frais + blob accumulé, dédoublonnés par matchid, triés du + récent au + ancien.
     const fresh=matchR.status==='fulfilled'?(matchR.value.data||[]):[];
     const blob =blobR.status==='fulfilled'?(blobR.value||[]):[];
     STATE.allMatches=combineMatches(fresh, blob).map(m=>normalizeAny(m)).filter(Boolean);
-    // Join RR/rang par match_id (parties classées présentes dans l'historique MMR).
-    const rrIdx=rrIndexFromHistory(hist);
+    // Join RR/rang par match_id (depuis la série RR accumulée -> long terme).
+    const rrIdx=rrIndexFromSeries(rrSeries);
     STATE.allMatches.forEach(M=>{ if(M&&M.id&&rrIdx[M.id]) M.rr=rrIdx[M.id]; });
     PROFILE_SHOWN=Math.min(FRESH_SIZE, STATE.allMatches.length);
     STATE.matches=STATE.allMatches.slice(0, PROFILE_SHOWN);
@@ -694,7 +764,7 @@ async function loadProfile(){
     const scored=STATE.matches.slice(0,8).filter(M=>M.me);
     const overall=scored.length?Math.round(scored.reduce((s,M)=>s+M.me.score100,0)/scored.length):0;
     
-    renderRank(mmr,overall); renderCurve(hist);
+    renderRank(mmr,overall); renderCurve(rrSeries);
     if(STATE.matches.length){ 
        const s=STATE.matches[0].me;
        if(s){

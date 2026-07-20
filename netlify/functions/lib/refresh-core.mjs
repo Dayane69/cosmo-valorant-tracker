@@ -87,8 +87,61 @@ export async function refreshMember(member, { fetchImpl, apiKey, region, trigger
   return (stored && stored.data) || [];
 }
 
+/* ===================== HISTORIQUE RR (long terme) ===================== */
+
+// Horodatage (ms) d'une entrée d'historique MMR (date ISO ou epoch).
+export function rrTime(e) {
+  if (!e) return 0;
+  if (e.ts != null && !Number.isNaN(Number(e.ts))) return Number(e.ts);
+  const iso = e.date || e.date_raw;
+  if (iso) { const t = new Date(iso).getTime(); if (!Number.isNaN(t)) return t; }
+  if (typeof e.date_raw === "number") return e.date_raw < 1e12 ? e.date_raw * 1000 : e.date_raw;
+  return 0;
+}
+
+// Normalise une entrée d'historique MMR (formats v1/v2) en un point RR compact.
+export function normRRentry(h) {
+  const id = h.match_id || h.matchid || h.matchId || h.id || null;
+  const elo = (h.elo != null && !Number.isNaN(Number(h.elo))) ? Number(h.elo) : null;
+  const rr = h.ranking_in_tier != null ? Number(h.ranking_in_tier) : (h.rr != null ? Number(h.rr) : null);
+  const change = h.last_change != null ? Number(h.last_change)
+    : (h.mmr_change_to_last_game != null ? Number(h.mmr_change_to_last_game) : null);
+  const tier = h.tier ? { id: (h.tier.id != null ? h.tier.id : null), name: h.tier.name || "" }
+    : (h.currenttier != null ? { id: h.currenttier, name: h.currenttierpatched || "" } : null);
+  const e = { id, elo, rr, change, tier, date: h.date || h.date_raw || null };
+  e.ts = rrTime({ ...e, date_raw: h.date_raw });
+  return e;
+}
+
+// Clé de dédoublonnage d'un point RR : match_id sinon horodatage.
+export function rrKey(e) { return e && (e.id || (e.ts ? "t:" + e.ts : null)); }
+
+// Fusionne deux séries RR (dédoublonnage par match_id/date), triées du + ancien au + récent.
+export function mergeRR(existing, fresh) {
+  const byKey = new Map();
+  const add = (list) => (list || []).forEach((e) => { const k = rrKey(e); if (k && !byKey.has(k)) byKey.set(k, e); });
+  add(existing); add(fresh);
+  return [...byKey.values()].sort((a, b) => rrTime(a) - rrTime(b));
+}
+
+// Récupère l'historique MMR d'un membre, normalisé.
+export async function fetchMmrHistory(member, { fetchImpl, apiKey, region, sleep, retries }) {
+  const headers = { Authorization: apiKey };
+  const r = region || member.region || "eu";
+  const d = await fetchJSON(
+    fetchImpl,
+    `${HENRIK_BASE}/valorant/v2/mmr-history/${r}/pc/${enc(member.name)}/${enc(member.tag)}`,
+    headers, { sleep, retries }
+  ).catch(() => null);
+  const hist = (d && d.data && (d.data.history || d.data)) || (d && d.history) || [];
+  return (Array.isArray(hist) ? hist : []).map(normRRentry).filter((e) => rrKey(e));
+}
+
+/* ===================== REFRESH ===================== */
+
 // Rafraîchit UN membre et écrit son blob (fusion par matchid). Utilisé par le cron,
 // par le bouton manuel, et par la sauvegarde à l'ouverture d'un profil.
+// Accumule aussi l'historique RR dans un blob dédié (progression long terme).
 export async function refreshOne({ member, getStore, fetchImpl, apiKey, region, trigger = true, sleep, retries }) {
   const store = getStore("cosmo-history");
   const key = blobKey(member.name, member.tag);
@@ -96,7 +149,19 @@ export async function refreshOne({ member, getStore, fetchImpl, apiKey, region, 
   const existing = (await store.get(key, { type: "json" })) || [];
   const merged = mergeStored(existing, fresh);
   await store.setJSON(key, merged);
-  return { added: Math.max(0, merged.length - existing.length), total: merged.length };
+
+  // RR long terme : bonus, un échec ne doit pas faire rater la sauvegarde des matchs.
+  let rrTotal = 0;
+  try {
+    const rrStore = getStore("cosmo-rr");
+    const rrFresh = await fetchMmrHistory(member, { fetchImpl, apiKey, region, sleep, retries });
+    const rrExisting = (await rrStore.get(key, { type: "json" })) || [];
+    const rrMerged = mergeRR(rrExisting, rrFresh);
+    await rrStore.setJSON(key, rrMerged);
+    rrTotal = rrMerged.length;
+  } catch (e) { /* pas de RR cette fois, tant pis */ }
+
+  return { added: Math.max(0, merged.length - existing.length), total: merged.length, rrTotal };
 }
 
 // Boucle principale du cron : séquentielle et espacée pour rester dans le rate
