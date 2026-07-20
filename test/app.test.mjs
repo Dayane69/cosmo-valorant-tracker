@@ -113,8 +113,9 @@ async function boot() {
 
 test("init s'exécute sans erreur et construit la grille depuis roster.json", async () => {
   const { dom, T } = await boot();
-  assert.equal(T.getRoster().length, 7, "7 membres chargés depuis roster.json");
-  assert.equal(dom.window.document.querySelectorAll("#roster .agentcard").length, 7, "7 cartes générées");
+  const N = roster.members.length;
+  assert.equal(T.getRoster().length, N, "tous les membres de roster.json sont chargés");
+  assert.equal(dom.window.document.querySelectorAll("#roster .agentcard").length, N, "une carte par membre");
 });
 
 test("combineMatches dédoublonne par matchid et trie du plus récent au plus ancien", async () => {
@@ -169,11 +170,12 @@ test("la sauvegarde manuelle enregistre TOUS les membres, un par un", async () =
     }
     return { ok: false, status: 404, json: async () => ({}) };
   };
+  const N = roster.members.length;
   const res = await T.saveAllHistory();
-  assert.equal(res.ok, 7, "les 7 membres sont sauvegardés");
+  assert.equal(res.ok, N, "tous les membres sont sauvegardés");
   assert.equal(res.fail, 0, "aucun échec");
-  assert.equal(saveCalls, 7, "un appel save-history par membre");
-  assert.equal(names.size, 7, "chaque membre distinct est traité");
+  assert.equal(saveCalls, N, "un appel save-history par membre");
+  assert.equal(names.size, N, "chaque membre distinct est traité");
 });
 
 test("partie du blob : le détail complet (tous les joueurs + rang ACS) se charge à la demande", async () => {

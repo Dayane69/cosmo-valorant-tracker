@@ -7,6 +7,7 @@
     { "agent": "Jett",      "role": "Duelliste",  "uuid": "add6443a-41bd-e414-f6ad-e58d267f4e95", "color": "#74e0dd", "name": "kingsto",   "tag": "0000",  "mono": "Je" },
     { "agent": "Chamber",   "role": "Sentinelle", "uuid": "22697a3d-45bf-8dd7-4fec-84a9e28c69d7", "color": "#e3b341", "name": "joker",     "tag": "prft9", "mono": "Ch" },
     { "agent": "Phoenix",   "role": "Duelliste",  "uuid": "eb93336a-449b-9c1b-0a54-a891f7921d69", "color": "#ff8262", "name": "abd",       "tag": "wesh",  "mono": "Ph" },
-    { "agent": "Son Goku",  "role": "Saiyan",     "customImg": "https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExdDA1cjBwcHBrZmt2OGRjMDBvNGoyeTBpbXc1Zjk2d3c1cDc5dmZwMCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/BODTGPaN9Pw9mt5J1L/giphy.gif", "color": "#ff8c00", "name": "Giorno77", "tag": "5800", "mono": "Go" }
+    { "agent": "Son Goku",  "role": "Saiyan",     "customImg": "https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExdDA1cjBwcHBrZmt2OGRjMDBvNGoyeTBpbXc1Zjk2d3c1cDc5dmZwMCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/BODTGPaN9Pw9mt5J1L/giphy.gif", "color": "#ff8c00", "name": "Giorno77", "tag": "5800", "mono": "Go" },
+    { "agent": "Koko",      "role": "Invité",     "customImg": "", "color": "#c678dd", "name": "koko", "tag": "jetti", "mono": "Ko" }
   ]
 }
