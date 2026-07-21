@@ -225,6 +225,29 @@ test("le graphique RR est long terme (blob + live) et trace les lignes de palier
   assert.match(doc.querySelector("#curve .rrtierlab").textContent, /Gold/);
 });
 
+test("peak par acte : un bloc par acte avec le meilleur rang atteint", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const cells = doc.querySelectorAll("#peakActs .peak-cell");
+  assert.equal(cells.length, 2, "un bloc par acte (e8a2, e8a3)");
+  // peak = max elo de chaque acte -> tier Gold 2 (elo ~1300-1345 -> palier 13)
+  assert.ok([...doc.querySelectorAll("#peakActs .pk")].every((el) => /Gold 2/.test(el.textContent)), "le peak est un rang");
+});
+
+test("stats agent/map filtrables par acte", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const sel = doc.querySelector("#statsSeason");
+  assert.ok([...sel.options].map((o) => o.value).includes("e8a3"), "l'acte e8a3 est proposé");
+  sel.value = "e8a3";
+  sel.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  assert.match(doc.querySelector("#agentStats").textContent, /Cypher/, "les stats de l'acte s'affichent sans erreur");
+});
+
 test("le filtre saison/acte restreint le graphe RR à l'acte choisi", async () => {
   const { dom, T } = await boot();
   T.openProfile(0);

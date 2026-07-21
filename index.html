@@ -166,6 +166,16 @@
   .rrcap{font-family:var(--mono);font-size:11px;color:var(--dim);margin:2px 0 6px}
   .rrsel{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:7px 10px;font-family:var(--mono);font-size:12.5px;max-width:190px}
   .rrsel:hover{border-color:var(--amber)} .rrsel:disabled{opacity:.5}
+  /* Peak par acte */
+  #peakActs:empty{display:none}
+  .peak-title{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:6px 0 8px}
+  .peak-title em{font-style:normal;color:var(--dim);letter-spacing:0;text-transform:none;margin-left:6px}
+  .peak-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+  .peak-cell{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center}
+  .peak-cell .pa{font-family:var(--mono);font-size:11px;color:var(--amber);letter-spacing:.04em}
+  .peak-cell .pk{display:flex;align-items:center;justify-content:center;gap:7px;margin:5px 0 3px;font-weight:700;font-size:13px}
+  .peak-cell .pk img{width:30px;height:30px;object-fit:contain}
+  .peak-cell .pf{font-size:10.5px;color:var(--dim)}
   /* Infobulle de survol du graphique RR */
   .rrwrap{position:relative}
   .rrtip{position:absolute;transform:translate(-50%,-130%);background:var(--panel2);border:1px solid var(--line);border-radius:8px;
@@ -381,6 +391,7 @@
           </div>
         </h2>
         <div id="curve"></div>
+        <div id="peakActs"></div>
       </div>
       
       <!-- LISTE DES MATCHS AVEC ONGLETS -->
@@ -402,8 +413,10 @@
       </div>
       
       <div class="hero" id="statsSplit" style="grid-template-columns:1fr 1fr;">
-        <div class="card"><h2>Stats par agent <em>selon le filtre · trié par fréquence</em></h2><div id="agentStats"></div></div>
-        <div class="card"><h2>Stats par map <em>selon le filtre · trié par fréquence</em></h2><div id="mapStats"></div></div>
+        <div class="card"><h2 class="tabs-header"><span>Stats par agent <em>selon le filtre</em></span>
+          <select id="statsSeason" class="rrsel" title="Filtrer les stats par saison / acte"><option value="all">Toutes les saisons</option></select></h2>
+          <div id="agentStats"></div></div>
+        <div class="card"><h2>Stats par map <em>selon le filtre (agent + acte)</em></h2><div id="mapStats"></div></div>
       </div>
 
       <div class="card full"><h2>Scoreboard <em id="sbsub">sélectionné</em></h2><div id="sb"></div></div>
@@ -490,6 +503,6 @@
   </div>
 </section>
 
-<script src="app.js?v=20260703" defer></script>
+<script src="app.js?v=20260703b" defer></script>
 </body>
 </html>

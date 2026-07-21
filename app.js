@@ -29,6 +29,7 @@ let SELECTED_IDX = -1;                                  // ligne d'historique ac
 let RR_FULL = [];                                       // série RR complète (blob + live) du profil courant
 let RR_PERIOD = 50;                                     // fenêtre affichée du graphe RR (0 = tout)
 let RR_SEASON = 'all';                                  // filtre saison/acte du graphe RR ('all' = toutes)
+let STATS_SEASON = 'all';                               // filtre saison/acte des stats agent/map
 const FRESH_SIZE = 20;                                  // matches v4 récupérés pour la fraîcheur
 let PROFILE_SHOWN = FRESH_SIZE;                         // nb de parties affichées (pagination locale)
 const PROFILE_SIZE_STEP = 15;                          // pas du bouton "charger plus"
@@ -357,7 +358,7 @@ function rrIndexFromSeries(series){
     if(!e || !e.id) return;
     const tierName = (e.tier&&e.tier.name) || '';
     const icon = (tierName && TIERS) ? (TIERS[tierName.toLowerCase()]||null) : null;
-    idx[e.id]={ change:e.change, tierName, icon, rr:e.rr };
+    idx[e.id]={ change:e.change, tierName, icon, rr:e.rr, season:e.season||null };
   });
   return idx;
 }
@@ -603,8 +604,46 @@ function renderStatsTable(containerId, stats, nameLabel){
 }
 
 function renderStatsCards(filtered){
-  renderStatsTable('agentStats', groupStats(filtered, M => M.me.agent), 'Agent');
-  renderStatsTable('mapStats',   groupStats(filtered, M => M.map),      'Map');
+  // Filtre par acte (comme le graphe) : ne garde que les parties de l'acte choisi.
+  const rows = STATS_SEASON==='all' ? filtered : filtered.filter(M => M && M.season===STATS_SEASON);
+  renderStatsTable('agentStats', groupStats(rows, M => M.me.agent), 'Agent');
+  renderStatsTable('mapStats',   groupStats(rows, M => M.map),      'Map');
+}
+
+// (Re)remplit le menu Saison/Acte des stats à partir des actes présents dans les matchs.
+function populateStatsSeasonFilter(){
+  const sel=$('statsSeason'); if(!sel) return;
+  const seasons=[...new Set((STATE.allMatches||[]).map(M=>M&&M.season).filter(Boolean))];
+  if(!seasons.includes(STATS_SEASON)) STATS_SEASON='all';
+  sel.innerHTML=['<option value="all">Toutes les saisons</option>']
+    .concat(seasons.slice().reverse().map(sh=>`<option value="${esc(sh)}">${esc(seasonLabel(sh))}</option>`)).join('');
+  sel.value=STATS_SEASON;
+  sel.disabled = seasons.length===0;
+}
+
+// Peak (meilleur rang) et rang de fin par acte, calculés depuis la série RR accumulée.
+function renderPeakActs(){
+  const host=$('peakActs'); if(!host) return;
+  const byAct={};
+  (RR_FULL||[]).forEach(e=>{
+    if(!e || !e.season || e.elo==null) return;
+    const a = byAct[e.season] || (byAct[e.season]={ peak:-1, lastTs:-1, lastElo:null, n:0 });
+    a.n++;
+    if(e.elo>a.peak) a.peak=e.elo;
+    if(e.ts>=a.lastTs){ a.lastTs=e.ts; a.lastElo=e.elo; }
+  });
+  const acts=Object.entries(byAct).sort((x,y)=> y[1].lastTs - x[1].lastTs); // acte le + récent d'abord
+  if(!acts.length){ host.innerHTML=''; return; }
+  const tierOfElo = elo => (TIER_BY_NUM && TIER_BY_NUM[Math.floor(elo/100)]) || null;
+  host.innerHTML = `<div class="peak-title mono">Peak par acte <em>meilleur rang atteint</em></div>
+    <div class="peak-grid">`+ acts.map(([sh,a])=>{
+      const pk=tierOfElo(a.peak), fin=tierOfElo(a.lastElo);
+      return `<div class="peak-cell">
+        <div class="pa">${esc(seasonLabel(sh))}</div>
+        <div class="pk">${pk&&pk.icon?`<img src="${esc(pk.icon)}" alt="" loading="lazy">`:''}<span>${esc(pk?pk.name:'—')}</span></div>
+        <div class="pf mono">fin : ${esc(fin?fin.name:'—')} · ${a.n} partie${a.n>1?'s':''}</div>
+      </div>`;
+    }).join('') + `</div>`;
 }
 
 // Cellule "rang au moment de la partie + RR gagné/perdu" pour une ligne d'historique.
@@ -782,9 +821,9 @@ async function loadProfile(){
     const fresh=matchR.status==='fulfilled'?(matchR.value.data||[]):[];
     const blob =blobR.status==='fulfilled'?(blobR.value||[]):[];
     STATE.allMatches=combineMatches(fresh, blob).map(m=>normalizeAny(m)).filter(Boolean);
-    // Join RR/rang par match_id (depuis la série RR accumulée -> long terme).
+    // Join RR/rang + acte par match_id (depuis la série RR accumulée -> long terme).
     const rrIdx=rrIndexFromSeries(rrSeries);
-    STATE.allMatches.forEach(M=>{ if(M&&M.id&&rrIdx[M.id]) M.rr=rrIdx[M.id]; });
+    STATE.allMatches.forEach(M=>{ if(M&&M.id&&rrIdx[M.id]){ M.rr=rrIdx[M.id]; M.season=rrIdx[M.id].season; } });
     PROFILE_SHOWN=Math.min(FRESH_SIZE, STATE.allMatches.length);
     STATE.matches=STATE.allMatches.slice(0, PROFILE_SHOWN);
 
@@ -794,7 +833,8 @@ async function loadProfile(){
     
     RR_FULL = rrSeries;
     populateSeasonFilter();
-    renderRank(mmr,overall); renderCurvePeriod();
+    populateStatsSeasonFilter();
+    renderRank(mmr,overall); renderCurvePeriod(); renderPeakActs();
     if(STATE.matches.length){ 
        const s=STATE.matches[0].me;
        if(s){
@@ -1327,6 +1367,8 @@ function wireStatic(){
   });
   // Filtre saison / acte du graphe RR
   $('rrSeason')?.addEventListener('change', e => { RR_SEASON = e.target.value; renderCurvePeriod(); });
+  // Filtre saison / acte des stats agent/map
+  $('statsSeason')?.addEventListener('change', e => { STATS_SEASON = e.target.value; renderStatsCards(filterByMode(STATE.matches, CURRENT_MODE)); });
 
   // Wiring Tribunal Equipe
   $('tribMembers').addEventListener('click', e => {
