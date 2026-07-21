@@ -39,6 +39,7 @@ let MAPS = null;                                        // cache nom de map -> i
 let AGENTS = null;                                      // cache nom d'agent -> icône (tête)
 let TIERS = null;                                       // cache nom de palier -> icône de rang
 let TIER_BY_NUM = null;                                 // cache numéro de palier -> {name,color,icon} (lignes de rang du graphe)
+let ELO_TIER_OFFSET = 3;                                // numéro de palier = floor(elo/100) + offset (Iron 1 = palier 3, elo 0)
 const ANIM_BUSY = { Trib: false, Prof: false };
 
 const $ = id => document.getElementById(id);
@@ -477,6 +478,26 @@ async function setCompareMember(idx){
   renderCurvePeriod();
 }
 
+// Déduit le décalage elo->numéro de palier depuis les données : chaque point a son
+// elo ET son vrai palier (tier.id). offset = tier.id - floor(elo/100). On prend le
+// plus fréquent (repli 3 : Iron 1 = palier 3 à elo 0).
+function computeEloTierOffset(series){
+  const tally={};
+  (series||[]).forEach(e=>{
+    if(!e || e.elo==null || !e.tier || e.tier.id==null) return;
+    const off = Number(e.tier.id) - Math.floor(Number(e.elo)/100);
+    if(Number.isFinite(off)) tally[off]=(tally[off]||0)+1;
+  });
+  let best=null, bestN=-1;
+  for(const k in tally){ if(tally[k]>bestN){ bestN=tally[k]; best=Number(k); } }
+  return best==null ? 3 : best;
+}
+// Palier (nom/couleur/icône) correspondant à une valeur d'elo.
+function tierFromElo(elo){
+  if(!TIER_BY_NUM || elo==null) return null;
+  return TIER_BY_NUM[Math.floor(Number(elo)/100) + ELO_TIER_OFFSET] || null;
+}
+
 // Série RR normalisée -> valeurs à tracer (elo continu si dispo, sinon cumul RR).
 function eloSeriesToPts(series){
   const hasElo = series.some(e=>e && e.elo!=null);
@@ -516,7 +537,7 @@ function renderCurve(series, compare){
   if(tierMode){
     const kMin=Math.floor(lo/100), kMax=Math.floor(hi/100);
     for(let k=kMin; k<=kMax; k++){
-      const ti=TIER_BY_NUM[k];
+      const ti=TIER_BY_NUM[k+ELO_TIER_OFFSET];   // palier réel de la bande [k*100, (k+1)*100)
       if(k*100>=lo && k*100<=hi){ const yy=Y(k*100);
         grid+=`<line x1="${mL}" y1="${yy.toFixed(1)}" x2="${W-mR}" y2="${yy.toFixed(1)}" stroke="${ti?ti.color:'var(--line)'}" stroke-width="1" opacity="0.4"/>`; }
       const bLo=Math.max(lo,k*100), bHi=Math.min(hi,(k+1)*100);
@@ -686,10 +707,9 @@ function renderPeakActs(){
   });
   const acts=Object.entries(byAct).sort((x,y)=> y[1].lastTs - x[1].lastTs); // acte le + récent d'abord
   if(!acts.length){ host.innerHTML=''; return; }
-  const tierOfElo = elo => (TIER_BY_NUM && TIER_BY_NUM[Math.floor(elo/100)]) || null;
   host.innerHTML = `<div class="peak-title mono">Peak par acte <em>meilleur rang atteint</em></div>
     <div class="peak-grid">`+ acts.map(([sh,a])=>{
-      const pk=tierOfElo(a.peak), fin=tierOfElo(a.lastElo);
+      const pk=tierFromElo(a.peak), fin=tierFromElo(a.lastElo);
       return `<div class="peak-cell">
         <div class="pa">${esc(seasonLabel(sh))}</div>
         <div class="pk">${pk&&pk.icon?`<img src="${esc(pk.icon)}" alt="" loading="lazy">`:''}<span>${esc(pk?pk.name:'—')}</span></div>
@@ -884,6 +904,7 @@ async function loadProfile(){
     const overall=scored.length?Math.round(scored.reduce((s,M)=>s+M.me.score100,0)/scored.length):0;
     
     RR_FULL = rrSeries;
+    ELO_TIER_OFFSET = computeEloTierOffset(rrSeries);   // aligne les lignes de paliers sur les vrais rangs
     populateSeasonFilter();
     populateStatsSeasonFilter();
     populateCompareFilter();

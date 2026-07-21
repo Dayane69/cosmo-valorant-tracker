@@ -98,6 +98,12 @@ function makeFetch() {
 
     if (url.includes("valorant-api.com/v1/agents")) return jsonRes({ data: [{ displayName: "Cypher", displayIcon: "ic" }, { displayName: "Jett", displayIcon: "ij" }] });
     if (url.includes("valorant-api.com/v1/competitivetiers")) return jsonRes({ data: [{ tiers: [
+      { tier: 6, tierName: "Bronze 1", color: "b6926bff", largeIcon: "br1" },
+      { tier: 7, tierName: "Bronze 2", color: "b6926bff", largeIcon: "br2" },
+      { tier: 8, tierName: "Bronze 3", color: "b6926bff", largeIcon: "br3" },
+      { tier: 9, tierName: "Silver 1", color: "cfd0d1ff", largeIcon: "s1" },
+      { tier: 10, tierName: "Silver 2", color: "cfd0d1ff", largeIcon: "s2" },
+      { tier: 11, tierName: "Silver 3", color: "cfd0d1ff", largeIcon: "s3" },
       { tier: 12, tierName: "Gold 1", color: "b5985dff", largeIcon: "g1" },
       { tier: 13, tierName: "Gold 2", color: "e0b24cff", largeIcon: "gi" },
       { tier: 14, tierName: "Gold 3", color: "ffd35cff", largeIcon: "g3" },
@@ -118,7 +124,7 @@ async function boot() {
 
   let code = readFileSync(join(root, "app.js"), "utf8");
   // Épilogue de test : expose les fonctions + un accès à l'état interne.
-  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, showMatch, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, init, getState: () => STATE, getRoster: () => ROSTER };";
+  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, showMatch, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, init, getState: () => STATE, getRoster: () => ROSTER };";
   vm.runInContext(code, ctx);
   const T = ctx.__t;
   await T.init(); // garantit roster chargé + grille construite
@@ -262,6 +268,22 @@ test("comparaison : superpose la progression d'un second joueur", async () => {
   await new Promise((r) => setTimeout(r, 40)); // laisse le fetch + re-render
   assert.equal(doc.querySelectorAll("#curve .rrleg").length, 2, "légende avec les deux joueurs");
   assert.ok(doc.querySelectorAll("#curve polyline").length >= 2, "deux courbes tracées (joueur + comparé)");
+});
+
+test("lignes de paliers : elo 878 -> Silver 3 (offset dérivé des données, pas Bronze 3)", async () => {
+  const { T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile(); // charge TIER_BY_NUM (ensureTiers)
+  // Données réalistes HenrikDev : elo 878 avec tier.id 11 (Silver 3) -> offset 3
+  const off = T.computeEloTierOffset([
+    { elo: 878, tier: { id: 11, name: "Silver 3" } },
+    { elo: 820, tier: { id: 11, name: "Silver 3" } },
+  ]);
+  assert.equal(off, 3, "offset = tier.id - floor(elo/100) = 11 - 8 = 3");
+  T.setEloOffset(off);
+  const t = T.tierFromElo(878);
+  assert.ok(t && /Silver 3/.test(t.name), `elo 878 -> Silver 3 (obtenu: ${t && t.name})`);
+  assert.ok(!/Bronze/.test((t && t.name) || ""), "surtout pas Bronze");
 });
 
 test("peak par acte : un bloc par acte avec le meilleur rang atteint", async () => {
