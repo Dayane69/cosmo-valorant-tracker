@@ -164,6 +164,8 @@
   .rrchart .axt{font-family:var(--mono);font-size:10px;fill:var(--dim);letter-spacing:.06em;text-transform:uppercase}
   .rrchart .rrtierlab{font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.02em}
   .rrcap{font-family:var(--mono);font-size:11px;color:var(--dim);margin:2px 0 6px}
+  .rrleg{display:inline-flex;align-items:center;gap:5px;margin-left:10px;color:var(--muted)}
+  .rrleg i{width:12px;height:3px;border-radius:2px;display:inline-block}
   .rrsel{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:7px 10px;font-family:var(--mono);font-size:12.5px;max-width:190px}
   .rrsel:hover{border-color:var(--amber)} .rrsel:disabled{opacity:.5}
   /* Peak par acte */
@@ -382,6 +384,7 @@
         <h2 class="tabs-header">
           <span>Progression RR <em>court → long terme</em></span>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <select id="rrCompare" class="rrsel" title="Comparer la progression avec un autre joueur"><option value="">Comparer à…</option></select>
             <select id="rrSeason" class="rrsel" title="Filtrer par saison / acte"><option value="all">Toutes les saisons</option></select>
             <div class="seg" id="rrPeriod" style="margin:0;">
               <button data-n="15">15</button>
@@ -503,6 +506,6 @@
   </div>
 </section>
 
-<script src="app.js?v=20260703b" defer></script>
+<script src="app.js?v=20260703c" defer></script>
 </body>
 </html>

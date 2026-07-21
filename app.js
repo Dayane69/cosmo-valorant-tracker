@@ -30,6 +30,8 @@ let RR_FULL = [];                                       // série RR complète (
 let RR_PERIOD = 50;                                     // fenêtre affichée du graphe RR (0 = tout)
 let RR_SEASON = 'all';                                  // filtre saison/acte du graphe RR ('all' = toutes)
 let STATS_SEASON = 'all';                               // filtre saison/acte des stats agent/map
+let COMPARE_MEMBER = null;                              // second joueur comparé sur le graphe RR
+let COMPARE_SERIES = null;                              // sa série RR (blob + live)
 const FRESH_SIZE = 20;                                  // matches v4 récupérés pour la fraîcheur
 let PROFILE_SHOWN = FRESH_SIZE;                         // nb de parties affichées (pagination locale)
 const PROFILE_SIZE_STEP = 15;                          // pas du bouton "charger plus"
@@ -430,38 +432,81 @@ function populateSeasonFilter(){
   sel.value=RR_SEASON;
   sel.disabled = seasons.length===0;
 }
-// Applique le filtre saison + la fenêtre de période à la série complète, puis trace.
+// Applique un filtre saison + la fenêtre de période à une série RR.
+function sliceSeries(full){
+  let s = (RR_SEASON!=='all') ? (full||[]).filter(e=> e && e.season===RR_SEASON) : (full||[]);
+  return (RR_PERIOD>0 && s.length>RR_PERIOD) ? s.slice(-RR_PERIOD) : s;
+}
+// Applique filtre saison + période, gère la comparaison éventuelle, puis trace.
 function renderCurvePeriod(){
-  let s = (RR_SEASON!=='all') ? RR_FULL.filter(e=> e && e.season===RR_SEASON) : RR_FULL;
-  s = (RR_PERIOD>0 && s.length>RR_PERIOD) ? s.slice(-RR_PERIOD) : s;
+  const s = sliceSeries(RR_FULL);
   document.querySelectorAll('#rrPeriod button').forEach(b=>b.classList.toggle('on', +b.dataset.n===RR_PERIOD));
-  renderCurve(s);
+  let compare=null;
+  if(COMPARE_MEMBER && COMPARE_SERIES && COMPARE_SERIES.length){
+    const cs=sliceSeries(COMPARE_SERIES);
+    if(cs.length) compare={ series:cs, label:COMPARE_MEMBER.name, color:'var(--cyan)' };
+  }
+  renderCurve(s, compare);
 }
 
-// Graphique de progression RR long terme. `series` = points RR normalisés
-// (blob accumulé + live), triés du plus ancien au plus récent.
-function renderCurve(series){
+// Remplit le menu "comparer à" avec les autres membres du roster.
+function populateCompareFilter(){
+  const sel=$('rrCompare'); if(!sel) return;
+  COMPARE_MEMBER=null; COMPARE_SERIES=null;
+  const cur=((STATE.name||'')+'#'+(STATE.tag||'')).toLowerCase();
+  const opts=['<option value="">Comparer à…</option>'];
+  ROSTER.forEach((m,i)=>{ if(((m.name||'')+'#'+(m.tag||'')).toLowerCase()!==cur) opts.push(`<option value="${i}">vs ${esc(m.name)}</option>`); });
+  sel.innerHTML=opts.join('');
+  sel.value='';
+}
+
+// Charge la série RR d'un second joueur et rafraîchit le graphe (superposition).
+async function setCompareMember(idx){
+  if(idx==null || idx<0 || Number.isNaN(idx) || !ROSTER[idx]){ COMPARE_MEMBER=null; COMPARE_SERIES=null; renderCurvePeriod(); return; }
+  const m=ROSTER[idx]; COMPARE_MEMBER=m; COMPARE_SERIES=[];
+  const region=REGION();
+  try{
+    const [blobR, liveR]=await Promise.allSettled([
+      fetchRRHistory(m.name, m.tag),
+      api(`/valorant/v2/mmr-history/${region}/pc/${enc(m.name)}/${enc(m.tag)}`)
+    ]);
+    const blob=blobR.status==='fulfilled'?(blobR.value||[]):[];
+    let live=[]; if(liveR.status==='fulfilled'){ const d=liveR.value.data; live=(d&&d.history)||d||[]; }
+    if(COMPARE_MEMBER===m) COMPARE_SERIES=mergeRRclient(blob, (live||[]).map(normRRclient));
+  }catch(e){ if(COMPARE_MEMBER===m) COMPARE_SERIES=[]; }
+  renderCurvePeriod();
+}
+
+// Série RR normalisée -> valeurs à tracer (elo continu si dispo, sinon cumul RR).
+function eloSeriesToPts(series){
+  const hasElo = series.some(e=>e && e.elo!=null);
+  if(hasElo){
+    let last=null;
+    let pts=series.map(e=>{ if(e && e.elo!=null) last=Number(e.elo); return last; });
+    const firstKnown = pts.find(v=>v!=null) ?? 0;
+    return { pts: pts.map(v=> v==null? firstKnown : v), mode:'elo' };
+  }
+  let acc=0; return { pts: series.map(e=>{ acc+=num(e&&e.change); return acc; }), mode:'rr' };
+}
+
+// Graphique de progression RR long terme. `series` = points RR normalisés (blob
+// accumulé + live). `compare` (optionnel) = {series, label, color} pour superposer
+// la progression d'un second joueur.
+function renderCurve(series, compare){
   const box=$('curve');
   if(!Array.isArray(series) || !series.length){ box.innerHTML='<div class="vh-line mono">Pas d\'historique RR.</div>'; return; }
 
-  // Valeur tracée : elo (continu, grimpe à travers les rangs -> permet les lignes de
-  // paliers) si dispo, sinon somme cumulée des +/- RR.
-  const hasElo = series.some(e=>e && e.elo!=null);
-  let pts, chartMode;
-  if(hasElo){
-    let last=null;
-    pts=series.map(e=>{ if(e && e.elo!=null) last=Number(e.elo); return last; });
-    const firstKnown = pts.find(v=>v!=null) ?? 0;
-    pts=pts.map(v=> v==null? firstKnown : v);
-    chartMode='elo';
-  }else{
-    let acc=0; pts=series.map(e=>{ acc+=num(e&&e.change); return acc; }); chartMode='rr';
-  }
+  // Série -> valeurs traçables : elo (continu) si dispo, sinon cumul des +/- RR.
+  const prim = eloSeriesToPts(series);
+  const pts = prim.pts, chartMode = prim.mode;
+  const cmp = (compare && compare.series && compare.series.length) ? eloSeriesToPts(compare.series) : null;
 
   const n=pts.length, W=640,H=250,mL=46,mR=58,mT=16,mB=30, pw=W-mL-mR, ph=H-mT-mB;
-  const minV=Math.min(...pts), maxV=Math.max(...pts);
+  const allV = cmp ? pts.concat(cmp.pts) : pts;
+  const minV=Math.min(...allV), maxV=Math.max(...allV);
   const pad=Math.max(chartMode==='elo'?10:2,(maxV-minV)*0.12), lo=minV-pad, hi=maxV+pad, R=Math.max(hi-lo,1);
-  const X=i=> mL + (n<=1? pw/2 : i/(n-1)*pw);
+  const Xn=(i,len)=> mL + (len<=1? pw/2 : i/(len-1)*pw);
+  const X=i=> Xn(i,n);
   const Y=v=> mT + (1-(v-lo)/R)*ph;
   const fmtDate = ts => ts? new Date(ts).toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'}) : '';
 
@@ -500,12 +545,18 @@ function renderCurve(series){
   const meta=pts.map((v,i)=>{ const e=series[i]||{}; return { px:X(i), py:Y(v), v, change:num(e.change),
     tier:(e.tier&&e.tier.name)||'', when:fmtDate(e.ts), mode:chartMode }; });
 
+  // Ligne de comparaison (second joueur), tracée sur toute la largeur par son index.
+  const cmpLine = cmp ? cmp.pts.map((v,i)=>`${Xn(i,cmp.pts.length).toFixed(1)},${Y(v).toFixed(1)}`).join(' ') : '';
+  const legend = cmp
+    ? `<span class="rrleg"><i style="background:var(--amber)"></i>${esc(STATE.name)}</span><span class="rrleg"><i style="background:${compare.color}"></i>${esc(compare.label)}</span>`
+    : '';
+
   const yTitle=`<text x="13" y="${mT+ph/2}" transform="rotate(-90 13 ${mT+ph/2})" text-anchor="middle" class="axt">${chartMode==='elo'?'elo (rang)':'RR cumulé'}</text>`;
   const xTitle=`<text x="${mL+pw/2}" y="${H-1}" text-anchor="middle" class="axt">parties classées (ancien → récent)</text>`;
   const pills=series.slice(-15).map(e=>{const c=num(e.change);return `<div class="hpill"><div class="m">${esc(fmtDate(e.ts))}</div><div class="v ${c>=0?'up':'dn'}">${c>=0?'+':''}${c}</div></div>`;}).join('');
 
   box.innerHTML=`
-    <div class="rrcap mono">${n} partie${n>1?'s':''} classée${n>1?'s':''}${chartMode==='elo'?' · progression elo':' · RR cumulé'}</div>
+    <div class="rrcap mono">${n} partie${n>1?'s':''} classée${n>1?'s':''}${chartMode==='elo'?' · progression elo':' · RR cumulé'}${legend?' &nbsp; '+legend:''}</div>
     <div class="rrwrap" style="position:relative">
     <svg class="rrchart" width="100%" viewBox="0 0 ${W} ${H}" role="img" aria-label="Progression du RR">
       <defs><linearGradient id="rrfill" x1="0" y1="0" x2="0" y2="1">
@@ -513,6 +564,7 @@ function renderCurve(series){
       </linearGradient></defs>
       ${grid}
       <polygon points="${area}" fill="url(#rrfill)"/>
+      ${cmpLine?`<polyline points="${cmpLine}" fill="none" stroke="${compare.color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>`:''}
       <polyline points="${line}" fill="none" stroke="var(--amber)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
       ${dots}${ylab}${xlab}${yTitle}${xTitle}
       <line class="rrguide" x1="0" y1="${mT}" x2="0" y2="${mT+ph}" stroke="var(--txt)" stroke-width="1" opacity="0" stroke-dasharray="3 3"/>
@@ -834,6 +886,7 @@ async function loadProfile(){
     RR_FULL = rrSeries;
     populateSeasonFilter();
     populateStatsSeasonFilter();
+    populateCompareFilter();
     renderRank(mmr,overall); renderCurvePeriod(); renderPeakActs();
     if(STATE.matches.length){ 
        const s=STATE.matches[0].me;
@@ -1367,6 +1420,8 @@ function wireStatic(){
   });
   // Filtre saison / acte du graphe RR
   $('rrSeason')?.addEventListener('change', e => { RR_SEASON = e.target.value; renderCurvePeriod(); });
+  // Comparaison avec un autre joueur sur le graphe RR
+  $('rrCompare')?.addEventListener('change', e => { const v=e.target.value; setCompareMember(v===''?-1:+v); });
   // Filtre saison / acte des stats agent/map
   $('statsSeason')?.addEventListener('change', e => { STATS_SEASON = e.target.value; renderStatsCards(filterByMode(STATE.matches, CURRENT_MODE)); });
 

@@ -225,6 +225,21 @@ test("le graphique RR est long terme (blob + live) et trace les lignes de palier
   assert.match(doc.querySelector("#curve .rrtierlab").textContent, /Gold/);
 });
 
+test("comparaison : superpose la progression d'un second joueur", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const sel = doc.querySelector("#rrCompare");
+  assert.ok(sel.options.length > 1, "des joueurs à comparer sont proposés");
+  const opt = [...sel.options].find((o) => o.value !== "");
+  sel.value = opt.value;
+  sel.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 40)); // laisse le fetch + re-render
+  assert.equal(doc.querySelectorAll("#curve .rrleg").length, 2, "légende avec les deux joueurs");
+  assert.ok(doc.querySelectorAll("#curve polyline").length >= 2, "deux courbes tracées (joueur + comparé)");
+});
+
 test("peak par acte : un bloc par acte avec le meilleur rang atteint", async () => {
   const { dom, T } = await boot();
   T.openProfile(0);
