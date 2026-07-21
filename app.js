@@ -26,6 +26,8 @@ let CURRENT_MODE = 'all';
 const MATCH_DETAILS = {};                               // cache id -> match complet (détail chargé à la demande)
 const DETAIL_PENDING = {};                              // id -> true pendant le chargement du détail
 let SELECTED_IDX = -1;                                  // ligne d'historique actuellement ouverte
+let RR_FULL = [];                                       // série RR complète (blob + live) du profil courant
+let RR_PERIOD = 50;                                     // fenêtre affichée du graphe RR (0 = tout)
 const FRESH_SIZE = 20;                                  // matches v4 récupérés pour la fraîcheur
 let PROFILE_SHOWN = FRESH_SIZE;                         // nb de parties affichées (pagination locale)
 const PROFILE_SIZE_STEP = 15;                          // pas du bouton "charger plus"
@@ -409,6 +411,14 @@ function renderRank(mmr,overall){
     <div class="indice">Indice COSMO (8 derniers) <span class="num" style="color:${oT.c}">${overall||'—'}</span><span style="color:${oT.c}">/100 · ${oT.t}</span></div>`;
   setTimeout(()=>{const b=$('rrbar'); if(b) b.style.width=(rr!==null?rr:0)+'%';},60);
 }
+// Applique la fenêtre choisie (sélecteur de période) à la série RR complète, puis
+// trace le graphe. RR_PERIOD=0 -> tout l'historique ; sinon les N plus récentes.
+function renderCurvePeriod(){
+  const s = (RR_PERIOD>0 && RR_FULL.length>RR_PERIOD) ? RR_FULL.slice(-RR_PERIOD) : RR_FULL;
+  document.querySelectorAll('#rrPeriod button').forEach(b=>b.classList.toggle('on', +b.dataset.n===RR_PERIOD));
+  renderCurve(s);
+}
+
 // Graphique de progression RR long terme. `series` = points RR normalisés
 // (blob accumulé + live), triés du plus ancien au plus récent.
 function renderCurve(series){
@@ -764,7 +774,8 @@ async function loadProfile(){
     const scored=STATE.matches.slice(0,8).filter(M=>M.me);
     const overall=scored.length?Math.round(scored.reduce((s,M)=>s+M.me.score100,0)/scored.length):0;
     
-    renderRank(mmr,overall); renderCurve(rrSeries);
+    RR_FULL = rrSeries;
+    renderRank(mmr,overall); renderCurvePeriod();
     if(STATE.matches.length){ 
        const s=STATE.matches[0].me;
        if(s){
@@ -1288,6 +1299,12 @@ function wireStatic(){
       document.querySelectorAll('#modeTabs button').forEach(x => x.classList.toggle('on', x === b));
       renderList();
     }
+  });
+
+  // Sélecteur de période du graphe RR (court terme <-> long terme)
+  $('rrPeriod')?.addEventListener('click', e => {
+    const b = e.target.closest('button[data-n]');
+    if (b) { RR_PERIOD = +b.dataset.n; renderCurvePeriod(); }
   });
 
   // Wiring Tribunal Equipe

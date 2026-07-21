@@ -366,7 +366,17 @@
         <div class="card verdict-hero" id="vcard"><h2>Dernier match <em>indice + verdict</em></h2><div id="verdict"></div></div>
       </div>
       
-      <div class="card full"><h2>Progression RR <em>derniers matchs</em></h2><div id="curve"></div></div>
+      <div class="card full">
+        <h2 class="tabs-header">
+          <span>Progression RR <em>court → long terme</em></span>
+          <div class="seg" id="rrPeriod" style="margin:0;">
+            <button data-n="15">15</button>
+            <button data-n="50" class="on">50</button>
+            <button data-n="0">Tout</button>
+          </div>
+        </h2>
+        <div id="curve"></div>
+      </div>
       
       <!-- LISTE DES MATCHS AVEC ONGLETS -->
       <div class="card full">
@@ -475,6 +485,6 @@
   </div>
 </section>
 
-<script src="app.js?v=20260702" defer></script>
+<script src="app.js?v=20260702b" defer></script>
 </body>
 </html>

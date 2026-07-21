@@ -117,7 +117,7 @@ async function boot() {
 
   let code = readFileSync(join(root, "app.js"), "utf8");
   // Épilogue de test : expose les fonctions + un accès à l'état interne.
-  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, showMatch, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, init, getState: () => STATE, getRoster: () => ROSTER };";
+  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, showMatch, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, init, getState: () => STATE, getRoster: () => ROSTER };";
   vm.runInContext(code, ctx);
   const T = ctx.__t;
   await T.init(); // garantit roster chargé + grille construite
@@ -223,6 +223,24 @@ test("le graphique RR est long terme (blob + live) et trace les lignes de palier
   // Ligne(s) de palier : au moins un libellé de rang (mode elo)
   assert.ok(doc.querySelector("#curve .rrtierlab"), "au moins un libellé de palier est tracé");
   assert.match(doc.querySelector("#curve .rrtierlab").textContent, /Gold/);
+});
+
+test("le sélecteur de période limite le graphe (court terme) ou montre tout (long terme)", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const big = Array.from({ length: 60 }, (_, i) => ({
+    id: "g" + i, elo: 1300 + i, change: 1, tier: { id: 13, name: "Gold 2" },
+    ts: Date.parse("2026-06-01T10:00:00Z") + i * 86400000,
+  }));
+  T.setRRState(big, 15); T.renderCurvePeriod();
+  assert.match(doc.querySelector("#curve .rrcap").textContent, /15 parties/, "court terme = 15 dernières");
+  assert.ok(doc.querySelector('#rrPeriod button[data-n="15"]').classList.contains("on"), "bouton 15 actif");
+
+  T.setRRState(big, 0); T.renderCurvePeriod();
+  assert.match(doc.querySelector("#curve .rrcap").textContent, /60 parties/, "long terme = tout l'historique");
+  assert.ok(doc.querySelector('#rrPeriod button[data-n="0"]').classList.contains("on"), "bouton Tout actif");
 });
 
 test("survol du graphique RR : infobulle avec la valeur (partie + RR)", async () => {
