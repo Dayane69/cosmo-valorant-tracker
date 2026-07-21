@@ -16,6 +16,9 @@ afin de garder la clé API **hors du navigateur**.
 - **Tribunal COSMO** — la jauge *Unlucky or Bad* qui juge tes dernières parties classées.
 - **Leaderboard** — classement de la squad, badges (Carry, Bourreau, Headhunter…), comparateur 1v1 et détection des duos.
 - **Historique grandissant** — un cron quotidien fait grossir l'historique stocké de chaque membre côté serveur, sans qu'il faille ouvrir un profil (voir plus bas).
+- **Comparaison 2 joueurs** — superpose la progression RR d'un second joueur sur le graphe.
+- **Roster éditable depuis l'UI** — ⚙ Paramètres → *Modifier le roster* : ajoute/retire/édite les membres (stocké côté serveur dans un blob, protégé par `REFRESH_TOKEN`, `roster.json` reste la valeur de départ).
+- **PWA** — installable sur mobile/desktop (manifest + icône + service worker qui cache le shell ; les données restent toujours fraîches).
 
 ## 🗂️ Structure du projet
 

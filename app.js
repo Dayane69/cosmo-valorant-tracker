@@ -1348,6 +1348,20 @@ function pickVs(e) {
 // Charge roster.json (membres + région par défaut), source de vérité partagée
 // avec la fonction planifiée. Repli silencieux si indisponible.
 async function loadRoster(){
+  // 1) roster stocké (éditable depuis l'UI, via Netlify Blob)
+  try{
+    const r=await fetch('/.netlify/functions/roster');
+    if(r.ok){
+      const d=await r.json();
+      if(d && d.roster && Array.isArray(d.roster.members) && d.roster.members.length){
+        ROSTER=d.roster.members;
+        if(d.roster.region) DEFAULT_REGION=d.roster.region;
+        applyRegionDefault();
+        return;
+      }
+    }
+  }catch(e){ /* pas de roster stocké : on retombe sur roster.json */ }
+  // 2) repli : roster.json (valeur de départ, versionnée dans le repo)
   try{
     const r=await fetch('roster.json');
     if(r.ok){
@@ -1356,8 +1370,9 @@ async function loadRoster(){
       if(d && d.region) DEFAULT_REGION=d.region;
     }
   }catch(e){ /* roster indispo : la grille restera vide */ }
-  const sel=$('region'); if(sel && DEFAULT_REGION) sel.value=DEFAULT_REGION;
+  applyRegionDefault();
 }
+function applyRegionDefault(){ const sel=$('region'); if(sel && DEFAULT_REGION) sel.value=DEFAULT_REGION; }
 
 // Construit les cartes de l'accueil à partir du ROSTER (plus de duplication en HTML).
 function renderRoster(){
@@ -1379,6 +1394,53 @@ function renderRoster(){
   wireRosterImgs();
 }
 
+/* ===================== ÉDITEUR DE ROSTER ===================== */
+// Une ligne de formulaire pour un membre.
+function rosterRowHTML(m){
+  m=m||{};
+  const f=(k,ph)=>`<input data-f="${k}" placeholder="${ph}" value="${esc(m[k]||'')}">`;
+  return `<div class="edrow">
+    ${f('name','pseudo')}${f('tag','tag')}${f('agent','agent')}${f('role','rôle')}
+    ${f('color','#couleur')}${f('uuid','uuid agent')}${f('customImg','URL GIF (optionnel)')}
+    <button class="edrm" type="button" title="Retirer ce membre">✕</button>
+  </div>`;
+}
+function addRosterRow(m){ const host=$('edMembers'); if(host) host.insertAdjacentHTML('beforeend', rosterRowHTML(m)); }
+function renderRosterEditor(){
+  const reg=$('edRegion'); if(reg) reg.value=DEFAULT_REGION||'eu';
+  const host=$('edMembers'); if(!host) return;
+  host.innerHTML='';
+  (ROSTER.length?ROSTER:[{}]).forEach(m=>addRosterRow(m));
+}
+function collectRoster(){
+  const members=[...document.querySelectorAll('#edMembers .edrow')].map(row=>{
+    const g=f=>{const el=row.querySelector(`[data-f="${f}"]`);return el?el.value.trim():'';};
+    const m={ name:g('name'), tag:g('tag'), agent:g('agent'), role:g('role'), color:g('color')||'#8696a6' };
+    const uuid=g('uuid'), img=g('customImg');
+    if(uuid) m.uuid=uuid; if(img) m.customImg=img;
+    m.mono=(m.agent||m.name).slice(0,2);
+    return m;
+  }).filter(m=>m.name && m.tag);
+  return { region:(($('edRegion')&&$('edRegion').value)||'eu').trim()||'eu', members };
+}
+async function saveRoster(){
+  const out=$('edStatus'), tokEl=$('edToken');
+  const token=((tokEl&&tokEl.value)||'').trim();
+  if(!token){ if(out) out.textContent='Entre la clé REFRESH_TOKEN (configurée sur Netlify).'; return; }
+  const roster=collectRoster();
+  if(!roster.members.length){ if(out) out.textContent='Ajoute au moins un membre (pseudo + tag).'; return; }
+  if(out) out.textContent='Enregistrement…';
+  try{
+    const r=await fetch(`/.netlify/functions/roster?key=${enc(token)}`, {
+      method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(roster)
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok || d.ok===false){ if(out) out.textContent='Échec : '+((d&&d.error)||('http '+r.status)); return; }
+    if(out) out.textContent=`Enregistré ✓ (${d.count} membres). Mise à jour…`;
+    await loadRoster(); renderRoster(); fillRanks(); renderRosterEditor();
+  }catch(e){ if(out) out.textContent='Erreur réseau : '+((e&&e.message)||e); }
+}
+
 /* ===================== WIRING ===================== */
 function wireRosterImgs(){
   document.querySelectorAll('.agentcard .portrait').forEach(img=>{
@@ -1388,10 +1450,21 @@ function wireRosterImgs(){
   });
 }
 
+let WIRED = false;
 function wireStatic(){
+  if(WIRED) return;   // ne câbler qu'une fois (init peut être rappelé)
+  WIRED = true;
   $('btnGear').addEventListener('click',toggleSheet);
   $('btnRanks').addEventListener('click',fillRanks);
   $('btnRefreshNow')?.addEventListener('click', saveAllHistory);
+  // Éditeur de roster (⚙ Paramètres)
+  $('btnEditRoster')?.addEventListener('click', () => {
+    const ed=$('rosterEditor'); if(!ed) return;
+    ed.hidden=!ed.hidden; if(!ed.hidden) renderRosterEditor();
+  });
+  $('edAdd')?.addEventListener('click', () => addRosterRow());
+  $('edMembers')?.addEventListener('click', e => { const b=e.target.closest('.edrm'); if(b) b.closest('.edrow')?.remove(); });
+  $('edSave')?.addEventListener('click', saveRoster);
   $('btnBack').addEventListener('click',showHome);
   $('btnBackTrib').addEventListener('click',showHome);
   $('btnBackLb').addEventListener('click',showHome);

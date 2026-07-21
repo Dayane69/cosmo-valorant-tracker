@@ -79,6 +79,13 @@
   .field label{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
   .field input,.field select{background:var(--bg);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:9px 11px;font-size:13px}
   .secnote{font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:10px}
+  /* Éditeur de roster */
+  .ed-head{font-size:10px;color:var(--dim);letter-spacing:.06em;margin-bottom:6px}
+  .edrow{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:7px}
+  .edrow input{background:var(--bg);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:7px 8px;font-family:var(--mono);font-size:12px;flex:1;min-width:70px}
+  .edrow input[data-f="name"],.edrow input[data-f="customImg"]{min-width:110px}
+  .edrow .edrm{flex:none;border:1px solid var(--line);border-radius:6px;color:var(--loss);width:30px;height:30px;font-size:12px}
+  .edrow .edrm:hover{border-color:var(--loss);background:rgba(255,93,93,.1)}
 
   /* ============ PROFILE / TRACKER ============ */
   #profile{padding:20px 16px 70px;background:radial-gradient(1000px 520px at 85% -5%,rgba(86,216,201,.05),transparent 60%),var(--bg)}
@@ -369,6 +376,19 @@
         <button class="btn" id="btnRefreshNow">⟳ Sauvegarder l'historique de la squad</button>
       </div>
       <div class="secnote" id="refreshStatus">Sauvegarde l'historique de chaque joueur un par un (espacé pour respecter la limite de l'API). Sinon c'est automatique chaque jour à 04:00 UTC.</div>
+
+      <div class="row" style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px;">
+        <button class="btn" id="btnEditRoster" type="button">✎ Modifier le roster</button>
+      </div>
+      <div id="rosterEditor" hidden style="margin-top:10px;">
+        <div class="field" style="max-width:120px;margin-bottom:10px;"><label for="edRegion">Région</label><input id="edRegion" placeholder="eu"></div>
+        <div class="ed-head mono">pseudo · tag · agent · rôle · couleur · uuid agent · URL GIF</div>
+        <div id="edMembers"></div>
+        <button class="btn" id="edAdd" type="button" style="margin-top:8px;">+ Ajouter un membre</button>
+        <div class="field" style="margin-top:14px;max-width:280px;"><label for="edToken">Clé REFRESH_TOKEN</label><input id="edToken" type="password" autocomplete="off" placeholder="secret serveur"></div>
+        <div style="margin-top:10px;"><button class="btn" id="edSave" type="button">Enregistrer le roster</button></div>
+        <div class="secnote" id="edStatus">Les modifs sont partagées (stockées côté serveur) et remplacent roster.json. Laisse « uuid agent » vide et mets une URL GIF pour un membre custom.</div>
+      </div>
     </div>
     <!-- Cartes générées dynamiquement depuis roster.json par renderRoster() (app.js) -->
     <div class="roster" id="roster"></div>
@@ -513,6 +533,6 @@
   </div>
 </section>
 
-<script src="app.js?v=20260704" defer></script>
+<script src="app.js?v=20260704b" defer></script>
 </body>
 </html>

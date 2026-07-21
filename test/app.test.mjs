@@ -94,6 +94,7 @@ function makeFetch() {
       return jsonRes({ matches: [storedV1("m2", "2026-06-23T10:00:00Z"), storedV1("m3", "2026-06-22T10:00:00Z")] });
     }
     if (url.includes("/.netlify/functions/save-history")) return jsonRes({ ok: true, added: 0, total: 3 });
+    if (url.includes("/.netlify/functions/roster")) return jsonRes({ roster: null, ok: true, count: 2 }); // GET->fallback, POST->ok
 
     if (url.includes("valorant-api.com/v1/agents")) return jsonRes({ data: [{ displayName: "Cypher", displayIcon: "ic" }, { displayName: "Jett", displayIcon: "ij" }] });
     if (url.includes("valorant-api.com/v1/competitivetiers")) return jsonRes({ data: [{ tiers: [
@@ -167,6 +168,29 @@ test("le scoreboard affiche le classement par ACS (1er, 2e, …)", async () => {
   assert.ok(positions.includes("2e"), "le second ACS est marqué 2e");
   const top = doc.querySelector("#sb td.pos.top");
   assert.ok(top && top.textContent.trim() === "1er", "le 1er a la classe de mise en avant");
+});
+
+test("éditeur de roster : ajouter/retirer des lignes puis enregistrer", async () => {
+  const { dom } = await boot();
+  const doc = dom.window.document;
+  doc.getElementById("btnEditRoster").dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+  const rows0 = doc.querySelectorAll("#edMembers .edrow").length;
+  assert.ok(rows0 >= 1, "lignes pré-remplies depuis le roster");
+  doc.getElementById("edAdd").dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+  assert.equal(doc.querySelectorAll("#edMembers .edrow").length, rows0 + 1, "ajout d'une ligne");
+  doc.querySelector("#edMembers .edrow .edrm").dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+  assert.equal(doc.querySelectorAll("#edMembers .edrow").length, rows0, "retrait d'une ligne");
+  // Sans token -> message d'invite
+  doc.getElementById("edSave").dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+  assert.match(doc.getElementById("edStatus").textContent, /REFRESH_TOKEN/);
+  // Avec token + ligne valide -> succès (mock)
+  const row = doc.querySelector("#edMembers .edrow");
+  row.querySelector('[data-f="name"]').value = "koko";
+  row.querySelector('[data-f="tag"]').value = "jetti";
+  doc.getElementById("edToken").value = "secret";
+  doc.getElementById("edSave").dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 40));
+  assert.match(doc.getElementById("edStatus").textContent, /Enregistré/);
 });
 
 test("la sauvegarde manuelle enregistre TOUS les membres, un par un", async () => {
