@@ -1462,12 +1462,21 @@ function wireStatic(){
 }
 
 /* ===================== INIT ===================== */
+// Enregistre le service worker (PWA) — sans effet en dehors d'un navigateur compatible.
+function registerSW(){
+  try{
+    if(typeof navigator!=='undefined' && 'serviceWorker' in navigator && location.protocol.startsWith('http')){
+      navigator.serviceWorker.register('/sw.js').catch(()=>{});
+    }
+  }catch(e){}
+}
 async function init(){
   await loadRoster();   // source de vérité : doit être chargée avant de bâtir la grille
   renderRoster();
   wireStatic();
   drawGauge('gaugeTrib');
   fillRanks();
+  registerSW();
 }
 if(typeof document!=='undefined'){
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init);

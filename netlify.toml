@@ -22,6 +22,14 @@
   for = "/roster.json"
   [headers.values]
     cache-control = "public, max-age=0, must-revalidate"
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    cache-control = "public, max-age=0, must-revalidate"
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    cache-control = "public, max-age=0, must-revalidate"
 
 # Fonction planifiée : le cron est déclaré en inline dans
 # netlify/functions/refresh-matches.mjs (export const config = { schedule }).

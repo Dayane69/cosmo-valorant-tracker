@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="COSMO">
+  <rect width="512" height="512" fill="#0a0f15"/>
+  <rect x="96" y="96" width="320" height="320" rx="72" fill="#ff4655"/>
+  <text x="256" y="268" font-family="system-ui,Segoe UI,Arial,sans-serif" font-size="240" font-weight="900" fill="#fff" text-anchor="middle" dominant-baseline="central" letter-spacing="-6">C</text>
+</svg>
