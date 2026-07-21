@@ -164,6 +164,8 @@
   .rrchart .axt{font-family:var(--mono);font-size:10px;fill:var(--dim);letter-spacing:.06em;text-transform:uppercase}
   .rrchart .rrtierlab{font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.02em}
   .rrcap{font-family:var(--mono);font-size:11px;color:var(--dim);margin:2px 0 6px}
+  .rrsel{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:7px 10px;font-family:var(--mono);font-size:12.5px;max-width:190px}
+  .rrsel:hover{border-color:var(--amber)} .rrsel:disabled{opacity:.5}
   /* Infobulle de survol du graphique RR */
   .rrwrap{position:relative}
   .rrtip{position:absolute;transform:translate(-50%,-130%);background:var(--panel2);border:1px solid var(--line);border-radius:8px;
@@ -369,10 +371,13 @@
       <div class="card full">
         <h2 class="tabs-header">
           <span>Progression RR <em>court → long terme</em></span>
-          <div class="seg" id="rrPeriod" style="margin:0;">
-            <button data-n="15">15</button>
-            <button data-n="50" class="on">50</button>
-            <button data-n="0">Tout</button>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <select id="rrSeason" class="rrsel" title="Filtrer par saison / acte"><option value="all">Toutes les saisons</option></select>
+            <div class="seg" id="rrPeriod" style="margin:0;">
+              <button data-n="15">15</button>
+              <button data-n="50" class="on">50</button>
+              <button data-n="0">Tout</button>
+            </div>
           </div>
         </h2>
         <div id="curve"></div>
@@ -485,6 +490,6 @@
   </div>
 </section>
 
-<script src="app.js?v=20260702b" defer></script>
+<script src="app.js?v=20260703" defer></script>
 </body>
 </html>

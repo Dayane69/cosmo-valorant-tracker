@@ -108,7 +108,8 @@ export function normRRentry(h) {
     : (h.mmr_change_to_last_game != null ? Number(h.mmr_change_to_last_game) : null);
   const tier = h.tier ? { id: (h.tier.id != null ? h.tier.id : null), name: h.tier.name || "" }
     : (h.currenttier != null ? { id: h.currenttier, name: h.currenttierpatched || "" } : null);
-  const e = { id, elo, rr, change, tier, date: h.date || h.date_raw || null };
+  const season = (h.season && (h.season.short || h.season.id)) || h.season_id || null;
+  const e = { id, elo, rr, change, tier, season, date: h.date || h.date_raw || null };
   e.ts = rrTime({ ...e, date_raw: h.date_raw });
   return e;
 }

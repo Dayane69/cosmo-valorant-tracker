@@ -28,6 +28,7 @@ const DETAIL_PENDING = {};                              // id -> true pendant le
 let SELECTED_IDX = -1;                                  // ligne d'historique actuellement ouverte
 let RR_FULL = [];                                       // série RR complète (blob + live) du profil courant
 let RR_PERIOD = 50;                                     // fenêtre affichée du graphe RR (0 = tout)
+let RR_SEASON = 'all';                                  // filtre saison/acte du graphe RR ('all' = toutes)
 const FRESH_SIZE = 20;                                  // matches v4 récupérés pour la fraîcheur
 let PROFILE_SHOWN = FRESH_SIZE;                         // nb de parties affichées (pagination locale)
 const PROFILE_SIZE_STEP = 15;                          // pas du bouton "charger plus"
@@ -145,7 +146,8 @@ function normRRclient(h){
   const rr=h.ranking_in_tier!=null?Number(h.ranking_in_tier):(h.rr!=null?Number(h.rr):null);
   const change=h.last_change!=null?Number(h.last_change):(h.mmr_change_to_last_game!=null?Number(h.mmr_change_to_last_game):null);
   const tier=h.tier?{id:(h.tier.id!=null?h.tier.id:null),name:h.tier.name||''}:(h.currenttier!=null?{id:h.currenttier,name:h.currenttierpatched||''}:null);
-  const e={id,elo,rr,change,tier,map:(h.map&&h.map.name)||(h.map||''),date:h.date||h.date_raw||null};
+  const season=(h.season&&(h.season.short||h.season.id))||h.season_id||null;
+  const e={id,elo,rr,change,tier,season,map:(h.map&&h.map.name)||(h.map||''),date:h.date||h.date_raw||null};
   e.ts=rrTs({...e,date_raw:h.date_raw});
   return e;
 }
@@ -411,10 +413,26 @@ function renderRank(mmr,overall){
     <div class="indice">Indice COSMO (8 derniers) <span class="num" style="color:${oT.c}">${overall||'—'}</span><span style="color:${oT.c}">/100 · ${oT.t}</span></div>`;
   setTimeout(()=>{const b=$('rrbar'); if(b) b.style.width=(rr!==null?rr:0)+'%';},60);
 }
-// Applique la fenêtre choisie (sélecteur de période) à la série RR complète, puis
-// trace le graphe. RR_PERIOD=0 -> tout l'historique ; sinon les N plus récentes.
+// "e8a3" -> "E8 · A3" ; sinon le code brut en majuscules.
+function seasonLabel(short){
+  const m=/e(\d+)a(\d+)/i.exec(String(short||''));
+  return m ? `E${m[1]} · A${m[2]}` : String(short||'').toUpperCase();
+}
+// (Re)remplit le menu Saison/Acte à partir des saisons présentes dans RR_FULL.
+function populateSeasonFilter(){
+  const sel=$('rrSeason'); if(!sel) return;
+  const seasons=[...new Set(RR_FULL.map(e=>e&&e.season).filter(Boolean))]; // ordre chronologique
+  if(!seasons.includes(RR_SEASON)) RR_SEASON='all';                        // saison absente du nouveau profil
+  const opts=['<option value="all">Toutes les saisons</option>']
+    .concat(seasons.slice().reverse().map(sh=>`<option value="${esc(sh)}">${esc(seasonLabel(sh))}</option>`)); // plus récent en haut
+  sel.innerHTML=opts.join('');
+  sel.value=RR_SEASON;
+  sel.disabled = seasons.length===0;
+}
+// Applique le filtre saison + la fenêtre de période à la série complète, puis trace.
 function renderCurvePeriod(){
-  const s = (RR_PERIOD>0 && RR_FULL.length>RR_PERIOD) ? RR_FULL.slice(-RR_PERIOD) : RR_FULL;
+  let s = (RR_SEASON!=='all') ? RR_FULL.filter(e=> e && e.season===RR_SEASON) : RR_FULL;
+  s = (RR_PERIOD>0 && s.length>RR_PERIOD) ? s.slice(-RR_PERIOD) : s;
   document.querySelectorAll('#rrPeriod button').forEach(b=>b.classList.toggle('on', +b.dataset.n===RR_PERIOD));
   renderCurve(s);
 }
@@ -775,6 +793,7 @@ async function loadProfile(){
     const overall=scored.length?Math.round(scored.reduce((s,M)=>s+M.me.score100,0)/scored.length):0;
     
     RR_FULL = rrSeries;
+    populateSeasonFilter();
     renderRank(mmr,overall); renderCurvePeriod();
     if(STATE.matches.length){ 
        const s=STATE.matches[0].me;
@@ -1306,6 +1325,8 @@ function wireStatic(){
     const b = e.target.closest('button[data-n]');
     if (b) { RR_PERIOD = +b.dataset.n; renderCurvePeriod(); }
   });
+  // Filtre saison / acte du graphe RR
+  $('rrSeason')?.addEventListener('change', e => { RR_SEASON = e.target.value; renderCurvePeriod(); });
 
   // Wiring Tribunal Equipe
   $('tribMembers').addEventListener('click', e => {

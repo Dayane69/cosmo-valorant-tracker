@@ -72,8 +72,8 @@ function makeFetch() {
       if (path.includes("/account/")) return jsonRes({ data: { puuid: "p1" } });
       if (path.includes("/mmr/")) return jsonRes({ data: { current: { tier: { name: "Gold 2" }, rr: 42, images: { large: "http://img/large.png" } } } });
       if (path.includes("/mmr-history/")) return jsonRes({ data: { history: [
-        { match_id: "m1", last_change: 18, elo: 1345, ranking_in_tier: 42, tier: { id: 13, name: "Gold 2" }, date: "2026-06-24T10:00:00Z" },
-        { match_id: "m2", last_change: -15, elo: 1330, ranking_in_tier: 24, tier: { id: 13, name: "Gold 2" }, date: "2026-06-23T10:00:00Z" },
+        { match_id: "m1", last_change: 18, elo: 1345, rr: 42, tier: { id: 13, name: "Gold 2" }, season: { short: "e8a3" }, date: "2026-06-24T10:00:00Z" },
+        { match_id: "m2", last_change: -15, elo: 1330, rr: 24, tier: { id: 13, name: "Gold 2" }, season: { short: "e8a3" }, date: "2026-06-23T10:00:00Z" },
       ] } });
       if (path.includes("/v4/matches/")) return jsonRes({ data: [rawMatch("m1", "2026-06-24T10:00:00Z"), rawMatch("m2", "2026-06-23T10:00:00Z")] });
       if (path.includes("/v4/match/")) return jsonRes({ data: fullMatchById() }); // détail complet (match-by-id)
@@ -85,9 +85,9 @@ function makeFetch() {
       if (kind === "rr") {
         // progression RR accumulée (long terme) : 2 vieux points + m1 (doublon avec le live)
         return jsonRes({ rr: [
-          { id: "r1", elo: 1300, change: 20, ranking_in_tier: 0, tier: { id: 13, name: "Gold 2" }, ts: Date.parse("2026-06-01T10:00:00Z") },
-          { id: "r2", elo: 1320, change: 20, ranking_in_tier: 20, tier: { id: 13, name: "Gold 2" }, ts: Date.parse("2026-06-02T10:00:00Z") },
-          { id: "m1", elo: 1345, change: 18, ranking_in_tier: 42, tier: { id: 13, name: "Gold 2" }, ts: Date.parse("2026-06-24T10:00:00Z") },
+          { id: "r1", elo: 1300, change: 20, rr: 0, tier: { id: 13, name: "Gold 2" }, season: "e8a2", ts: Date.parse("2026-06-01T10:00:00Z") },
+          { id: "r2", elo: 1320, change: 20, rr: 20, tier: { id: 13, name: "Gold 2" }, season: "e8a2", ts: Date.parse("2026-06-02T10:00:00Z") },
+          { id: "m1", elo: 1345, change: 18, rr: 42, tier: { id: 13, name: "Gold 2" }, season: "e8a3", ts: Date.parse("2026-06-24T10:00:00Z") },
         ] });
       }
       // blob accumulé au format stored-matches v1 : m2 (doublon) + m3 (nouveau)
@@ -223,6 +223,26 @@ test("le graphique RR est long terme (blob + live) et trace les lignes de palier
   // Ligne(s) de palier : au moins un libellé de rang (mode elo)
   assert.ok(doc.querySelector("#curve .rrtierlab"), "au moins un libellé de palier est tracé");
   assert.match(doc.querySelector("#curve .rrtierlab").textContent, /Gold/);
+});
+
+test("le filtre saison/acte restreint le graphe RR à l'acte choisi", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const sel = doc.querySelector("#rrSeason");
+  const opts = [...sel.options].map((o) => o.value);
+  assert.ok(opts.includes("e8a2") && opts.includes("e8a3"), "les actes présents (e8a2, e8a3) sont listés");
+  // Toutes = 4 points (r1,r2 en e8a2 + m1,m2 en e8a3)
+  assert.match(doc.querySelector("#curve .rrcap").textContent, /4 parties/);
+  // Filtre e8a2 -> 2 points
+  sel.value = "e8a2";
+  sel.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  assert.match(doc.querySelector("#curve .rrcap").textContent, /2 parties/, "seul l'acte e8a2 (2 parties)");
+  // Filtre e8a3 -> 2 points
+  sel.value = "e8a3";
+  sel.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  assert.match(doc.querySelector("#curve .rrcap").textContent, /2 parties/, "seul l'acte e8a3 (2 parties)");
 });
 
 test("le sélecteur de période limite le graphe (court terme) ou montre tout (long terme)", async () => {
