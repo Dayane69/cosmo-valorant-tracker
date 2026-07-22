@@ -289,7 +289,7 @@
   .lb-rank{font-family:var(--mono);font-size:18px;font-weight:800;text-align:center;color:var(--dim)}
   .lb-rank.medal{font-size:30px}
   .lb-bust{width:50px;height:50px;border-radius:10px;overflow:hidden;position:relative;background:linear-gradient(160deg,var(--panel2),#0a0f14);border:1px solid var(--line)}
-  .lb-bust img{position:absolute;width:130%;left:-15%;top:-6%}
+  .lb-bust img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 14%}
   .lb-name b{font-size:16px;font-weight:800;letter-spacing:-.01em;display:block}
   .lb-name span{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
   .lb-stat{font-family:var(--mono);text-align:right;min-width:54px}
@@ -533,6 +533,6 @@
   </div>
 </section>
 
-<script src="app.js?v=20260704c" defer></script>
+<script src="app.js?v=20260704d" defer></script>
 </body>
 </html>

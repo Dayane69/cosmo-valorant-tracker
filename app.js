@@ -843,7 +843,7 @@ function openProfile(idx){
   STATE={puuid:null,allMatches:[],matches:[],name:m.name,tag:m.tag};
   PROFILE_SHOWN = FRESH_SIZE;
 
-  const bustSrc = m.customImg || `${MEDIA}/${m.uuid}/bustportrait.png`;
+  const bustSrc = m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`; // bustportrait.png n'existe pas (404) chez valorant-api
 
   $('phead').innerHTML=`
     <div class="pbust ${m.customImg?'custom':''}" style="--pc:${m.color}">
@@ -1260,7 +1260,7 @@ function renderLeaderboard() {
     const rankHtml = (!empty && idx < 3)
       ? `<div class="lb-rank medal">${medals[idx]}</div>`
       : `<div class="lb-rank">${idx+1}.</div>`;
-    const bustSrc = m.customImg || `${MEDIA}/${m.uuid}/bustportrait.png`;
+    const bustSrc = m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`; // bustportrait.png n'existe pas (404) chez valorant-api
     const bustImg = m.customImg
       ? `<img src="${bustSrc}" alt="" style="width:100%;left:0;top:0;height:100%;object-fit:cover;">`
       : `<img src="${bustSrc}" alt="">`;
