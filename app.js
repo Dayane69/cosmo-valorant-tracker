@@ -60,6 +60,10 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ESC_MAP[c]);
    - On tient compte du contexte : classement dans le lobby, victoire/défaite,
      et surtout des parties écourtées (forfait) où l'échantillon est trop petit.
 */
+// Deux jeux de poids : avec KAST (quand les données de round sont dispo) et
+// sans (parties compactes du blob) — le KAST englobe la survie, d'où le
+// remplacement du critère "survie" plutôt qu'un cumul des deux.
+const IDX_W_KAST = { acs:0.26, kast:0.20, kda:0.16, dd:0.16, adr:0.14, hs:0.08 };
 const IDX_W     = { acs:0.30, kda:0.20, dd:0.18, adr:0.14, surv:0.10, hs:0.08 };
 const LOBBY_W   = 0.20;  // part du classement dans le lobby dans la note finale
 const WIN_BONUS = 2.5;   // petit bonus/malus victoire-défaite
@@ -75,26 +79,82 @@ function perfParts(o){
   // Peu de tirs = information peu fiable -> on ramène vers la moyenne.
   if(shots > 0 && shots < 30) hsN = 50 + (hsN - 50) * (shots / 30);
 
-  return [
+  // Le KAST n'est calculable que si la partie fournit le détail des rounds.
+  const hasKast = o.kast != null && !isNaN(o.kast);
+  const W = hasKast ? IDX_W_KAST : IDX_W;
+
+  const parts = [
     { key:'acs',  label:'ACS',      raw:num(o.acs), fmt:v=>String(Math.round(v)),
-      n:clamp((num(o.acs) - 60) / 2.8),   w:IDX_W.acs,
+      n:clamp((num(o.acs) - 60) / 2.8),   w:W.acs,
       hint:'impact par round · 200 ≈ moyen' },
+  ];
+  if(hasKast) parts.push(
+    { key:'kast', label:'KAST',     raw:num(o.kast), fmt:v=>Math.round(v)+'%',
+      n:clamp(50 + (num(o.kast) - 70) * 2.5), w:W.kast,
+      hint:'rounds avec Kill, Assist, Survie ou Trade · 70% ≈ moyen' });
+  parts.push(
     { key:'kda',  label:'KDA',      raw:kda,        fmt:v=>v.toFixed(2),
-      n:clamp((kda - 0.35) * 77),         w:IDX_W.kda,
+      n:clamp((kda - 0.35) * 77),         w:W.kda,
       hint:'(kills + assists/2) ÷ morts · 1.00 ≈ moyen' },
     { key:'dd',   label:'Δ Dégâts', raw:num(o.dd),  fmt:v=>(v>=0?'+':'')+Math.round(v),
-      n:clamp(50 + num(o.dd) * 0.6),      w:IDX_W.dd,
+      n:clamp(50 + num(o.dd) * 0.6),      w:W.dd,
       hint:'dégâts infligés − subis, par round · 0 ≈ moyen' },
     { key:'adr',  label:'ADR',      raw:num(o.adr), fmt:v=>String(Math.round(v)),
-      n:clamp((num(o.adr) - 40) / 2),     w:IDX_W.adr,
-      hint:'dégâts par round · 140 ≈ moyen' },
+      n:clamp((num(o.adr) - 40) / 2),     w:W.adr,
+      hint:'dégâts par round · 140 ≈ moyen' });
+  if(!hasKast) parts.push(
     { key:'surv', label:'Survie',   raw:dpr,        fmt:v=>v.toFixed(2)+' morts/round',
-      n:clamp(50 + (0.65 - dpr) * 130),   w:IDX_W.surv,
-      hint:'0.65 mort par round ≈ moyen' },
+      n:clamp(50 + (0.65 - dpr) * 130),   w:W.surv,
+      hint:'0.65 mort par round ≈ moyen · (remplacé par le KAST si dispo)' });
+  parts.push(
     { key:'hs',   label:'HS%',      raw:num(o.hs),  fmt:v=>Math.round(v)+'%',
-      n:hsN,                               w:IDX_W.hs,
-      hint:'20% ≈ moyen · atténué si peu de tirs' },
-  ];
+      n:hsN,                               w:W.hs,
+      hint:'20% ≈ moyen · atténué si peu de tirs' });
+  return parts;
+}
+
+/* KAST : % de rounds où le joueur a eu un Kill, un Assist, a Survécu, ou a été
+   Tradé (son tueur abattu par un coéquipier dans les 3 s).
+   Calculé depuis m.kills[] — déjà présent dans la réponse, donc aucun appel en plus. */
+const TRADE_MS = 3000;
+function kastByPuuid(m, rounds){
+  const kills = Array.isArray(m && m.kills) ? m.kills : [];
+  const players = Array.isArray(m && m.players) ? m.players : [];
+  if(!kills.length || !rounds || !players.length) return null;
+
+  const byRound = new Map();
+  kills.forEach(k=>{ const r=num(k.round); if(!byRound.has(r)) byRound.set(r,[]); byRound.get(r).push(k); });
+
+  const puuids = players.map(p=>p.puuid).filter(Boolean);
+  if(!puuids.length) return null;
+  const hit = {}; puuids.forEach(p=>{ hit[p]=0; });
+
+  byRound.forEach(ks=>{
+    const did=new Set(), died=new Map();
+    ks.forEach(k=>{
+      const kp=k.killer&&k.killer.puuid, v=k.victim||{};
+      if(kp) did.add(kp);
+      (k.assistants||[]).forEach(a=>{ if(a&&a.puuid) did.add(a.puuid); });
+      if(v.puuid) died.set(v.puuid, {t:num(k.time_in_round_in_ms), killer:kp, team:v.team});
+    });
+    puuids.forEach(pu=>{
+      if(did.has(pu)) { hit[pu]++; return; }          // Kill ou Assist
+      const dv=died.get(pu);
+      if(!dv){ hit[pu]++; return; }                    // a Survécu
+      const traded = ks.some(k2=>{                     // a été Tradé
+        const t=num(k2.time_in_round_in_ms);
+        return k2.victim && k2.victim.puuid===dv.killer && t>dv.t && (t-dv.t)<=TRADE_MS
+            && k2.killer && k2.killer.team===dv.team;
+      });
+      if(traded) hit[pu]++;
+    });
+  });
+
+  // Les rounds sans aucun kill : tout le monde a survécu.
+  const empty = Math.max(0, rounds - byRound.size);
+  const out = {};
+  puuids.forEach(pu=>{ out[pu]=Math.round((hit[pu]+empty)/rounds*100); });
+  return out;
 }
 
 // Note finale + tout le détail du calcul (pour la page d'explication).
@@ -342,7 +402,7 @@ function rankIcon(cur, tierName){
       || null;
 }
 // Stats brutes d'un joueur sur une partie (avant calcul de l'indice).
-function rawLine(p,rounds){
+function rawLine(p,rounds,kastMap){
   const st=p.stats||{};
   const k=num(st.kills),d=num(st.deaths),a=num(st.assists),score=num(st.score);
   const hsT=num(st.headshots)+num(st.bodyshots)+num(st.legshots);
@@ -352,7 +412,8 @@ function rawLine(p,rounds){
   const acs=rounds?Math.round(score/rounds):0, adr=rounds?Math.round(dmg/rounds):0;
   const dd=rounds?Math.round((dmg-rec)/rounds):0, kd=k/Math.max(d,1);
   const ag=p.agent||{};
-  return {k,d,a,hs,acs,adr,dd,kd,rounds,shots:hsT,name:p.name||'?',tag:p.tag||'',team:p.team_id,
+  const kast=(kastMap && p.puuid!=null && kastMap[p.puuid]!=null)?kastMap[p.puuid]:null;
+  return {k,d,a,hs,acs,adr,dd,kd,rounds,kast,shots:hsT,name:p.name||'?',tag:p.tag||'',team:p.team_id,
     agent:ag.name||(typeof p.agent==='string'?p.agent:'?'),
     agentId:ag.id||ag.uuid||''};
 }
@@ -416,7 +477,8 @@ function normMatch(m, targetState = STATE){
   const winByTeam={};
   teams.forEach(t=>{ if(t && t.team_id!=null && typeof t.won==='boolean') winByTeam[t.team_id]=t.won; });
   if(!Object.keys(winByTeam).length && myTeam) winByTeam[myTeam.team_id]=(result==='w');
-  const lines=applyScores(players.map(p=>rawLine(p,rounds)), {rounds, forfeit, winByTeam});
+  const kastMap=kastByPuuid(m, rounds);
+  const lines=applyScores(players.map(p=>rawLine(p,rounds,kastMap)), {rounds, forfeit, winByTeam});
   const meIdx=me?players.indexOf(me):-1;
   const meStat=meIdx>=0?lines[meIdx]:null;
   if(meStat) meStat.placement = placement;
@@ -959,7 +1021,7 @@ function showMatch(i){
   $('sbsub').textContent=`${detail.map} · ${detail.result==='w'?'victoire':'défaite'} ${detail.myScore}–${detail.oppScore}`;
   // On réutilise les lignes déjà notées (même indice que dans la liste des matchs).
   const all=detail.lines || applyScores(detail.players.map(p=>rawLine(p,detail.rounds)),
-    {rounds:detail.rounds, forfeit:detail.forfeit});
+    {rounds:detail.rounds, forfeit:detail.forfeit});   // detail.lines porte déjà le KAST
   // Classement par ACS décroissant sur TOUS les joueurs de la partie (1er, 2e, …).
   [...all].sort((a,b)=>b.acs-a.acs).forEach((s,idx)=>{ s.acsRank=idx+1; });
   SB_LINES=all;   // pour ouvrir le détail du calcul au clic sur un indice
@@ -1007,7 +1069,17 @@ function showMatch(i){
   // Charge le détail complet à la demande, puis ré-affiche si cette partie est toujours ouverte.
   if(M.partial && M.id && !(M.id in MATCH_DETAILS)){
     DETAIL_PENDING[M.id]=true;
-    fetchMatchDetail(M.id).finally(()=>{ delete DETAIL_PENDING[M.id]; if(SELECTED_IDX===i) showMatch(i); });
+    fetchMatchDetail(M.id).finally(()=>{
+      delete DETAIL_PENDING[M.id];
+      // Le détail complet apporte le KAST : on met à jour l'indice de cette partie
+      // pour que la liste et le scoreboard affichent la même note.
+      const raw=MATCH_DETAILS[M.id];
+      if(raw){
+        const full=normMatch(raw);
+        if(full && full.me){ M.me=Object.assign(full.me,{placement:M.me&&M.me.placement}); M.lines=full.lines; M.partial=false; }
+      }
+      if(SELECTED_IDX===i){ renderList(); showMatch(i); }
+    });
   }
 }
 

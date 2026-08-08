@@ -13,7 +13,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 function loadIndex() {
   const ctx = vm.createContext({ console });
   let code = readFileSync(join(root, "app.js"), "utf8");
-  code += "\nglobalThis.__x = { perfDetail, perfParts, perfScore, applyScores, rawLine, tierOf, IDX_W };";
+  code += "\nglobalThis.__x = { perfDetail, perfParts, perfScore, applyScores, rawLine, tierOf, IDX_W, IDX_W_KAST, kastByPuuid, normMatch };";
   vm.runInContext(code, ctx);
   return ctx.__x;
 }
@@ -98,4 +98,88 @@ test("applyScores classe les joueurs du lobby et note tout le monde", () => {
   lines.forEach(l => assert.ok(l.detail && typeof l.score100 === "number"));
   assert.ok(lines[0].score100 > lines[5].score100, "le meilleur ACS est mieux noté");
   assert.match(lines[0].detail.adj.map(a => a.label).join(" "), /1er\/6/);
+});
+
+/* ===================== KAST ===================== */
+
+// Construit un match minimal : 2 joueurs, kills fournis round par round.
+function matchWith(kills, rounds = 2) {
+  return {
+    players: [{ puuid: "A", team_id: "Blue" }, { puuid: "B", team_id: "Red" }],
+    rounds: Array.from({ length: rounds }, () => ({})),
+    kills,
+  };
+}
+
+test("KAST : un kill, un assist ou une survie valident le round", () => {
+  // Round 0 : A tue B (A a un kill, B meurt sans être tradé) · Round 1 : aucun kill
+  const k = X.kastByPuuid(matchWith([
+    { round: 0, time_in_round_in_ms: 5000, killer: { puuid: "A", team: "Blue" }, victim: { puuid: "B", team: "Red" }, assistants: [] },
+  ]), 2);
+  assert.equal(k.A, 100, "A : kill au round 0 + survie au round 1");
+  assert.equal(k.B, 50, "B : mort non tradée au round 0, survie au round 1");
+});
+
+test("KAST : un assist valide le round pour l'assistant", () => {
+  const m = {
+    players: [{ puuid: "A" }, { puuid: "B" }, { puuid: "C" }],
+    rounds: [{}],
+    kills: [{ round: 0, time_in_round_in_ms: 5000, killer: { puuid: "A", team: "Blue" },
+      victim: { puuid: "B", team: "Red" }, assistants: [{ puuid: "C" }] }],
+  };
+  const k = X.kastByPuuid(m, 1);
+  assert.equal(k.C, 100, "C a un assist -> round validé");
+  assert.equal(k.B, 0, "B est mort sans trade");
+});
+
+test("KAST : une mort tradée dans les 3 s valide quand même le round", () => {
+  const base = (dt) => ({
+    players: [{ puuid: "A" }, { puuid: "B" }, { puuid: "T" }],
+    rounds: [{}],
+    kills: [
+      // L'ennemi B tue A
+      { round: 0, time_in_round_in_ms: 5000, killer: { puuid: "B", team: "Red" }, victim: { puuid: "A", team: "Blue" }, assistants: [] },
+      // Le coéquipier T venge A après dt ms
+      { round: 0, time_in_round_in_ms: 5000 + dt, killer: { puuid: "T", team: "Blue" }, victim: { puuid: "B", team: "Red" }, assistants: [] },
+    ],
+  });
+  assert.equal(X.kastByPuuid(base(2000), 1).A, 100, "trade en 2 s -> validé");
+  assert.equal(X.kastByPuuid(base(5000), 1).A, 0, "trade en 5 s -> trop tard");
+});
+
+test("KAST : le critère remplace la survie et garde des poids à 100%", () => {
+  const totalKast = Object.values(X.IDX_W_KAST).reduce((a, b) => a + b, 0);
+  assert.ok(Math.abs(totalKast - 1) < 1e-9, `somme des poids avec KAST = ${totalKast}`);
+
+  const avecKast = X.perfParts(line({ kast: 72 })).map(p => p.key);
+  assert.ok(avecKast.includes("kast"), "le critère KAST est présent");
+  assert.ok(!avecKast.includes("surv"), "la survie est remplacée (pas de double comptage)");
+
+  const sansKast = X.perfParts(line({})).map(p => p.key);
+  assert.ok(sansKast.includes("surv") && !sansKast.includes("kast"), "repli sur la survie sans KAST");
+});
+
+test("KAST : un bon KAST améliore la note, un mauvais la baisse", () => {
+  const bas = X.perfDetail(line({ kast: 50 }), { rounds: 24 }).score;
+  const moyen = X.perfDetail(line({ kast: 70 }), { rounds: 24 }).score;
+  const haut = X.perfDetail(line({ kast: 88 }), { rounds: 24 }).score;
+  assert.ok(bas < moyen && moyen < haut, `progression attendue (${bas} < ${moyen} < ${haut})`);
+  assert.ok(Math.abs(moyen - 50) <= 5, `70% de KAST ≈ note moyenne (obtenu ${moyen})`);
+});
+
+test("KAST : normMatch le calcule pour tous les joueurs d'une vraie partie", () => {
+  const mkP = (puuid, team) => ({ puuid, name: puuid, tag: "0", team_id: team,
+    stats: { kills: 10, deaths: 10, assists: 4, score: 4800, headshots: 20, bodyshots: 50, legshots: 5,
+      damage: { dealt: 3400, received: 3300 } } });
+  const m = {
+    metadata: { match_id: "x", started_at: "2026-08-08T10:00:00Z", map: { name: "Ascent" }, queue: { name: "Competitive" } },
+    players: [mkP("A", "Blue"), mkP("B", "Red")],
+    teams: [{ team_id: "Blue", won: true, rounds: { won: 13, lost: 5 } },
+            { team_id: "Red", won: false, rounds: { won: 5, lost: 13 } }],
+    rounds: Array.from({ length: 18 }, () => ({})),
+    kills: [{ round: 0, time_in_round_in_ms: 4000, killer: { puuid: "A", team: "Blue" }, victim: { puuid: "B", team: "Red" }, assistants: [] }],
+  };
+  const M = X.normMatch(m, { puuid: "A", name: "A", tag: "0" });
+  assert.equal(M.me.kast, 100, "A : kill au round 0 + survie sur les 17 autres");
+  assert.ok(M.me.detail.parts.some(p => p.key === "kast"), "le détail affiche le KAST");
 });
