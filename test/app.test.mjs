@@ -124,7 +124,7 @@ async function boot() {
 
   let code = readFileSync(join(root, "app.js"), "utf8");
   // Épilogue de test : expose les fonctions + un accès à l'état interne.
-  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, showMatch, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, init, getState: () => STATE, getRoster: () => ROSTER };";
+  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, showMatch, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, perfDetail, perfParts, IDX_W, openMatchScore, init, getState: () => STATE, getRoster: () => ROSTER };";
   vm.runInContext(code, ctx);
   const T = ctx.__t;
   await T.init(); // garantit roster chargé + grille construite
@@ -284,6 +284,40 @@ test("lignes de paliers : elo 878 -> Silver 3 (offset dérivé des données, pas
   const t = T.tierFromElo(878);
   assert.ok(t && /Silver 3/.test(t.name), `elo 878 -> Silver 3 (obtenu: ${t && t.name})`);
   assert.ok(!/Bronze/.test((t && t.name) || ""), "surtout pas Bronze");
+});
+
+test("clic sur l'indice : la modale détaille le calcul et se ferme", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const modal = doc.getElementById("scoreModal");
+  assert.equal(modal.hidden, true, "modale fermée au départ");
+
+  // clic sur le badge du dernier match
+  doc.getElementById("heroScore").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  assert.equal(modal.hidden, false, "la modale s'ouvre");
+  const body = doc.getElementById("scoreModalBody").textContent;
+  ["ACS", "KDA", "Δ Dégâts", "ADR", "Survie", "HS%", "Indice COSMO"].forEach(k =>
+    assert.ok(body.includes(k), `le détail mentionne ${k}`));
+  assert.equal(doc.querySelectorAll("#scoreModalBody .sd-table tbody tr").length >= 8, true,
+    "6 critères + sous-total + total");
+
+  // fermeture
+  doc.getElementById("scoreModalX").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  assert.equal(modal.hidden, true, "la modale se ferme");
+});
+
+test("clic sur un indice de la liste des matchs ouvre son détail", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const badge = doc.querySelector("#ml .mrow [data-sd]");
+  assert.ok(badge, "les badges de la liste sont cliquables");
+  badge.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  assert.equal(doc.getElementById("scoreModal").hidden, false);
+  assert.match(doc.getElementById("scoreModalBody").textContent, /Indice COSMO/);
 });
 
 test("peak par acte : un bloc par acte avec le meilleur rang atteint", async () => {

@@ -231,6 +231,45 @@
   .sb td.pos{color:var(--dim);font-weight:700;white-space:nowrap}
   .sb td.pos.top{color:var(--amber)}
   .sbnote{font-family:var(--mono);font-size:11px;color:var(--dim);padding:8px 7px 0;text-align:center}
+
+  /* ============ MODALE : DÉTAIL DE L'INDICE COSMO ============ */
+  .sd{cursor:pointer}
+  .sd:hover{filter:brightness(1.15)}
+  td.scell.sd:hover{text-decoration:underline}
+  .sd-cta{font-size:9px;color:var(--dim);letter-spacing:.06em;text-align:center;margin-top:5px}
+  .modal{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:18px}
+  .modal-back{position:absolute;inset:0;background:rgba(4,7,11,.78);backdrop-filter:blur(3px)}
+  .modal-panel{position:relative;max-width:640px;width:100%;max-height:88vh;overflow:auto;
+    background:linear-gradient(180deg,#141f2a,#101822);border:1px solid var(--line);border-radius:16px;padding:20px;
+    box-shadow:0 30px 80px -30px #000}
+  .modal-x{position:absolute;top:12px;right:12px;width:30px;height:30px;border-radius:8px;border:1px solid var(--line);
+    color:var(--muted);font-size:13px}
+  .modal-x:hover{border-color:var(--loss);color:var(--loss)}
+  .sd-head{display:flex;gap:16px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+  .sd-head h3{margin:2px 0 0;font-size:17px;font-weight:800}
+  .sd-tier{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:700}
+  .sd-sub{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .sd-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+  .sd-table th{text-align:right;color:var(--dim);font-weight:600;font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
+    padding:6px 6px;border-bottom:1px solid var(--line)}
+  .sd-table th:first-child{text-align:left}
+  .sd-table td{padding:9px 6px;border-bottom:1px solid var(--line);text-align:right;color:var(--muted)}
+  .sd-table td.sdk{text-align:left;color:var(--txt);font-weight:700}
+  .sd-table td.sdk span{display:block;font-weight:400;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .sd-table td.sdraw{color:var(--txt);font-weight:700}
+  .sd-table td.sdbar{width:110px;position:relative}
+  .sd-table td.sdbar i{display:block;height:6px;border-radius:4px;min-width:2px}
+  .sd-table td.sdbar b{position:absolute;right:6px;top:5px;font-size:10.5px;color:var(--muted)}
+  .sd-table td.sdw{color:var(--dim);font-size:10.5px}
+  .sd-table td.sdc{color:var(--txt);font-weight:800;width:56px}
+  .sd-table tr.sdadj td{color:var(--muted);font-size:11.5px}
+  .sd-table tr.sdadj td span{display:block;font-size:9.5px;color:var(--dim);margin-top:2px}
+  .sd-table tr.sdadj td.up{color:var(--win)} .sd-table tr.sdadj td.dn{color:var(--loss)}
+  .sd-table tr.sdsum td{color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase;border-top:1px solid var(--line)}
+  .sd-table tr.sdtot td{font-size:13px;font-weight:800;color:var(--txt);letter-spacing:.06em;text-transform:uppercase;border-bottom:0}
+  .sd-table tr.sdtot td.sdc{font-size:20px}
+  .sd-note{font-size:10.5px;color:var(--dim);margin-top:14px;line-height:1.6}
+  @media(max-width:560px){ .sd-table td.sdbar{width:64px} .sd-table td.sdw{display:none} .sd-table th:nth-child(4){display:none} }
   .sb tr.me td{background:rgba(242,178,52,.07)}
   .agent{display:flex;align-items:center;gap:9px;text-align:left}
   .ag{width:30px;height:30px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);display:grid;place-items:center;font-size:10px;color:var(--amber);font-weight:700;flex:none;overflow:hidden;position:relative}
@@ -533,6 +572,15 @@
   </div>
 </section>
 
-<script src="app.js?v=20260704d" defer></script>
+<!-- ===================== DÉTAIL DE L'INDICE COSMO ===================== -->
+<div id="scoreModal" class="modal" hidden>
+  <div class="modal-back"></div>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Détail de l'indice COSMO">
+    <button class="modal-x" id="scoreModalX" type="button" aria-label="Fermer">✕</button>
+    <div id="scoreModalBody"></div>
+  </div>
+</div>
+
+<script src="app.js?v=20260705" defer></script>
 </body>
 </html>

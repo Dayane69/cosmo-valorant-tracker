@@ -50,15 +50,89 @@ const clamp = (x, a=0, b=100) => Math.max(a, Math.min(b, x));
 const ESC_MAP = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ESC_MAP[c]);
 
-/* ===================== INDICE /100 ===================== */
-function perfScore(o){
-  const acsN=clamp((o.acs-130)/2);      
-  const ddN =clamp(o.dd+40);            
-  const kdN =clamp((o.kd-0.6)*100);     
-  const adrN=clamp(o.adr-90);           
-  const hsN =clamp((o.hs-10)*4);        
-  return Math.round(clamp(0.34*acsN+0.22*ddN+0.18*kdN+0.14*adrN+0.12*hsN));
+/* ===================== INDICE COSMO /100 (v2) =====================
+   Principes :
+   - Chaque critère est calibré pour qu'une valeur MOYENNE en ranked vaille ~50
+     (la v1 mettait la moyenne à ~35 : tout le monde était noté D/C).
+   - Les assists comptent (KDA), pas seulement le K/D.
+   - Le HS% pèse peu et est atténué quand il y a peu de tirs : les agents
+     utilitaires (Breach, Brimstone…) ne sont plus punis.
+   - On tient compte du contexte : classement dans le lobby, victoire/défaite,
+     et surtout des parties écourtées (forfait) où l'échantillon est trop petit.
+*/
+const IDX_W     = { acs:0.30, kda:0.20, dd:0.18, adr:0.14, surv:0.10, hs:0.08 };
+const LOBBY_W   = 0.20;  // part du classement dans le lobby dans la note finale
+const WIN_BONUS = 2.5;   // petit bonus/malus victoire-défaite
+const FULL_ROUNDS = 13;  // en dessous : partie écourtée -> on relativise
+
+// Les 6 critères, chacun ramené sur 0-100 (50 = moyen en ranked).
+function perfParts(o){
+  const rounds = num(o.rounds) || 24;
+  const kda    = (num(o.k) + 0.5*num(o.a)) / Math.max(num(o.d), 1);
+  const dpr    = num(o.d) / Math.max(rounds, 1);          // morts par round
+  const shots  = num(o.shots);
+  let hsN = clamp(50 + (num(o.hs) - 20) * 2.2);           // 20% HS ≈ moyen
+  // Peu de tirs = information peu fiable -> on ramène vers la moyenne.
+  if(shots > 0 && shots < 30) hsN = 50 + (hsN - 50) * (shots / 30);
+
+  return [
+    { key:'acs',  label:'ACS',      raw:num(o.acs), fmt:v=>String(Math.round(v)),
+      n:clamp((num(o.acs) - 60) / 2.8),   w:IDX_W.acs,
+      hint:'impact par round · 200 ≈ moyen' },
+    { key:'kda',  label:'KDA',      raw:kda,        fmt:v=>v.toFixed(2),
+      n:clamp((kda - 0.35) * 77),         w:IDX_W.kda,
+      hint:'(kills + assists/2) ÷ morts · 1.00 ≈ moyen' },
+    { key:'dd',   label:'Δ Dégâts', raw:num(o.dd),  fmt:v=>(v>=0?'+':'')+Math.round(v),
+      n:clamp(50 + num(o.dd) * 0.6),      w:IDX_W.dd,
+      hint:'dégâts infligés − subis, par round · 0 ≈ moyen' },
+    { key:'adr',  label:'ADR',      raw:num(o.adr), fmt:v=>String(Math.round(v)),
+      n:clamp((num(o.adr) - 40) / 2),     w:IDX_W.adr,
+      hint:'dégâts par round · 140 ≈ moyen' },
+    { key:'surv', label:'Survie',   raw:dpr,        fmt:v=>v.toFixed(2)+' morts/round',
+      n:clamp(50 + (0.65 - dpr) * 130),   w:IDX_W.surv,
+      hint:'0.65 mort par round ≈ moyen' },
+    { key:'hs',   label:'HS%',      raw:num(o.hs),  fmt:v=>Math.round(v)+'%',
+      n:hsN,                               w:IDX_W.hs,
+      hint:'20% ≈ moyen · atténué si peu de tirs' },
+  ];
 }
+
+// Note finale + tout le détail du calcul (pour la page d'explication).
+// ctx : { rounds, forfeit, win, rel, rank, lobbyN }
+function perfDetail(o, ctx){
+  ctx = ctx || {};
+  const parts = perfParts(o);
+  const base  = parts.reduce((s,p) => s + p.n * p.w, 0);
+  const adj = [];
+  let score = base;
+
+  // 1) Classement dans le lobby : récompense le fait d'avoir porté la partie.
+  if(ctx.rel != null){
+    const before = score;
+    score = base * (1 - LOBBY_W) + ctx.rel * LOBBY_W;
+    adj.push({ label:`Classement dans le lobby${ctx.rank?` (${ordinalFr(ctx.rank)}${ctx.lobbyN?'/'+ctx.lobbyN:''})`:''}`,
+      delta: score - before, note:`compte pour ${Math.round(LOBBY_W*100)}% de la note` });
+  }
+  // 2) Victoire / défaite.
+  if(ctx.win === true || ctx.win === false){
+    const d = ctx.win ? WIN_BONUS : -WIN_BONUS;
+    score += d;
+    adj.push({ label: ctx.win ? 'Victoire' : 'Défaite', delta:d });
+  }
+  // 3) Partie écourtée (forfait) : trop peu de rounds pour juger -> on rapproche
+  //    la note de la moyenne au lieu de la laisser s'envoler ou s'effondrer.
+  const rounds = num(ctx.rounds);
+  if(rounds > 0 && rounds < FULL_ROUNDS){
+    const before = score;
+    score = 50 + (score - 50) * (0.55 + 0.45 * (rounds / FULL_ROUNDS));
+    adj.push({ label: ctx.forfeit ? `Forfait adverse (${rounds} rounds)` : `Partie courte (${rounds} rounds)`,
+      delta: score - before, note:'échantillon trop petit : la note est rapprochée de la moyenne' });
+  }
+
+  return { score: Math.round(clamp(score)), base, parts, adj,
+           rounds, forfeit:!!ctx.forfeit, win:ctx.win, rank:ctx.rank, lobbyN:ctx.lobbyN };
+}
+function perfScore(o, ctx){ return perfDetail(o, ctx).score; }
 function tierOf(s){
   if(s>=88) return {t:"S",c:"#56d8c9",label:"Smurf détecté"};
   if(s>=74) return {t:"A",c:"#7ee07a",label:"Énorme"};
@@ -267,7 +341,8 @@ function rankIcon(cur, tierName){
       || (TIERS && TIERS[(tierName||'').toLowerCase()])
       || null;
 }
-function statline(p,rounds){
+// Stats brutes d'un joueur sur une partie (avant calcul de l'indice).
+function rawLine(p,rounds){
   const st=p.stats||{};
   const k=num(st.kills),d=num(st.deaths),a=num(st.assists),score=num(st.score);
   const hsT=num(st.headshots)+num(st.bodyshots)+num(st.legshots);
@@ -277,10 +352,38 @@ function statline(p,rounds){
   const acs=rounds?Math.round(score/rounds):0, adr=rounds?Math.round(dmg/rounds):0;
   const dd=rounds?Math.round((dmg-rec)/rounds):0, kd=k/Math.max(d,1);
   const ag=p.agent||{};
-  const o={k,d,a,hs,acs,adr,dd,kd,name:p.name||'?',tag:p.tag||'',team:p.team_id,
+  return {k,d,a,hs,acs,adr,dd,kd,rounds,shots:hsT,name:p.name||'?',tag:p.tag||'',team:p.team_id,
     agent:ag.name||(typeof p.agent==='string'?p.agent:'?'),
     agentId:ag.id||ag.uuid||''};
-  o.score100=perfScore(o);
+}
+
+// Note TOUS les joueurs d'une partie d'un coup : nécessaire pour connaître le
+// classement de chacun dans le lobby. ctx : { rounds, forfeit, winByTeam }
+function applyScores(lines, ctx){
+  ctx = ctx || {};
+  const bases = lines.map(o => perfParts(o).reduce((s,p) => s + p.n * p.w, 0));
+  const rank = {};                                    // index -> rang (1 = meilleur)
+  bases.map((b,i)=>({b,i})).sort((x,y)=>y.b-x.b).forEach((e,idx)=>{ rank[e.i]=idx+1; });
+  const n = lines.length, useLobby = n >= 6;          // pas de classement fiable à 1 joueur
+  lines.forEach((o,i)=>{
+    const d = perfDetail(o, {
+      rounds: ctx.rounds != null ? ctx.rounds : o.rounds,
+      forfeit: ctx.forfeit,
+      win: ctx.winByTeam ? ctx.winByTeam[o.team] : undefined,
+      rel: useLobby ? (n - rank[i]) / (n - 1) * 100 : null,
+      rank: useLobby ? rank[i] : null,
+      lobbyN: useLobby ? n : null,
+    });
+    o.score100 = d.score; o.detail = d;
+  });
+  return lines;
+}
+
+// Ligne unique (format compact du blob) : pas de contexte de lobby.
+function statline(p,rounds,ctx){
+  const o=rawLine(p,rounds);
+  const d=perfDetail(o, Object.assign({rounds}, ctx||{}));
+  o.score100=d.score; o.detail=d;
   return o;
 }
 // Normalise une partie au format "matches v4" (metadata + players[] + teams[]).
@@ -303,11 +406,23 @@ function normMatch(m, targetState = STATE){
   let result='?';
   if(myTeam) result=(typeof myTeam.won==='boolean')?(myTeam.won?'w':'l'):(rwon(myTeam)>=rwon(oppTeam)?'w':'l');
 
-  const meStat = me ? statline(me, rounds) : null;
+  // Forfait : en compétitif/non classé il faut 13 rounds pour gagner. Si le
+  // vainqueur en a moins, c'est que l'équipe adverse a déclaré forfait.
+  const modeTxt=((meta.queue&&meta.queue.name)||meta.queue||meta.mode||'').toLowerCase();
+  const standard=/competitive|unrated|classé|compétitif/.test(modeTxt);
+  const forfeit=standard && rounds>0 && rounds<FULL_ROUNDS*2 && Math.max(rwon(myTeam),rwon(oppTeam))<FULL_ROUNDS;
+
+  // Indice de tous les joueurs (nécessaire pour le classement dans le lobby).
+  const winByTeam={};
+  teams.forEach(t=>{ if(t && t.team_id!=null && typeof t.won==='boolean') winByTeam[t.team_id]=t.won; });
+  if(!Object.keys(winByTeam).length && myTeam) winByTeam[myTeam.team_id]=(result==='w');
+  const lines=applyScores(players.map(p=>rawLine(p,rounds)), {rounds, forfeit, winByTeam});
+  const meIdx=me?players.indexOf(me):-1;
+  const meStat=meIdx>=0?lines[meIdx]:null;
   if(meStat) meStat.placement = placement;
 
   const startedMs=tsMs(meta);
-  return {players,rounds,
+  return {players,rounds,lines,forfeit,
     map:(meta.map&&meta.map.name)||meta.map||'—',
     mode:(meta.queue&&meta.queue.name)||meta.queue||meta.mode||'—',
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
@@ -333,10 +448,13 @@ function normStored(entry, targetState = STATE){
     stats:{ kills:num(st.kills), deaths:num(st.deaths), assists:num(st.assists), score:num(st.score),
       headshots:num(shots.head), bodyshots:num(shots.body), legshots:num(shots.leg),
       damage:{ dealt:num(dmg.made), received:num(dmg.received) } } };
-  const meStat=statline(player, rounds);
+  const modeTxt2=((meta.queue&&meta.queue.name)||meta.mode||'').toLowerCase();
+  const standard2=/competitive|unrated|classé|compétitif/.test(modeTxt2);
+  const forfeit=standard2 && rounds>0 && rounds<FULL_ROUNDS*2 && Math.max(myScore,oppScore)<FULL_ROUNDS;
+  const meStat=statline(player, rounds, {forfeit, win: result==='?'?undefined:(result==='w')});
   meStat.placement=null; // pas d'info de classement dans ce format compact
   const startedMs=tsMs(meta);
-  return { players:[player], rounds, partial:true,   // format compact : 1 seul joueur, détail complet chargeable à la demande
+  return { players:[player], rounds, partial:true, forfeit,   // format compact : 1 seul joueur, détail complet chargeable à la demande
     map:(meta.map&&meta.map.name)||meta.map||'—',
     mode:(meta.queue&&meta.queue.name)||meta.mode||'—',
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
@@ -749,7 +867,7 @@ function renderList(){
       <div class="minfo"><b>${esc(M.map)}</b><span>${esc(M.mode)} · ${s?esc(s.agent):'—'} · ${s?s.k+'/'+s.d+'/'+s.a:''} · ${relTime(M.started)}</span></div>
       <div class="mscore" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${M.myScore}–${M.oppScore}</div>
       ${rrCell(M.rr)}
-      <div class="scorebadge score-mini flair-${f}" style="--sc:${t.c}">${s?sc100:'—'}${flairHTML(f)}</div>
+      <div class="scorebadge score-mini flair-${f} sd" style="--sc:${t.c}" data-sd="${i}" title="Voir le détail du calcul">${s?sc100:'—'}${flairHTML(f)}</div>
     </div>`;
   }).join('');
   
@@ -759,6 +877,59 @@ function renderList(){
 
 // Rang ordinal en français : 1 -> "1er", sinon "Ne".
 function ordinalFr(n){ return n===1 ? '1er' : n+'e'; }
+
+/* ============ DÉTAIL DU CALCUL DE L'INDICE (modale) ============ */
+let SB_LINES=[];   // lignes du scoreboard affiché (pour ouvrir le détail au clic)
+
+function openScoreDetail(line, head){
+  const modal=$('scoreModal'), body=$('scoreModalBody');
+  if(!modal||!body||!line||!line.detail) return;
+  const d=line.detail, t=tierOf(d.score);
+  const rows=d.parts.map(p=>`
+    <tr>
+      <td class="sdk">${esc(p.label)}<span>${esc(p.hint)}</span></td>
+      <td class="sdraw">${esc(p.fmt(p.raw))}</td>
+      <td class="sdbar"><i style="width:${clamp(p.n).toFixed(0)}%;background:${sc(p.n)}"></i><b>${Math.round(p.n)}</b></td>
+      <td class="sdw">×${Math.round(p.w*100)}%</td>
+      <td class="sdc">${(p.n*p.w).toFixed(1)}</td>
+    </tr>`).join('');
+  const adjRows=d.adj.map(a=>`
+    <tr class="sdadj">
+      <td colspan="4">${esc(a.label)}${a.note?`<span>${esc(a.note)}</span>`:''}</td>
+      <td class="sdc ${a.delta>=0?'up':'dn'}">${a.delta>=0?'+':''}${a.delta.toFixed(1)}</td>
+    </tr>`).join('');
+
+  body.innerHTML=`
+    <div class="sd-head">
+      <div class="scorebadge score-hero" style="--sc:${t.c}">${d.score}<span class="out">/100</span></div>
+      <div>
+        <div class="sd-tier" style="color:${t.c}">${t.t} · ${esc(t.label)}</div>
+        <h3>${esc((head&&head.title)||"Détail de l'indice COSMO")}</h3>
+        <div class="sd-sub mono">${esc((head&&head.sub)||'')}</div>
+      </div>
+    </div>
+    <table class="sd-table">
+      <thead><tr><th>Critère</th><th>Valeur</th><th>Note /100</th><th>Poids</th><th>Points</th></tr></thead>
+      <tbody>
+        ${rows}
+        <tr class="sdsum"><td colspan="4">Sous-total (moyenne pondérée)</td><td class="sdc">${d.base.toFixed(1)}</td></tr>
+        ${adjRows}
+        <tr class="sdtot"><td colspan="4">Indice COSMO</td><td class="sdc" style="color:${t.c}">${d.score}</td></tr>
+      </tbody>
+    </table>
+    <div class="sd-note mono">Chaque critère est calibré pour qu'une valeur <b>moyenne en ranked vaille 50</b>.${
+      d.forfeit?'<br>⚠️ Partie écourtée par forfait : la note est rapprochée de la moyenne (trop peu de rounds pour juger).':''}</div>`;
+  modal.hidden=false;
+}
+function closeScoreDetail(){ const m=$('scoreModal'); if(m) m.hidden=true; }
+
+// Ouvre le détail pour une partie de la liste (le joueur du profil).
+function openMatchScore(i){
+  const M=STATE.matches[i]; if(!M||!M.me) return;
+  openScoreDetail(M.me, {
+    title:`${M.map} · ${M.result==='w'?'Victoire':'Défaite'} ${M.myScore}–${M.oppScore}`,
+    sub:`${M.mode} · ${M.me.agent} · ${M.me.k}/${M.me.d}/${M.me.a} · ${relTime(M.started)}` });
+}
 
 // Charge à la demande le détail complet d'un match (tous les joueurs) via match-by-id.
 // Sert aux parties venues du blob (format compact), pour reconstituer le scoreboard.
@@ -786,9 +957,12 @@ function showMatch(i){
   const detail = rawDetail ? normMatch(rawDetail) : M;
   const partialNow = !!M.partial && !rawDetail;
   $('sbsub').textContent=`${detail.map} · ${detail.result==='w'?'victoire':'défaite'} ${detail.myScore}–${detail.oppScore}`;
-  const all=detail.players.map(p=>statline(p,detail.rounds));
+  // On réutilise les lignes déjà notées (même indice que dans la liste des matchs).
+  const all=detail.lines || applyScores(detail.players.map(p=>rawLine(p,detail.rounds)),
+    {rounds:detail.rounds, forfeit:detail.forfeit});
   // Classement par ACS décroissant sur TOUS les joueurs de la partie (1er, 2e, …).
   [...all].sort((a,b)=>b.acs-a.acs).forEach((s,idx)=>{ s.acsRank=idx+1; });
+  SB_LINES=all;   // pour ouvrir le détail du calcul au clic sur un indice
   const blue=all.filter(s=>s.team===detail.myTeamId), red=all.filter(s=>s.team!==detail.myTeamId);
   const sbRows = rows => rows.map(s=>{
     const me=s.name.toLowerCase()===STATE.name.toLowerCase()&&s.tag.toLowerCase()===STATE.tag.toLowerCase();
@@ -810,7 +984,7 @@ function showMatch(i){
       ${posCell}
       <td class="pcol"><div class="agent">${agCell}
         <div class="pn"><b>${esc(s.name)}</b> <span>#${esc(s.tag)}</span></div></div></td>
-      <td class="scell" style="color:${t.c}">${s.score100}</td>
+      <td class="scell sd" style="color:${t.c}" data-sb="${all.indexOf(s)}" title="Voir le détail du calcul">${s.score100}</td>
       <td style="color:${sc((s.acs-130)/2)}"><b>${s.acs}</b></td>
       <td><b style="color:${sc((s.kd-0.6)*100)}">${s.k}</b>/${s.d}/${s.a}</td>
       <td style="color:${s.k-s.d>=0?'var(--win)':'var(--loss)'}">${(s.k-s.d>0?'+':'')}${s.k-s.d}</td>
@@ -916,7 +1090,7 @@ async function loadProfile(){
          $('vcard').style.setProperty('--sc', tc.c);
          $('verdict').innerHTML = `
           <div class="vh-grid">
-            <div class="vh-score"><div class="scorebadge score-hero flair-${flair(s.kd)}" style="--sc:${tc.c}">${s.score100}<span class="out">/100</span>${flairHTML(flair(s.kd))}</div></div>
+            <div class="vh-score"><div class="scorebadge score-hero flair-${flair(s.kd)} sd" id="heroScore" title="Voir le détail du calcul" style="--sc:${tc.c}">${s.score100}<span class="out">/100</span>${flairHTML(flair(s.kd))}</div><div class="sd-cta mono">détail du calcul</div></div>
             <div class="vh-body">
               <div class="vh-top"><span class="reschip ${STATE.matches[0].result}">${STATE.matches[0].result==='w'?'VICTOIRE':'DÉFAITE'}</span>
                 <span class="map">${esc(STATE.matches[0].map)}</span><span class="mode">${esc(STATE.matches[0].mode)}</span></div>
@@ -1493,7 +1667,22 @@ function wireStatic(){
   $('btnLeaderboard').addEventListener('click',loadLeaderboard);
   
   $('roster').addEventListener('click',e=>{const c=e.target.closest('.agentcard');if(c)openProfile(+c.dataset.idx);});
-  $('ml').addEventListener('click',e=>{const r=e.target.closest('.mrow');if(r)showMatch(+r.dataset.idx);});
+  $('ml').addEventListener('click',e=>{
+    const b=e.target.closest('[data-sd]');
+    if(b){ e.stopPropagation(); openMatchScore(+b.dataset.sd); return; }   // clic sur l'indice -> détail du calcul
+    const r=e.target.closest('.mrow'); if(r) showMatch(+r.dataset.idx);
+  });
+  // Détail du calcul : badge du dernier match + indices du scoreboard
+  $('verdict')?.addEventListener('click',e=>{ if(e.target.closest('#heroScore')) openMatchScore(0); });
+  $('sb')?.addEventListener('click',e=>{
+    const c=e.target.closest('[data-sb]'); if(!c) return;
+    const line=SB_LINES[+c.dataset.sb]; if(!line) return;
+    openScoreDetail(line, { title:`${line.name}#${line.tag} · ${line.agent}`, sub:($('sbsub')&&$('sbsub').textContent)||'' });
+  });
+  $('scoreModal')?.addEventListener('click',e=>{
+    if(e.target.closest('#scoreModalX')||e.target.classList.contains('modal-back')) closeScoreDetail();
+  });
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeScoreDetail(); });
   $('phead').addEventListener('click',e=>{if(e.target.closest('.refresh'))loadProfile();});
   $('btnMore')?.addEventListener('click', loadMoreMatches);
 
