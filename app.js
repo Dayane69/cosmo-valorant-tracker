@@ -469,6 +469,17 @@ function statline(p,rounds,ctx){
   o.score100=d.score; o.detail=d;
   return o;
 }
+// Nom du mode de jeu, quel que soit le format renvoyé par l'API.
+// Attention : queue peut être une chaîne, ou un objet dont "name" vaut null
+// (ex. {id:"skirmish_2v2", name:null}) — il ne faut JAMAIS retomber sur l'objet.
+function modeName(meta){
+  const q = meta && meta.queue;
+  if(typeof q === 'string' && q) return q;
+  if(q && typeof q === 'object') return q.name || q.id || q.mode_type || '';
+  return (meta && (meta.mode || meta.mode_id)) || '';
+}
+const modeKey = meta => String(modeName(meta)).toLowerCase();
+
 // Normalise une partie au format "matches v4" (metadata + players[] + teams[]).
 function normMatch(m, targetState = STATE){
   const meta=m.metadata||{};
@@ -491,8 +502,7 @@ function normMatch(m, targetState = STATE){
 
   // Forfait : en compétitif/non classé il faut 13 rounds pour gagner. Si le
   // vainqueur en a moins, c'est que l'équipe adverse a déclaré forfait.
-  const modeTxt=((meta.queue&&meta.queue.name)||meta.queue||meta.mode||'').toLowerCase();
-  const standard=/competitive|unrated|classé|compétitif/.test(modeTxt);
+  const standard=/competitive|unrated|classé|compétitif/.test(modeKey(meta));
   const forfeit=standard && rounds>0 && rounds<FULL_ROUNDS*2 && Math.max(rwon(myTeam),rwon(oppTeam))<FULL_ROUNDS;
 
   // Indice de tous les joueurs (nécessaire pour le classement dans le lobby).
@@ -508,7 +518,7 @@ function normMatch(m, targetState = STATE){
   const startedMs=tsMs(meta);
   return {players,rounds,lines,forfeit,
     map:(meta.map&&meta.map.name)||meta.map||'—',
-    mode:(meta.queue&&meta.queue.name)||meta.queue||meta.mode||'—',
+    mode:modeName(meta)||'—',
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
     startedMs,
     id: meta.match_id||meta.matchid||meta.matchId||null,
@@ -532,15 +542,14 @@ function normStored(entry, targetState = STATE){
     stats:{ kills:num(st.kills), deaths:num(st.deaths), assists:num(st.assists), score:num(st.score),
       headshots:num(shots.head), bodyshots:num(shots.body), legshots:num(shots.leg),
       damage:{ dealt:num(dmg.made), received:num(dmg.received) } } };
-  const modeTxt2=((meta.queue&&meta.queue.name)||meta.mode||'').toLowerCase();
-  const standard2=/competitive|unrated|classé|compétitif/.test(modeTxt2);
+  const standard2=/competitive|unrated|classé|compétitif/.test(modeKey(meta));
   const forfeit=standard2 && rounds>0 && rounds<FULL_ROUNDS*2 && Math.max(myScore,oppScore)<FULL_ROUNDS;
   const meStat=statline(player, rounds, {forfeit, win: result==='?'?undefined:(result==='w')});
   meStat.placement=null; // pas d'info de classement dans ce format compact
   const startedMs=tsMs(meta);
   return { players:[player], rounds, partial:true, forfeit,   // format compact : 1 seul joueur, détail complet chargeable à la demande
     map:(meta.map&&meta.map.name)||meta.map||'—',
-    mode:(meta.queue&&meta.queue.name)||meta.mode||'—',
+    mode:modeName(meta)||'—',
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
     startedMs,
     id: meta.id||meta.match_id||null,

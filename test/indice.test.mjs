@@ -13,7 +13,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 function loadIndex() {
   const ctx = vm.createContext({ console });
   let code = readFileSync(join(root, "app.js"), "utf8");
-  code += "\nglobalThis.__x = { perfDetail, perfParts, perfScore, applyScores, rawLine, tierOf, IDX_W, IDX_W_KAST, kastByPuuid, normMatch, curveScore, SCORE_GAMMA, TIERS_DEF };";
+  code += "\nglobalThis.__x = { perfDetail, perfParts, perfScore, applyScores, rawLine, tierOf, IDX_W, IDX_W_KAST, kastByPuuid, normMatch, normStored, curveScore, SCORE_GAMMA, TIERS_DEF, modeName, modeKey };";
   vm.runInContext(code, ctx);
   return ctx.__x;
 }
@@ -205,4 +205,52 @@ test("KAST : normMatch le calcule pour tous les joueurs d'une vraie partie", () 
   const M = X.normMatch(m, { puuid: "A", name: "A", tag: "0" });
   assert.equal(M.me.kast, 100, "A : kill au round 0 + survie sur les 17 autres");
   assert.ok(M.me.detail.parts.some(p => p.key === "kast"), "le détail affiche le KAST");
+});
+
+/* ============ Formats de "queue" renvoyés par l'API ============ */
+
+test("modeName supporte toutes les formes de queue sans jamais planter", () => {
+  // Cas réel qui faisait crasher le profil de Gogemine : name à null.
+  assert.equal(X.modeName({ queue: { id: "skirmish_2v2", name: null, mode_type: "Skirmish" } }), "skirmish_2v2");
+  assert.equal(X.modeName({ queue: { id: "competitive", name: "Competitive" } }), "Competitive");
+  assert.equal(X.modeName({ queue: "competitive" }), "competitive");
+  assert.equal(X.modeName({ mode: "Deathmatch" }), "Deathmatch");
+  assert.equal(X.modeName({}), "");
+  assert.equal(X.modeName(null), "");
+  // modeKey doit toujours renvoyer une chaîne minuscule exploitable
+  [{ queue: { id: "skirmish_2v2", name: null } }, { queue: {} }, {}, null].forEach(meta => {
+    assert.equal(typeof X.modeKey(meta), "string");
+  });
+});
+
+test("régression : un match 2v2 (queue.name = null) ne fait plus planter normMatch", () => {
+  const mkP = (puuid, team) => ({ puuid, name: puuid, tag: "0", team_id: team,
+    stats: { kills: 5, deaths: 5, assists: 1, score: 1200, headshots: 5, bodyshots: 10, legshots: 1,
+      damage: { dealt: 900, received: 900 } } });
+  const m = {
+    metadata: { match_id: "sk", started_at: "2026-08-08T10:00:00Z", map: { name: "Kasbah" },
+      queue: { id: "skirmish_2v2", name: null, mode_type: "Skirmish" } },
+    players: [mkP("A", "Blue"), mkP("B", "Red")],
+    teams: [{ team_id: "Blue", won: true, rounds: { won: 5, lost: 2 } },
+            { team_id: "Red", won: false, rounds: { won: 2, lost: 5 } }],
+    rounds: Array.from({ length: 7 }, () => ({})),
+    kills: [],
+  };
+  const M = X.normMatch(m, { puuid: "A", name: "A", tag: "0" });
+  assert.equal(M.mode, "skirmish_2v2", "le mode s'affiche au lieu de [object Object]");
+  assert.ok(M.me && typeof M.me.score100 === "number", "l'indice est bien calculé");
+  assert.equal(M.forfeit, false, "un 2v2 court n'est pas un forfait de partie classée");
+});
+
+test("régression : même forme dans une partie compacte du blob", () => {
+  const entry = {
+    meta: { id: "sk2", started_at: "2026-08-08T10:00:00Z", map: { name: "Kasbah" },
+      queue: { id: "skirmish_2v2", name: null } },
+    stats: { puuid: "A", team: "Red", character: { id: "u", name: "Jett" }, score: 1200,
+      kills: 5, deaths: 5, assists: 1, shots: { head: 5, body: 10, leg: 1 }, damage: { made: 900, received: 900 } },
+    teams: { red: 5, blue: 2 },
+  };
+  const M = X.normStored(entry, { name: "A", tag: "0" });
+  assert.equal(M.mode, "skirmish_2v2");
+  assert.ok(M.me && typeof M.me.score100 === "number");
 });
