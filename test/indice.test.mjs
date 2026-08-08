@@ -13,7 +13,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 function loadIndex() {
   const ctx = vm.createContext({ console });
   let code = readFileSync(join(root, "app.js"), "utf8");
-  code += "\nglobalThis.__x = { perfDetail, perfParts, perfScore, applyScores, rawLine, tierOf, IDX_W, IDX_W_KAST, kastByPuuid, normMatch };";
+  code += "\nglobalThis.__x = { perfDetail, perfParts, perfScore, applyScores, rawLine, tierOf, IDX_W, IDX_W_KAST, kastByPuuid, normMatch, curveScore, SCORE_GAMMA, TIERS_DEF };";
   vm.runInContext(code, ctx);
   return ctx.__x;
 }
@@ -23,9 +23,32 @@ const X = loadIndex();
 const line = (o) => Object.assign(
   { k: 15, d: 15, a: 5, hs: 20, acs: 200, adr: 140, dd: 0, rounds: 24, shots: 100 }, o);
 
-test("un joueur parfaitement moyen obtient ~50 (et non ~35 comme en v1)", () => {
+test("un joueur parfaitement moyen : 50 en interne, remonté par la courbe", () => {
   const d = X.perfDetail(line({}), { rounds: 24 });
-  assert.ok(d.score >= 45 && d.score <= 55, `moyenne attendue ~50, obtenu ${d.score}`);
+  assert.ok(d.raw >= 45 && d.raw <= 55, `échelle interne attendue ~50, obtenu ${d.raw}`);
+  assert.equal(d.score, Math.round(X.curveScore(d.raw)), "la note affichée est la note interne mise à l'échelle");
+  assert.ok(d.score > d.raw, "la courbe remonte la note (plus sévère avant)");
+  assert.equal(X.tierOf(d.score).label, "Moyen", "une partie moyenne reste étiquetée « Moyen »");
+});
+
+test("la courbe est strictement croissante : elle ne change jamais le classement", () => {
+  let prev = -1;
+  for (let r = 0; r <= 100; r++) {
+    const v = X.curveScore(r);
+    assert.ok(v > prev, `courbe croissante en ${r}`);
+    prev = v;
+  }
+  assert.equal(Math.round(X.curveScore(0)), 0);
+  assert.equal(Math.round(X.curveScore(100)), 100);
+});
+
+test("les paliers sont décalés par la même courbe : les libellés gardent leur sens", () => {
+  // Repères en échelle interne -> libellé attendu (identique à avant la courbe).
+  [[22, "Caca qui pue"], [35, "Bof"], [50, "Moyen"], [65, "Solide"], [80, "Énorme"], [92, "Smurf détecté"]]
+    .forEach(([interne, attendu]) => {
+      const t = X.tierOf(Math.round(X.curveScore(interne)));
+      assert.equal(t.label, attendu, `interne ${interne} -> ${attendu} (obtenu ${t.label})`);
+    });
 });
 
 test("les poids des critères totalisent 100%", () => {
@@ -164,7 +187,7 @@ test("KAST : un bon KAST améliore la note, un mauvais la baisse", () => {
   const moyen = X.perfDetail(line({ kast: 70 }), { rounds: 24 }).score;
   const haut = X.perfDetail(line({ kast: 88 }), { rounds: 24 }).score;
   assert.ok(bas < moyen && moyen < haut, `progression attendue (${bas} < ${moyen} < ${haut})`);
-  assert.ok(Math.abs(moyen - 50) <= 5, `70% de KAST ≈ note moyenne (obtenu ${moyen})`);
+  assert.equal(X.tierOf(moyen).label, "Moyen", `70% de KAST ≈ partie moyenne (obtenu ${moyen})`);
 });
 
 test("KAST : normMatch le calcule pour tous les joueurs d'une vraie partie", () => {

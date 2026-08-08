@@ -69,6 +69,15 @@ const LOBBY_W   = 0.20;  // part du classement dans le lobby dans la note finale
 const WIN_BONUS = 2.5;   // petit bonus/malus victoire-défaite
 const FULL_ROUNDS = 13;  // en dessous : partie écourtée -> on relativise
 
+// Mise à l'échelle finale. En interne 50 = joueur médian (percentile strict), ce
+// qui est juste mais sévère : la moitié des parties passeraient sous 50. On
+// applique une courbe qui remonte le milieu et le haut SANS jamais changer
+// l'ordre des parties (fonction strictement croissante), pour être comparable
+// aux autres trackers. Les paliers S/A/B/C/D/F sont décalés d'autant, donc les
+// libellés gardent exactement le même sens qu'avant.
+const SCORE_GAMMA = 0.65;
+const curveScore = s => 100 * Math.pow(clamp(s) / 100, SCORE_GAMMA);
+
 // Les 6 critères, chacun ramené sur 0-100 (50 = moyen en ranked).
 function perfParts(o){
   const rounds = num(o.rounds) || 24;
@@ -189,17 +198,30 @@ function perfDetail(o, ctx){
       delta: score - before, note:'échantillon trop petit : la note est rapprochée de la moyenne' });
   }
 
-  return { score: Math.round(clamp(score)), base, parts, adj,
+  // 4) Mise à l'échelle COSMO (dernière étape, purement de présentation).
+  const brut = score;
+  score = curveScore(score);
+  adj.push({ label:'Mise à l\'échelle COSMO', delta: score - brut,
+    note:`échelle interne ${Math.round(brut)}/100 (50 = joueur médian) recalée pour être comparable aux autres trackers` });
+
+  return { score: Math.round(clamp(score)), raw: brut, base, parts, adj,
            rounds, forfeit:!!ctx.forfeit, win:ctx.win, rank:ctx.rank, lobbyN:ctx.lobbyN };
 }
 function perfScore(o, ctx){ return perfDetail(o, ctx).score; }
+// Seuils exprimés en échelle INTERNE (avant courbe) puis convertis, pour que
+// "Moyen", "Solide"… gardent exactement la même exigence qu'avant la mise à
+// l'échelle. En pratique : S≥92, A≥82, B≥72, C≥60, D≥48.
+const TIERS_DEF = [
+  { min:88, t:"S", c:"#56d8c9", label:"Smurf détecté" },
+  { min:74, t:"A", c:"#7ee07a", label:"Énorme" },
+  { min:60, t:"B", c:"#cfe04f", label:"Solide" },
+  { min:46, t:"C", c:"#f2b234", label:"Moyen" },
+  { min:32, t:"D", c:"#f2803a", label:"Bof" },
+  { min:-1, t:"F", c:"#ff5d5d", label:"Caca qui pue" },
+].map(x => Object.assign({}, x, { cut: Math.round(curveScore(x.min)) }));
+
 function tierOf(s){
-  if(s>=88) return {t:"S",c:"#56d8c9",label:"Smurf détecté"};
-  if(s>=74) return {t:"A",c:"#7ee07a",label:"Énorme"};
-  if(s>=60) return {t:"B",c:"#cfe04f",label:"Solide"};
-  if(s>=46) return {t:"C",c:"#f2b234",label:"Moyen"};
-  if(s>=32) return {t:"D",c:"#f2803a",label:"Bof"};
-  return {t:"F",c:"#ff5d5d",label:"Caca qui pue"};
+  return TIERS_DEF.find(x => s >= x.cut) || TIERS_DEF[TIERS_DEF.length-1];
 }
 function flair(kd){ return kd>=1.4?"fire":(kd<=0.65?"stink":""); }
 function flairHTML(f){
@@ -979,7 +1001,8 @@ function openScoreDetail(line, head){
         <tr class="sdtot"><td colspan="4">Indice COSMO</td><td class="sdc" style="color:${t.c}">${d.score}</td></tr>
       </tbody>
     </table>
-    <div class="sd-note mono">Chaque critère est calibré pour qu'une valeur <b>moyenne en ranked vaille 50</b>.${
+    <div class="sd-note mono">Chaque critère est noté sur une échelle interne où une valeur <b>moyenne en ranked vaut 50</b>.
+    La note finale est ensuite <b>mise à l'échelle</b> pour être comparable aux autres trackers — l'ordre des parties reste identique.${
       d.forfeit?'<br>⚠️ Partie écourtée par forfait : la note est rapprochée de la moyenne (trop peu de rounds pour juger).':''}</div>`;
   modal.hidden=false;
 }
