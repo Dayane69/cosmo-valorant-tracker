@@ -44,7 +44,10 @@
   .banner{display:inline-block;background:var(--red);color:#fff;font-weight:800;font-size:30px;letter-spacing:.22em;
     padding:9px 40px;margin:12px 0 6px;clip-path:polygon(6% 0,100% 0,94% 100%,0 100%)}
   .htag{font-family:var(--mono);font-size:12.5px;color:var(--muted);letter-spacing:.04em}
-  .gear{position:absolute;top:20px;right:20px;display:flex;gap:8px}
+  /* z-index nécessaire : .eyebrow a une opacité < 1, ce qui crée un contexte
+     d'empilement qui passerait devant .gear (déclarée avant dans le DOM) et
+     avalerait les clics sur ⚙ Paramètres sous ~1200px de large. */
+  .gear{position:absolute;top:20px;right:20px;display:flex;gap:8px;z-index:10}
   .gear button{font-family:var(--mono);font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:rgba(0,0,0,.25)}
   .gear button:hover{border-color:var(--cyan);color:var(--txt)}
   .gear #btnTribunal{border-color:rgba(86,216,201,.4);color:var(--unlucky);background:rgba(86,216,201,.05)}
@@ -393,8 +396,10 @@
 <!-- ===================== HOME ===================== -->
 <section id="home">
   <div class="gear">
-    <button id="btnLeaderboard">🏆 Leaderboard</button>
-    <button id="btnTribunal">⚖ Tribunal COSMO</button>
+    <!-- Masqués pour l'instant (peu utilisés) : les pages Leaderboard et Tribunal
+         restent entièrement fonctionnelles — retire l'attribut "hidden" pour les réafficher. -->
+    <button id="btnLeaderboard" hidden>🏆 Leaderboard</button>
+    <button id="btnTribunal" hidden>⚖ Tribunal COSMO</button>
     <button id="btnGear">⚙ Paramètres</button>
   </div>
   <div class="hwrap">
@@ -581,6 +586,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260707" defer></script>
+<script src="app.js?v=20260708" defer></script>
 </body>
 </html>

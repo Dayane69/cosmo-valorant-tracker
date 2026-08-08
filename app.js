@@ -1758,8 +1758,9 @@ function wireStatic(){
   $('btnBack').addEventListener('click',showHome);
   $('btnBackTrib').addEventListener('click',showHome);
   $('btnBackLb').addEventListener('click',showHome);
-  $('btnTribunal').addEventListener('click',loadTribunal);
-  $('btnLeaderboard').addEventListener('click',loadLeaderboard);
+  // Boutons masqués pour l'instant : on garde le câblage (et on tolère leur absence).
+  $('btnTribunal')?.addEventListener('click',loadTribunal);
+  $('btnLeaderboard')?.addEventListener('click',loadLeaderboard);
   
   $('roster').addEventListener('click',e=>{const c=e.target.closest('.agentcard');if(c)openProfile(+c.dataset.idx);});
   $('ml').addEventListener('click',e=>{
