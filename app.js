@@ -469,6 +469,105 @@ function statline(p,rounds,ctx){
   o.score100=d.score; o.detail=d;
   return o;
 }
+/* ============ DÉTAIL D'UNE PARTIE (timeline, faits d'armes, duels) ============
+   Tout est extrait des données de round DÉJÀ téléchargées avec la partie.
+   On ne garde que le résultat (compact, ~3 Ko) et pas les tableaux bruts, qui
+   pèsent des centaines de Ko par match. */
+function matchFacts(m, roundsCount, me){
+  const rs = Array.isArray(m && m.rounds) ? m.rounds : [];
+  const kills = Array.isArray(m && m.kills) ? m.kills : [];
+  const players = Array.isArray(m && m.players) ? m.players : [];
+  if(!rs.length || !me) return null;
+  const mp = me.puuid, myTeam = me.team_id;
+
+  // Kills groupés par round, triés chronologiquement.
+  const byRound = new Map();
+  kills.forEach(k=>{ const r=num(k.round); if(!byRound.has(r)) byRound.set(r,[]); byRound.get(r).push(k); });
+  byRound.forEach(list=>list.sort((a,b)=>num(a.time_in_round_in_ms)-num(b.time_in_round_in_ms)));
+
+  const mates = players.filter(p=>p.team_id===myTeam && p.puuid!==mp).length;
+  const foes  = players.filter(p=>p.team_id!==myTeam).length;
+
+  let firstBloods=0, firstDeaths=0, clutches=0, plants=0, defuses=0;
+  const multi={}, clutchKinds=[];
+  const dealt={}, received={};
+
+  const timeline = rs.map((r,i)=>{
+    const ks = byRound.get(i) || [];
+    const mine = ks.filter(k=>k.killer&&k.killer.puuid===mp);
+    const won = r.winning_team===myTeam;
+
+    if(ks.length){
+      if(ks[0].killer&&ks[0].killer.puuid===mp) firstBloods++;
+      if(ks[0].victim&&ks[0].victim.puuid===mp) firstDeaths++;
+    }
+    if(mine.length>=2) multi[mine.length]=(multi[mine.length]||0)+1;
+
+    // Ma ligne de stats sur ce round (arme, armure, dégâts, AFK…)
+    const mst = (r.stats||[]).find(s=>s.player&&s.player.puuid===mp) || {};
+    const eco = mst.economy||{}, st = mst.stats||{};
+    let myDmg=0;
+    (mst.damage_events||[]).forEach(d=>{
+      myDmg += num(d.damage);
+      const n=(d.player&&d.player.name)||'?';
+      dealt[n]=(dealt[n]||0)+num(d.damage);
+    });
+    // Dégâts subis : ce que les autres m'ont infligé sur ce round.
+    (r.stats||[]).forEach(s=>{
+      if(!s.player || s.player.puuid===mp) return;
+      (s.damage_events||[]).forEach(d=>{
+        if(d.player && d.player.puuid===mp) received[s.player.name]=(received[s.player.name]||0)+num(d.damage);
+      });
+    });
+
+    const pl=r.plant, df=r.defuse;
+    if(pl && pl.player && pl.player.puuid===mp) plants++;
+    if(df && df.player && df.player.puuid===mp) defuses++;
+
+    // Clutch : je survis, tous mes coéquipiers sont morts, il restait des
+    // ennemis à ce moment-là, et je conclus le round.
+    const iDied = ks.some(k=>k.victim&&k.victim.puuid===mp);
+    if(won && !iDied && mates>0){
+      const mateDeaths = ks.filter(k=>k.victim&&k.victim.team===myTeam&&k.victim.puuid!==mp);
+      if(mateDeaths.length>=mates){
+        const tLast = num(mateDeaths[mateDeaths.length-1].time_in_round_in_ms);
+        const foesDeadBefore = ks.filter(k=>k.victim&&k.victim.team!==myTeam&&num(k.time_in_round_in_ms)<=tLast).length;
+        const alive = foes - foesDeadBefore;
+        const after = mine.filter(k=>num(k.time_in_round_in_ms)>tLast).length;
+        if(alive>=1 && after>=1){ clutches++; clutchKinds.push(`1v${alive}`); }
+      }
+    }
+
+    return { n:i+1, won, result:r.result||'', ceremony:(r.ceremony||'').replace(/^Ceremony/,''),
+      myKills:mine.length, myDmg, myScore:num(st.score),
+      weapon:(eco.weapon&&eco.weapon.name)||'', armor:(eco.armor&&eco.armor.name)||'',
+      loadout:num(eco.loadout_value), afk:!!mst.was_afk,
+      plant: pl?{ site:pl.site||'', by:(pl.player&&pl.player.name)||'', mine:!!(pl.player&&pl.player.puuid===mp) }:null,
+      defuse: df?{ by:(df.player&&df.player.name)||'', mine:!!(df.player&&df.player.puuid===mp) }:null,
+      kills: ks.map(k=>({ killer:(k.killer&&k.killer.name)||'?', victim:(k.victim&&k.victim.name)||'?',
+        weapon:(k.weapon&&k.weapon.name)||'', t:num(k.time_in_round_in_ms),
+        mine:!!(k.killer&&k.killer.puuid===mp), onMe:!!(k.victim&&k.victim.puuid===mp),
+        assists:(k.assistants||[]).map(a=>a&&a.name).filter(Boolean) })),
+    };
+  });
+
+  const duels = players.filter(p=>p.team_id!==myTeam).map(p=>({
+    name:p.name, tag:p.tag, dealt:num(dealt[p.name]), received:num(received[p.name]),
+  })).sort((a,b)=>(b.dealt+b.received)-(a.dealt+a.received));
+
+  const lobby = players.map(p=>({
+    name:p.name, tag:p.tag, team:p.team_id, mine:p.team_id===myTeam, isMe:p.puuid===mp,
+    tier:(p.tier&&p.tier.name)||'', party:p.party_id||'', agent:(p.agent&&p.agent.name)||'',
+  }));
+  // Groupes : on ne numérote que les party_id partagés par au moins 2 joueurs.
+  const counts={}; lobby.forEach(p=>{ if(p.party) counts[p.party]=(counts[p.party]||0)+1; });
+  const groups={}; let g=0;
+  Object.keys(counts).forEach(id=>{ if(counts[id]>1) groups[id]=++g; });
+  lobby.forEach(p=>{ p.group=groups[p.party]||0; });
+
+  return { timeline, firstBloods, firstDeaths, multi, clutches, clutchKinds, plants, defuses, duels, lobby };
+}
+
 // Nom du mode de jeu, quel que soit le format renvoyé par l'API.
 // Attention : queue peut être une chaîne, ou un objet dont "name" vaut null
 // (ex. {id:"skirmish_2v2", name:null}) — il ne faut JAMAIS retomber sur l'objet.
@@ -516,7 +615,8 @@ function normMatch(m, targetState = STATE){
   if(meStat) meStat.placement = placement;
 
   const startedMs=tsMs(meta);
-  return {players,rounds,lines,forfeit,
+  const facts = me ? matchFacts(m, rounds, me) : null;
+  return {players,rounds,lines,forfeit,facts,
     map:(meta.map&&meta.map.name)||meta.map||'—',
     mode:modeName(meta)||'—',
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
@@ -1016,6 +1116,119 @@ function openScoreDetail(line, head){
   modal.hidden=false;
 }
 function closeScoreDetail(){ const m=$('scoreModal'); if(m) m.hidden=true; }
+
+/* ============ MODALE : DÉTAIL COMPLET D'UNE PARTIE ============ */
+const RES_ICON = { Elimination:'⚔', Detonate:'💥', Defuse:'✂', 'Round timer expired':'⏱', Surrendered:'🏳' };
+const CEREMONY_FR = { Ace:'ACE', TeamAce:'TEAM ACE', Clutch:'CLUTCH', Flawless:'FLAWLESS', Closer:'CLOSER', Thrifty:'THRIFTY' };
+let FACTS_CUR = null;   // facts de la partie ouverte (pour déplier un round)
+
+function roundChip(r, sel){
+  const cer = CEREMONY_FR[r.ceremony] ? `<span class="rc-cer">${esc(CEREMONY_FR[r.ceremony])}</span>` : '';
+  const spike = r.plant ? `<span class="rc-sp${r.plant.mine?' me':''}" title="Spike posée site ${esc(r.plant.site)} par ${esc(r.plant.by)}">◆</span>` : '';
+  const df = r.defuse ? `<span class="rc-df${r.defuse.mine?' me':''}" title="Désamorcée par ${esc(r.defuse.by)}">✂</span>` : '';
+  return `<button class="rchip ${r.won?'w':'l'}${sel?' sel':''}" data-round="${r.n}" title="${esc(r.result)}">
+    <span class="rc-n">${r.n}</span>
+    <span class="rc-k">${r.myKills}<small>k</small></span>
+    <span class="rc-i">${RES_ICON[r.result]||'•'}${spike}${df}</span>
+    ${cer}
+  </button>`;
+}
+
+function renderRoundDetail(n){
+  const host=$('mdRound'); if(!host||!FACTS_CUR) return;
+  const r=FACTS_CUR.timeline.find(x=>x.n===n); if(!r) return;
+  document.querySelectorAll('#mdTimeline .rchip').forEach(b=>b.classList.toggle('sel', +b.dataset.round===n));
+  const secs = ms => (ms/1000).toFixed(0)+'s';
+  const kills = r.kills.length
+    ? r.kills.map(k=>`<div class="mdk${k.mine?' mine':''}${k.onMe?' onme':''}">
+        <span class="t">${esc(secs(k.t))}</span>
+        <span class="p">${esc(k.killer)}</span><span class="w">${esc(k.weapon||'—')}</span><span class="p">${esc(k.victim)}</span>
+        ${k.assists.length?`<span class="a">+ ${esc(k.assists.join(', '))}</span>`:''}
+      </div>`).join('')
+    : `<div class="mdk"><span class="a">Aucune élimination sur ce round.</span></div>`;
+  host.innerHTML=`
+    <div class="md-rhead">
+      <b>Round ${r.n}</b>
+      <span class="${r.won?'up':'dn'}">${r.won?'Gagné':'Perdu'}</span>
+      <span class="mono">${esc(r.result)}</span>
+      ${CEREMONY_FR[r.ceremony]?`<span class="rc-cer">${esc(CEREMONY_FR[r.ceremony])}</span>`:''}
+    </div>
+    <div class="md-rmeta mono">
+      ${r.myKills} kill${r.myKills>1?'s':''} · ${r.myDmg} dégâts · ${r.myScore} score
+      · achat ${r.loadout} cr${r.weapon?` (${esc(r.weapon)}${r.armor?' + '+esc(r.armor):''})`:''}
+      ${r.plant?` · spike posée site ${esc(r.plant.site)} par ${esc(r.plant.by)}`:''}
+      ${r.defuse?` · désamorcée par ${esc(r.defuse.by)}`:''}
+      ${r.afk?' · ⚠️ AFK':''}
+    </div>
+    <div class="md-kills">${kills}</div>`;
+}
+
+function openMatchFacts(i){
+  const M=STATE.matches[i]; if(!M) return;
+  const modal=$('matchModal'), body=$('matchModalBody'); if(!modal||!body) return;
+  const f=M.facts;
+  if(!f){
+    body.innerHTML=`<div class="md-empty mono">Détail round par round indisponible pour cette partie.<br>
+      Ouvre-la dans la liste (le détail complet se charge automatiquement), puis réessaie.</div>`;
+    modal.hidden=false; return;
+  }
+  FACTS_CUR=f;
+  const t=tierOf(M.me?M.me.score100:0);
+  const mk=Object.keys(f.multi).sort();
+  const tile=(v,l,cls='')=>`<div class="md-tile ${cls}"><b>${v}</b><span>${esc(l)}</span></div>`;
+  const maxD=Math.max(1,...f.duels.map(d=>Math.max(d.dealt,d.received)));
+
+  body.innerHTML=`
+    <div class="sd-head">
+      <div class="scorebadge score-hero" style="--sc:${t.c}">${M.me?M.me.score100:'—'}<span class="out">/100</span></div>
+      <div>
+        <div class="sd-tier" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${M.result==='w'?'VICTOIRE':'DÉFAITE'} ${M.myScore}–${M.oppScore}</div>
+        <h3>${esc(M.map)}</h3>
+        <div class="sd-sub mono">${esc(M.mode)}${M.me?' · '+esc(M.me.agent):''} · ${esc(relTime(M.started))}</div>
+      </div>
+    </div>
+
+    <div class="md-sec">Timeline <em>clique un round pour son détail</em></div>
+    <div class="md-timeline" id="mdTimeline">${f.timeline.map(r=>roundChip(r,r.n===1)).join('')}</div>
+    <div class="md-round" id="mdRound"></div>
+
+    <div class="md-sec">Faits d'armes</div>
+    <div class="md-tiles">
+      ${tile(f.firstBloods,'first bloods','good')}
+      ${tile(f.firstDeaths,'first deaths','bad')}
+      ${tile(mk.length?mk.map(k=>`${f.multi[k]}×${k}k`).join(' '):'—','multikills')}
+      ${tile(f.clutches,f.clutchKinds.length?'clutches ('+f.clutchKinds.join(', ')+')':'clutches','good')}
+      ${tile(f.plants,'spikes posées')}
+      ${tile(f.defuses,'désamorçages')}
+    </div>
+
+    <div class="md-sec">Duels <em>dégâts infligés / subis face à chaque adversaire</em></div>
+    <div class="md-duels">
+      ${f.duels.map(d=>`<div class="md-duel">
+        <span class="dn">${esc(d.name)}</span>
+        <span class="db"><i class="out" style="width:${(d.dealt/maxD*100).toFixed(0)}%"></i><b>${d.dealt}</b></span>
+        <span class="db"><i class="in" style="width:${(d.received/maxD*100).toFixed(0)}%"></i><b>${d.received}</b></span>
+      </div>`).join('')}
+      <div class="md-legend mono"><span class="k out"></span>infligés <span class="k in"></span>subis</div>
+    </div>
+
+    <div class="md-sec">Lobby <em>rangs et groupes détectés</em></div>
+    <div class="md-lobby">
+      ${['nous','eux'].map(side=>{
+        const rows=f.lobby.filter(p=>(side==='nous')===p.mine);
+        return `<div class="md-team"><div class="mt-h ${side==='nous'?'blue':'red'}">${side==='nous'?'Ton équipe':'Adverse'}</div>
+          ${rows.map(p=>`<div class="mt-r${p.isMe?' me':''}">
+            <span class="mt-n">${esc(p.name)}<small>#${esc(p.tag)}</small></span>
+            <span class="mt-a mono">${esc(p.agent||'')}</span>
+            <span class="mt-t mono">${esc(p.tier||'—')}</span>
+            ${p.group?`<span class="mt-g" title="A queue avec le groupe ${p.group}">G${p.group}</span>`:'<span class="mt-g none"></span>'}
+          </div>`).join('')}</div>`;
+      }).join('')}
+    </div>`;
+  renderRoundDetail(1);
+  modal.hidden=false;
+}
+function closeMatchFacts(){ const m=$('matchModal'); if(m) m.hidden=true; }
 
 // Ouvre le détail pour une partie de la liste (le joueur du profil).
 function openMatchScore(i){
@@ -1787,7 +2000,13 @@ function wireStatic(){
   $('scoreModal')?.addEventListener('click',e=>{
     if(e.target.closest('#scoreModalX')||e.target.classList.contains('modal-back')) closeScoreDetail();
   });
-  document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeScoreDetail(); });
+  // Détail complet de la partie (timeline, faits d'armes, duels, lobby)
+  $('btnMatchDetail')?.addEventListener('click',()=>openMatchFacts(SELECTED_IDX>=0?SELECTED_IDX:0));
+  $('matchModal')?.addEventListener('click',e=>{
+    if(e.target.closest('#matchModalX')||e.target.classList.contains('modal-back')){ closeMatchFacts(); return; }
+    const rc=e.target.closest('.rchip'); if(rc) renderRoundDetail(+rc.dataset.round);
+  });
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeScoreDetail(); closeMatchFacts(); } });
   $('phead').addEventListener('click',e=>{if(e.target.closest('.refresh'))loadProfile();});
   $('btnMore')?.addEventListener('click', loadMoreMatches);
 

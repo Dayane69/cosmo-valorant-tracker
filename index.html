@@ -235,6 +235,70 @@
   .sb td.pos.top{color:var(--amber)}
   .sbnote{font-family:var(--mono);font-size:11px;color:var(--dim);padding:8px 7px 0;text-align:center}
 
+  /* ============ MODALE : DÉTAIL D'UNE PARTIE ============ */
+  .modal-panel.wide{max-width:860px}
+  .md-sec{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);
+    margin:22px 0 9px;border-top:1px solid var(--line);padding-top:14px}
+  .md-sec em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--dim);margin-left:8px;font-size:11px}
+  .md-empty{padding:26px;text-align:center;color:var(--muted);font-size:13px;line-height:1.7}
+  /* timeline */
+  .md-timeline{display:flex;gap:5px;overflow-x:auto;padding-bottom:6px}
+  .rchip{flex:none;width:46px;border:1px solid var(--line);border-radius:8px;padding:6px 3px;background:var(--panel2);
+    display:flex;flex-direction:column;align-items:center;gap:2px;position:relative;transition:transform .12s,border-color .12s}
+  .rchip:hover{transform:translateY(-2px)}
+  .rchip.w{border-bottom:3px solid var(--win)} .rchip.l{border-bottom:3px solid var(--loss)}
+  .rchip.sel{border-color:var(--amber);background:rgba(242,178,52,.10)}
+  .rchip .rc-n{font-family:var(--mono);font-size:9.5px;color:var(--dim)}
+  .rchip .rc-k{font-size:14px;font-weight:800;line-height:1} .rchip .rc-k small{font-size:8px;color:var(--dim);font-weight:600}
+  .rchip .rc-i{font-size:10px;letter-spacing:1px;line-height:1}
+  .rchip .rc-sp{color:var(--amber)} .rchip .rc-sp.me,.rchip .rc-df.me{color:var(--cyan)}
+  .rchip .rc-cer{position:absolute;top:-6px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:7px;
+    font-weight:800;letter-spacing:.04em;background:var(--amber);color:#0a0d16;border-radius:3px;padding:1px 3px;white-space:nowrap}
+  /* détail d'un round */
+  .md-round{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:10px}
+  .md-rhead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:14px}
+  .md-rhead .up{color:var(--win);font-weight:700} .md-rhead .dn{color:var(--loss);font-weight:700}
+  .md-rhead .mono{font-size:11px;color:var(--muted)}
+  .md-rhead .rc-cer{font-family:var(--mono);font-size:9px;font-weight:800;background:var(--amber);color:#0a0d16;border-radius:4px;padding:2px 5px}
+  .md-rmeta{font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6}
+  .md-kills{margin-top:10px;display:flex;flex-direction:column;gap:4px}
+  .mdk{display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:11px;color:var(--muted);flex-wrap:wrap}
+  .mdk .t{color:var(--dim);min-width:26px;text-align:right}
+  .mdk .p{color:var(--txt)} .mdk .w{color:var(--dim);font-size:10px}
+  .mdk .a{color:var(--dim);font-size:10px}
+  .mdk.mine .p:first-of-type{color:var(--win);font-weight:700}
+  .mdk.onme .p:last-of-type{color:var(--loss);font-weight:700}
+  /* faits d'armes */
+  .md-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:8px}
+  .md-tile{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:11px 9px;text-align:center}
+  .md-tile b{display:block;font-size:19px;font-weight:800;line-height:1.1}
+  .md-tile span{display:block;font-family:var(--mono);font-size:9.5px;color:var(--dim);margin-top:4px;letter-spacing:.04em}
+  .md-tile.good b{color:var(--win)} .md-tile.bad b{color:var(--loss)}
+  /* duels */
+  .md-duels{display:flex;flex-direction:column;gap:6px}
+  .md-duel{display:grid;grid-template-columns:120px 1fr 1fr;gap:8px;align-items:center;font-family:var(--mono);font-size:11px}
+  .md-duel .dn{color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .md-duel .db{position:relative;background:var(--panel2);border-radius:5px;height:18px;display:flex;align-items:center}
+  .md-duel .db i{position:absolute;left:0;top:0;bottom:0;border-radius:5px}
+  .md-duel .db i.out{background:rgba(86,216,201,.45)} .md-duel .db i.in{background:rgba(255,93,93,.45)}
+  .md-duel .db b{position:relative;margin-left:6px;font-size:10.5px;color:var(--txt)}
+  .md-legend{font-size:10px;color:var(--dim);margin-top:4px;display:flex;align-items:center;gap:6px}
+  .md-legend .k{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .md-legend .k.out{background:rgba(86,216,201,.45)} .md-legend .k.in{background:rgba(255,93,93,.45);margin-left:10px}
+  /* lobby */
+  .md-lobby{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:620px){ .md-lobby{grid-template-columns:1fr} .md-duel{grid-template-columns:88px 1fr 1fr} }
+  .md-team{background:var(--panel2);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .mt-h{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:8px 10px;border-bottom:1px solid var(--line)}
+  .mt-h.blue{color:var(--cyan)} .mt-h.red{color:var(--red)}
+  .mt-r{display:grid;grid-template-columns:1fr auto auto 26px;gap:8px;align-items:center;padding:7px 10px;font-size:12px}
+  .mt-r.me{background:rgba(242,178,52,.08)}
+  .mt-n{color:var(--txt);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mt-n small{color:var(--dim);font-weight:400;font-family:var(--mono);font-size:10px}
+  .mt-a{font-size:10px;color:var(--muted)} .mt-t{font-size:10px;color:var(--amber)}
+  .mt-g{font-family:var(--mono);font-size:9px;font-weight:800;background:rgba(134,150,166,.22);color:var(--txt);border-radius:4px;padding:2px 4px;text-align:center}
+  .mt-g.none{background:none}
+
   /* ============ MODALE : DÉTAIL DE L'INDICE COSMO ============ */
   .sd{cursor:pointer}
   .sd:hover{filter:brightness(1.15)}
@@ -493,7 +557,11 @@
         <div class="card"><h2>Stats par map <em>selon le filtre (agent + acte)</em></h2><div id="mapStats"></div></div>
       </div>
 
-      <div class="card full"><h2>Scoreboard <em id="sbsub">sélectionné</em></h2><div id="sb"></div></div>
+      <div class="card full">
+        <h2 class="tabs-header"><span>Scoreboard <em id="sbsub">sélectionné</em></span>
+          <button class="btn" id="btnMatchDetail" type="button">🔍 Détail de la partie</button></h2>
+        <div id="sb"></div>
+      </div>
       <div class="foot">Base v1 · vannes et seuils en exemples, on les réglera ensemble. Tu peux mettre tes propres GIF dans REACTIONS.</div>
     </div>
   </div>
@@ -577,6 +645,15 @@
   </div>
 </section>
 
+<!-- ===================== DÉTAIL COMPLET D'UNE PARTIE ===================== -->
+<div id="matchModal" class="modal" hidden>
+  <div class="modal-back"></div>
+  <div class="modal-panel wide" role="dialog" aria-modal="true" aria-label="Détail de la partie">
+    <button class="modal-x" id="matchModalX" type="button" aria-label="Fermer">✕</button>
+    <div id="matchModalBody"></div>
+  </div>
+</div>
+
 <!-- ===================== DÉTAIL DE L'INDICE COSMO ===================== -->
 <div id="scoreModal" class="modal" hidden>
   <div class="modal-back"></div>
@@ -586,6 +663,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260709" defer></script>
+<script src="app.js?v=20260710" defer></script>
 </body>
 </html>
