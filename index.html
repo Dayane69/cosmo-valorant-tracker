@@ -274,6 +274,25 @@
   .md-tile b{display:block;font-size:19px;font-weight:800;line-height:1.1}
   .md-tile span{display:block;font-family:var(--mono);font-size:9.5px;color:var(--dim);margin-top:4px;letter-spacing:.04em}
   .md-tile.good b{color:var(--win)} .md-tile.bad b{color:var(--loss)}
+  /* armes & précision */
+  .md-wp{display:grid;grid-template-columns:1.35fr 1fr;gap:14px}
+  @media(max-width:620px){ .md-wp{grid-template-columns:1fr} }
+  .md-w{display:grid;grid-template-columns:88px 1fr 26px;gap:8px;align-items:center;font-family:var(--mono);font-size:11px;margin-bottom:5px}
+  .md-w .wn{color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .md-w .wb{background:var(--panel2);border-radius:5px;height:14px;position:relative}
+  .md-w .wb i{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:linear-gradient(90deg,var(--amber),#ffd36b);min-width:3px}
+  .md-w .wk{text-align:right;font-weight:800;color:var(--txt)}
+  .md-none{font-size:10px;color:var(--dim);margin-top:8px}
+  .md-prec{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;text-align:center}
+  .mp-big b{display:block;font-size:28px;font-weight:800;color:var(--amber);line-height:1}
+  .mp-big span{display:block;font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:3px;letter-spacing:.06em}
+  .mp-bar{display:flex;height:10px;border-radius:6px;overflow:hidden;margin:12px 0 8px;background:var(--panel)}
+  .mp-bar i.h{background:var(--amber)} .mp-bar i.b{background:var(--cyan)} .mp-bar i.l{background:var(--dim)}
+  .mp-leg{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;font-size:9.5px;color:var(--dim)}
+  .mp-leg i{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:4px}
+  .mp-leg i.h{background:var(--amber)} .mp-leg i.b{background:var(--cyan)} .mp-leg i.l{background:var(--dim)}
+  .md-tile b small{font-size:11px;font-weight:700;color:var(--muted)}
+
   /* duels */
   .md-duels{display:flex;flex-direction:column;gap:6px}
   .md-duel{display:grid;grid-template-columns:120px 1fr 1fr;gap:8px;align-items:center;font-family:var(--mono);font-size:11px}
@@ -663,6 +682,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260710" defer></script>
+<script src="app.js?v=20260711" defer></script>
 </body>
 </html>

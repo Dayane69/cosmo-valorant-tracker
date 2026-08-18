@@ -551,6 +551,39 @@ function matchFacts(m, roundsCount, me){
     };
   });
 
+  // --- Armes : kills par arme (exact, depuis kills[]).
+  //     Note : l'API ne fournit PAS le HS% par arme (aucun flag headshot sur un
+  //     kill ni sur un damage_event), on ne l'invente donc pas.
+  const wc={};
+  kills.forEach(k=>{ if(k.killer&&k.killer.puuid===mp){ const w=(k.weapon&&k.weapon.name)||'—'; wc[w]=(wc[w]||0)+1; } });
+  const weapons=Object.entries(wc).map(([name,n])=>({name,kills:n})).sort((a,b)=>b.kills-a.kills);
+
+  // --- Précision : répartition exacte des tirs touchés (niveau match).
+  const ms=me.stats||{};
+  const head=num(ms.headshots), body=num(ms.bodyshots), leg=num(ms.legshots);
+  const shotsTot=head+body+leg;
+  const precision={ head, body, leg, total:shotsTot, hsPct: shotsTot?Math.round(head/shotsTot*100):0 };
+
+  // --- Économie : achat moyen + répartition eco / demi-achat / full-buy avec le
+  //     taux de victoire de chaque tranche.
+  const ecoM=me.economy||{};
+  const buckets={ eco:{n:0,won:0,label:'Eco (<2000)'}, half:{n:0,won:0,label:'Demi-achat'}, full:{n:0,won:0,label:'Full buy (≥3900)'} };
+  timeline.forEach(r=>{ const b=r.loadout<2000?'eco':(r.loadout<3900?'half':'full'); buckets[b].n++; if(r.won) buckets[b].won++; });
+  const avgFromTl = timeline.length ? Math.round(timeline.reduce((s,r)=>s+r.loadout,0)/timeline.length) : 0;
+  const economy={
+    avgLoadout: Math.round(num(ecoM.loadout_value&&ecoM.loadout_value.average)) || avgFromTl,
+    avgSpent: Math.round(num(ecoM.spent&&ecoM.spent.average)),
+    buckets,
+  };
+
+  // --- Utilitaire : casts de compétences (les clés varient selon les versions).
+  const ac=me.ability_casts||{};
+  const pick=(...k)=>{ for(const x of k){ if(ac[x]!=null) return num(ac[x]); } return 0; };
+  const abilities={ grenade:pick('grenade','c_cast'), a1:pick('ability1','ability_1','q_cast'),
+    a2:pick('ability2','ability_2','e_cast'), ult:pick('ultimate','x_cast') };
+  abilities.total=abilities.grenade+abilities.a1+abilities.a2+abilities.ult;
+  abilities.perRound=roundsCount?Math.round(abilities.total/roundsCount*10)/10:0;
+
   const duels = players.filter(p=>p.team_id!==myTeam).map(p=>({
     name:p.name, tag:p.tag, dealt:num(dealt[p.name]), received:num(received[p.name]),
   })).sort((a,b)=>(b.dealt+b.received)-(a.dealt+a.received));
@@ -565,7 +598,8 @@ function matchFacts(m, roundsCount, me){
   Object.keys(counts).forEach(id=>{ if(counts[id]>1) groups[id]=++g; });
   lobby.forEach(p=>{ p.group=groups[p.party]||0; });
 
-  return { timeline, firstBloods, firstDeaths, multi, clutches, clutchKinds, plants, defuses, duels, lobby };
+  return { timeline, firstBloods, firstDeaths, multi, clutches, clutchKinds, plants, defuses,
+           weapons, precision, economy, abilities, duels, lobby };
 }
 
 // Nom du mode de jeu, quel que soit le format renvoyé par l'API.
@@ -1200,6 +1234,45 @@ function openMatchFacts(i){
       ${tile(f.clutches,f.clutchKinds.length?'clutches ('+f.clutchKinds.join(', ')+')':'clutches','good')}
       ${tile(f.plants,'spikes posées')}
       ${tile(f.defuses,'désamorçages')}
+    </div>
+
+    <div class="md-sec">Armes &amp; précision <em>${f.precision.total} tirs touchés</em></div>
+    <div class="md-wp">
+      <div class="md-weapons">
+        ${f.weapons.length ? f.weapons.map(w=>`<div class="md-w">
+            <span class="wn">${esc(w.name)}</span>
+            <span class="wb"><i style="width:${(w.kills/Math.max(1,f.weapons[0].kills)*100).toFixed(0)}%"></i></span>
+            <span class="wk">${w.kills}</span>
+          </div>`).join('')
+          : `<div class="md-none mono">Aucune élimination sur cette partie.</div>`}
+        <div class="md-none mono">kills par arme · le HS% par arme n'est pas fourni par l'API</div>
+      </div>
+      <div class="md-prec">
+        <div class="mp-big"><b>${f.precision.hsPct}%</b><span>headshots</span></div>
+        ${f.precision.total ? `<div class="mp-bar">
+          <i class="h" style="width:${(f.precision.head/f.precision.total*100).toFixed(1)}%"></i>
+          <i class="b" style="width:${(f.precision.body/f.precision.total*100).toFixed(1)}%"></i>
+          <i class="l" style="width:${(f.precision.leg/f.precision.total*100).toFixed(1)}%"></i>
+        </div>
+        <div class="mp-leg mono"><span><i class="h"></i>tête ${f.precision.head}</span><span><i class="b"></i>corps ${f.precision.body}</span><span><i class="l"></i>jambes ${f.precision.leg}</span></div>` : ''}
+      </div>
+    </div>
+
+    <div class="md-sec">Économie &amp; utilitaire</div>
+    <div class="md-tiles">
+      ${tile(f.economy.avgLoadout+' cr','achat moyen')}
+      ${tile(f.economy.avgSpent+' cr','dépensé / round')}
+      ${['eco','half','full'].map(b=>{
+        const x=f.economy.buckets[b];
+        return tile(x.n?`${x.n}<small> · ${Math.round(x.won/x.n*100)}%</small>`:'0', x.label+(x.n?' · gagnés':''));
+      }).join('')}
+    </div>
+    <div class="md-tiles" style="margin-top:8px">
+      ${tile(f.abilities.grenade,'grenade')}
+      ${tile(f.abilities.a1,'compétence 1')}
+      ${tile(f.abilities.a2,'compétence 2')}
+      ${tile(f.abilities.ult,'ultimes','good')}
+      ${tile(f.abilities.perRound,'compétences / round')}
     </div>
 
     <div class="md-sec">Duels <em>dégâts infligés / subis face à chaque adversaire</em></div>

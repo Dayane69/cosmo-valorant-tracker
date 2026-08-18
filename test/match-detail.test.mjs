@@ -150,3 +150,83 @@ test("normMatch attache les facts, et les garde compacts", () => {
   const poids = JSON.stringify(M.facts).length, brut = JSON.stringify(m).length;
   assert.ok(poids < brut / 10, `facts compacts (${(poids/1024)|0} Ko contre ${(brut/1024)|0} Ko)`);
 });
+
+/* ============ Armes, précision & économie ============ */
+
+test("armes : kills par arme, triés du plus utilisé au moins utilisé", () => {
+  const m = {
+    players: [P("A", "Blue"), P("E1", "Red")],
+    rounds: [R("Blue", { stats: [{ p: "A" }] }), R("Blue", { stats: [{ p: "A" }] })],
+    kills: [
+      K(0, 1000, "A", "E1", { weapon: "Vandal" }),
+      K(0, 2000, "A", "E1", { weapon: "Vandal" }),
+      K(1, 3000, "A", "E1", { weapon: "Ghost" }),
+      K(1, 4000, "E1", "A", { weapon: "Operator", kt: "Red", vt: "Blue" }), // pas moi
+    ],
+  };
+  const f = X.matchFacts(m, 2, m.players[0]);
+  assert.equal(f.weapons.length, 2, "seules MES armes sont comptées");
+  assert.equal(f.weapons[0].name, "Vandal");
+  assert.equal(f.weapons[0].kills, 2);
+  assert.equal(f.weapons[1].name, "Ghost");
+  assert.ok(!f.weapons.some(w => w.name === "Operator"), "l'arme de l'adversaire n'apparaît pas");
+});
+
+test("précision : répartition exacte tête / corps / jambes", () => {
+  const me = P("A", "Blue");
+  me.stats.headshots = 20; me.stats.bodyshots = 49; me.stats.legshots = 1;
+  const m = { players: [me, P("E1", "Red")], rounds: [R("Blue", { stats: [{ p: "A" }] })], kills: [] };
+  const f = X.matchFacts(m, 1, me);
+  assert.equal(f.precision.total, 70);
+  assert.equal(f.precision.head, 20);
+  assert.equal(f.precision.hsPct, 29, "20/70 arrondi = 29%");
+});
+
+test("économie : achat moyen et répartition eco / demi-achat / full buy avec victoires", () => {
+  const me = P("A", "Blue");
+  me.economy = { spent: { average: 2268.75 }, loadout_value: { average: 3458.33 } };
+  const m = {
+    players: [me, P("E1", "Red")],
+    rounds: [
+      R("Blue", { stats: [{ p: "A", loadout: 800 }] }),    // eco gagné
+      R("Red",  { stats: [{ p: "A", loadout: 1500 }] }),   // eco perdu
+      R("Blue", { stats: [{ p: "A", loadout: 2500 }] }),   // demi gagné
+      R("Blue", { stats: [{ p: "A", loadout: 4500 }] }),   // full gagné
+      R("Red",  { stats: [{ p: "A", loadout: 3900 }] }),   // full perdu (seuil inclus)
+    ],
+    kills: [],
+  };
+  const f = X.matchFacts(m, 5, me);
+  assert.equal(f.economy.avgLoadout, 3458, "moyenne fournie par l'API, arrondie");
+  assert.equal(f.economy.avgSpent, 2269);
+  assert.equal(f.economy.buckets.eco.n, 2);   assert.equal(f.economy.buckets.eco.won, 1);
+  assert.equal(f.economy.buckets.half.n, 1);  assert.equal(f.economy.buckets.half.won, 1);
+  assert.equal(f.economy.buckets.full.n, 2, "3900 compte comme full buy");
+  assert.equal(f.economy.buckets.full.won, 1);
+});
+
+test("économie : moyenne recalculée si l'API ne la fournit pas", () => {
+  const me = P("A", "Blue"); delete me.economy;
+  const m = { players: [me, P("E1", "Red")],
+    rounds: [R("Blue", { stats: [{ p: "A", loadout: 1000 }] }), R("Blue", { stats: [{ p: "A", loadout: 3000 }] })],
+    kills: [] };
+  const f = X.matchFacts(m, 2, me);
+  assert.equal(f.economy.avgLoadout, 2000, "repli : moyenne des achats de la timeline");
+});
+
+test("utilitaire : casts de compétences, quelles que soient les clés de l'API", () => {
+  const mk = (casts) => {
+    const me = P("A", "Blue"); me.ability_casts = casts;
+    return X.matchFacts({ players: [me, P("E1", "Red")],
+      rounds: [R("Blue", { stats: [{ p: "A" }] }), R("Blue", { stats: [{ p: "A" }] })], kills: [] }, 2, me);
+  };
+  const a = mk({ grenade: 6, ability1: 5, ability2: 25, ultimate: 2 }).abilities;
+  assert.equal(a.grenade, 6); assert.equal(a.a1, 5); assert.equal(a.a2, 25); assert.equal(a.ult, 2);
+  assert.equal(a.total, 38);
+  assert.equal(a.perRound, 19, "38 casts sur 2 rounds");
+  // Variante avec underscores (format des stats de round)
+  const b = mk({ grenade: 1, ability_1: 2, ability_2: 3, ultimate: 1 }).abilities;
+  assert.equal(b.a1, 2); assert.equal(b.a2, 3);
+  // Absence totale de données : pas de plantage
+  assert.equal(mk(undefined).abilities.total, 0);
+});
