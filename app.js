@@ -1026,6 +1026,7 @@ function renderStatsCards(filtered){
   const rows = STATS_SEASON==='all' ? filtered : filtered.filter(M => M && M.season===STATS_SEASON);
   renderStatsTable('agentStats', groupStats(rows, M => M.me.agent), 'Agent');
   renderStatsTable('mapStats',   groupStats(rows, M => M.map),      'Map');
+  markScrollable();
 }
 
 // (Re)remplit le menu Saison/Acte des stats à partir des actes présents dans les matchs.
@@ -1100,6 +1101,15 @@ function renderList(){
   
   // Selection auto du premier element filtré si existant
   if(filtered.length > 0) showMatch(STATE.matches.indexOf(filtered[0]));
+}
+
+// Ajoute un dégradé sur les conteneurs qui débordent vraiment horizontalement,
+// pour signaler qu'on peut les faire défiler (surtout au doigt sur mobile).
+function markScrollable(){
+  ['sb','agentStats','mapStats'].forEach(id=>{
+    const el=$(id); if(!el) return;
+    el.classList.toggle('scrollx', el.scrollWidth > el.clientWidth + 2);
+  });
 }
 
 // Rang ordinal en français : 1 -> "1er", sinon "Ne".
@@ -1383,6 +1393,7 @@ function showMatch(i){
   $('sb').innerHTML=`<table class="sb"><thead><tr><th>#</th><th class="pcol">Joueur</th><th>Indice</th><th>ACS</th><th>K/D/A</th><th>+/–</th><th>HS%</th><th>ADR</th></tr></thead>
     <tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
     <tr><td colspan="8" class="teamlabel red">Adverse — ${detail.oppScore} rounds</td></tr>${sbRows(red)}</tbody></table>${note}`;
+  markScrollable();
 
   // Charge le détail complet à la demande, puis ré-affiche si cette partie est toujours ouverte.
   if(M.partial && M.id && !(M.id in MATCH_DETAILS)){
