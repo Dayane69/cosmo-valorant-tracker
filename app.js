@@ -257,6 +257,25 @@ function tsMs(md){
 function matchTime(m){ return tsMs((m&&(m.metadata||m.meta))||{}); }
 function msToIso(ms){ return ms ? new Date(ms).toISOString() : ''; }
 
+// Durée d'une partie, en ms. Les versions de l'API divergent :
+// v4 -> game_length_in_ms, stored v1 -> game_length (parfois en SECONDES).
+// Une partie ne dépasse jamais ~1h : au-dessus de 1e5 la valeur est en ms.
+function durMs(md){
+  if(!md) return 0;
+  const a=md.game_length_in_ms;
+  if(typeof a==='number' && a>0) return a;
+  const g=md.game_length;
+  if(typeof g==='number' && g>0) return g<1e5 ? g*1000 : g;
+  return 0;
+}
+// Repli quand l'API ne donne pas la durée : ~100 s par round joué.
+const MS_PER_ROUND = 100000;
+function matchDuration(M){
+  if(!M) return 0;
+  if(M.durMs>0) return M.durMs;
+  return Math.max(1, num(M.rounds, 24)) * MS_PER_ROUND;
+}
+
 // Fusionne plusieurs listes de matchs bruts en dédoublonnant par matchid.
 // Les listes passées en premier sont prioritaires (les données fraîches v4
 // l'emportent sur la version stockée). Tri du plus récent au plus ancien.
@@ -650,7 +669,14 @@ function normMatch(m, targetState = STATE){
 
   const startedMs=tsMs(meta);
   const facts = me ? matchFacts(m, rounds, me) : null;
-  return {players,rounds,lines,forfeit,facts,
+  // Groupe de queue : les joueurs qui partagent MON party_id. Un party_id seul
+  // (taille 1) = solo. Absent du format compact du blob -> null, pas 1.
+  let party=null;
+  if(me && me.party_id){
+    const mates=players.filter(p=>p.party_id===me.party_id);
+    party={ size:mates.length, names:mates.filter(p=>p.puuid!==me.puuid).map(p=>p.name||'?') };
+  }
+  return {players,rounds,lines,forfeit,facts,party,durMs:durMs(meta),
     map:(meta.map&&meta.map.name)||meta.map||'—',
     mode:modeName(meta)||'—',
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
@@ -681,7 +707,7 @@ function normStored(entry, targetState = STATE){
   const meStat=statline(player, rounds, {forfeit, win: result==='?'?undefined:(result==='w')});
   meStat.placement=null; // pas d'info de classement dans ce format compact
   const startedMs=tsMs(meta);
-  return { players:[player], rounds, partial:true, forfeit,   // format compact : 1 seul joueur, détail complet chargeable à la demande
+  return { players:[player], rounds, partial:true, forfeit, party:null, durMs:durMs(meta),   // format compact : 1 seul joueur, détail complet chargeable à la demande
     map:(meta.map&&meta.map.name)||meta.map||'—',
     mode:modeName(meta)||'—',
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
@@ -709,6 +735,370 @@ function rrIndexFromSeries(series){
     idx[e.id]={ change:e.change, tierName, icon, rr:e.rr, season:e.season||null };
   });
   return idx;
+}
+
+/* ===================== SESSIONS =====================
+   Une SESSION = une suite de parties séparées par moins de SESSION_GAP.
+   Le découpage se fait sur l'ÉCART entre la FIN d'une partie et le DÉBUT de la
+   suivante — jamais sur le jour calendaire. Conséquences voulues :
+     - une session du samedi 23h au dimanche 2h reste UNE session ;
+     - deux sessions le même jour (midi puis 21h) restent DEUX sessions.
+*/
+let SESSION_GAP_MIN = 120;               // écart (minutes) qui coupe une session
+const BASELINE_MIN = 6;                  // parties hors session nécessaires pour comparer
+const STACK_LABEL = {1:'Solo', 2:'Duo', 3:'Trio', 4:'Quatuor', 5:'5-stack'};
+const RANKED_RE = /competitive|class[ée]|comp[ée]titif/;
+const isRanked = M => RANKED_RE.test(String((M&&M.mode)||'').toLowerCase());
+const memberKey = m => String((m&&m.name)||'').toLowerCase()+'#'+String((m&&m.tag)||'').toLowerCase();
+
+const mean = a => a.length ? a.reduce((x,y)=>x+y,0)/a.length : null;
+// Moyenne pondérée : une partie de 24 rounds pèse plus qu'un stomp en 13.
+function wavg(items, val, weight){
+  let s=0, w=0;
+  items.forEach(it=>{
+    const v=val(it); if(v==null||isNaN(v)) return;
+    const k=Math.max(1, num(weight?weight(it):1, 1));
+    s+=v*k; w+=k;
+  });
+  return w ? s/w : null;
+}
+
+// Découpe une liste de parties normalisées en sessions (plus récente en premier).
+function buildSessions(matches, gapMs){
+  const gap = gapMs!=null ? gapMs : SESSION_GAP_MIN*60000;
+  const chrono=(matches||[]).filter(M=>M && M.startedMs>0).slice().sort((a,b)=>a.startedMs-b.startedMs);
+  const out=[]; let cur=null;
+  chrono.forEach(M=>{
+    if(!cur || (M.startedMs - cur.endMs) > gap){
+      cur={ matches:[], startMs:M.startedMs, endMs:0 };
+      out.push(cur);
+    }
+    cur.matches.push(M);
+    cur.endMs=Math.max(cur.endMs, M.startedMs + matchDuration(M));
+  });
+  out.forEach(s=>{ s.durationMs=s.endMs-s.startMs; s.key='s'+s.startMs; });
+  return out.reverse();
+}
+
+// Agrégat de stats sur un paquet de parties (session OU référence long terme).
+function sessionStats(list){
+  const P=(list||[]).filter(M=>M && M.me);
+  const rounds=M=>num(M.rounds,1);
+  const st={
+    n:P.length,
+    wins:P.filter(M=>M.result==='w').length,
+    losses:P.filter(M=>M.result==='l').length,
+    forfeits:P.filter(M=>M.forfeit).length,
+    roundsWon:P.reduce((s,M)=>s+num(M.myScore),0),
+    roundsLost:P.reduce((s,M)=>s+num(M.oppScore),0),
+    totalRounds:P.reduce((s,M)=>s+rounds(M),0),
+    index:wavg(P, M=>M.me.score100, rounds),
+    acs:wavg(P, M=>M.me.acs, rounds),
+    adr:wavg(P, M=>M.me.adr, rounds),
+    dd:wavg(P, M=>M.me.dd, rounds),
+    hs:wavg(P, M=>M.me.hs, M=>num(M.me.shots,1)),          // pondéré par les tirs touchés
+    kast:wavg(P.filter(M=>M.me.kast!=null), M=>M.me.kast, rounds),
+    k:P.reduce((s,M)=>s+num(M.me.k),0),
+    d:P.reduce((s,M)=>s+num(M.me.d),0),
+    a:P.reduce((s,M)=>s+num(M.me.a),0),
+  };
+  st.kd=st.d?st.k/st.d:st.k;
+  st.kda=st.d?(st.k+st.a)/st.d:(st.k+st.a);
+  st.dpr=st.totalRounds?st.d/st.totalRounds:null;          // morts par round
+  st.winrate=st.n?st.wins/st.n*100:null;
+  // RR : uniquement les parties classées dont on connaît la variation.
+  const rr=P.filter(M=>isRanked(M) && M.rr && M.rr.change!=null);
+  st.rrGames=rr.length;
+  st.rrNet=rr.length?rr.reduce((s,M)=>s+num(M.rr.change),0):null;
+  return st;
+}
+
+// Agrégat des "faits d'armes" — présents seulement sur les parties au format
+// complet (les parties compactes du blob n'ont pas le détail des rounds).
+function sessionFacts(list){
+  const F=(list||[]).filter(M=>M && M.facts);
+  if(!F.length) return null;
+  const f={ n:F.length, firstBloods:0, firstDeaths:0, clutches:0, plants:0, defuses:0,
+            multi:0, aces:0, ecoN:0, ecoWon:0, fullN:0, fullWon:0 };
+  const loads=[];
+  F.forEach(M=>{
+    const x=M.facts;
+    f.firstBloods+=num(x.firstBloods); f.firstDeaths+=num(x.firstDeaths);
+    f.clutches+=num(x.clutches); f.plants+=num(x.plants); f.defuses+=num(x.defuses);
+    Object.keys(x.multi||{}).forEach(k=>{ f.multi+=num(x.multi[k]); if(num(k)>=5) f.aces+=num(x.multi[k]); });
+    const b=(x.economy&&x.economy.buckets)||{};
+    if(b.eco){ f.ecoN+=num(b.eco.n); f.ecoWon+=num(b.eco.won); }
+    if(b.full){ f.fullN+=num(b.full.n); f.fullWon+=num(b.full.won); }
+    if(x.economy&&x.economy.avgLoadout) loads.push(x.economy.avgLoadout);
+  });
+  f.avgLoadout=loads.length?Math.round(mean(loads)):null;
+  f.ecoWR=f.ecoN?f.ecoWon/f.ecoN*100:null;
+  f.fullWR=f.fullN?f.fullWon/f.fullN*100:null;
+  return f;
+}
+
+// Référence de comparaison : les AUTRES parties du joueur, dans les MÊMES modes
+// que la session (comparer une session de DM à des ranked n'aurait aucun sens).
+function sessionBaseline(session, allMatches){
+  const modes=new Set(session.matches.map(M=>String(M.mode||'').toLowerCase()));
+  const ids=new Set(session.matches.map(M=>M.id).filter(Boolean));
+  const pool=(allMatches||[]).filter(M=>M && M.me && !ids.has(M.id)
+    && modes.has(String(M.mode||'').toLowerCase()));
+  if(pool.length<BASELINE_MIN) return null;
+  const st=sessionStats(pool);
+  st.facts=sessionFacts(pool);
+  return st;
+}
+
+// Évolution DANS la session : moyenne d'indice de la 1re moitié vs la 2nde.
+// C'est le signal "tilt / fatigue" — le plus utile d'un rapport de session.
+function sessionTrend(list){
+  const P=(list||[]).filter(M=>M && M.me);
+  if(P.length<4) return null;
+  const h=Math.ceil(P.length/2);
+  const first=mean(P.slice(0,h).map(M=>M.me.score100));
+  const last=mean(P.slice(h).map(M=>M.me.score100));
+  return { n:P.length, first:Math.round(first), last:Math.round(last), delta:Math.round(last-first) };
+}
+
+// Meilleur / pire regroupement (map, agent…) dans la session.
+function bestWorst(list, keyFn, minGames){
+  const g={};
+  (list||[]).forEach(M=>{ if(!M||!M.me) return; const k=keyFn(M); if(!k||k==='—') return; (g[k]=g[k]||[]).push(M); });
+  const rows=Object.keys(g).filter(k=>g[k].length>=(minGames||2)).map(k=>({
+    key:k, n:g[k].length,
+    index:Math.round(mean(g[k].map(M=>M.me.score100))),
+    wins:g[k].filter(M=>M.result==='w').length,
+  }));
+  if(rows.length<2) return null;
+  rows.sort((a,b)=>b.index-a.index);
+  return { best:rows[0], worst:rows[rows.length-1], rows };
+}
+
+/* --- Composition : solo / duo / trio ---------------------------------------
+   Deux sources, volontairement distinctes :
+   - le STACK COSMO, déduit du croisement des historiques par match_id (fiable
+     sur TOUT l'historique, y compris les parties compactes du blob) ;
+   - la TAILLE DE PARTY réelle (party_id), qui inclut les joueurs hors squad
+     mais n'existe que sur les parties au format complet.
+   On n'affiche la seconde que quand elle apporte quelque chose. */
+function matchSquadMates(M, squadIndex, selfKey){
+  if(!M || !M.id || !squadIndex) return [];
+  return (squadIndex[M.id]||[]).filter(e=>e.team===M.myTeamId && e.key!==selfKey);
+}
+
+function sessionComposition(list, squadIndex, selfKey){
+  const bySize={}, mates={};
+  let partyKnown=0, partyMax=0, partyExtra=0;
+  (list||[]).forEach(M=>{
+    const others=matchSquadMates(M, squadIndex, selfKey);
+    const size=others.length+1;
+    bySize[size]=(bySize[size]||0)+1;
+    others.forEach(e=>{ mates[e.key]=mates[e.key]||{ key:e.key, name:e.name, tag:e.tag, color:e.color, n:0 }; mates[e.key].n++; });
+    if(M.party && M.party.size>0){
+      partyKnown++;
+      partyMax=Math.max(partyMax, M.party.size);
+      partyExtra=Math.max(partyExtra, M.party.size-size);   // joueurs hors squad dans la party
+    }
+  });
+  const sizes=Object.keys(bySize).map(Number).sort((a,b)=>bySize[b]-bySize[a] || b-a);
+  const dominant=sizes.length?sizes[0]:1;
+  const mixed=sizes.length>1;
+  return {
+    dominant, mixed, bySize,
+    label:STACK_LABEL[dominant]||(dominant+'-stack'),
+    mates:Object.keys(mates).map(k=>mates[k]).sort((a,b)=>b.n-a.n),
+    partyKnown, partyMax, partyExtra:Math.max(0,partyExtra),
+  };
+}
+
+// Verdict d'une session : croise la PERFORMANCE (vs ta référence) et le
+// RÉSULTAT (RR, sinon winrate). Les deux peuvent diverger — c'est justement
+// l'information intéressante ("bien joué, mal payé").
+function sessionVerdict(st, base, trend){
+  const d=(base && st.index!=null && base.index!=null) ? st.index-base.index : null;
+  const perfUp=d!=null && d>=5, perfDown=d!=null && d<=-5;
+  const resUp  = st.rrNet!=null ? st.rrNet>0  : (st.winrate!=null && st.winrate>=60);
+  const resDown= st.rrNet!=null ? st.rrNet<0  : (st.winrate!=null && st.winrate<=40);
+  let word='SESSION MOYENNE', tone='mid', line='Ni bonne ni mauvaise : tu es resté dans tes standards.';
+  if(perfUp&&resUp)        { word='GROSSE SESSION';      tone='good'; line='Au-dessus de ton niveau habituel ET ça a payé.'; }
+  else if(perfUp&&resDown) { word='BIEN JOUÉ, MAL PAYÉ'; tone='mixed';line='Tu as mieux joué que d\'habitude, le résultat n\'a pas suivi.'; }
+  else if(perfDown&&resUp) { word='SESSION PORTÉE';      tone='mixed';line='Les résultats sont là, mais pas grâce à toi cette fois.'; }
+  else if(perfDown&&resDown){word='SESSION À OUBLIER';   tone='bad';  line='En dessous de ton niveau, et la sanction est tombée.'; }
+  else if(perfUp)          { word='BONNE SESSION';       tone='good'; line='Au-dessus de ta moyenne sur ces modes.'; }
+  else if(perfDown)        { word='SESSION EN DESSOUS';  tone='bad';  line='En dessous de ta moyenne sur ces modes.'; }
+  else if(resUp)           { word='SESSION POSITIVE';    tone='good'; line='Perf habituelle, mais le bilan est bon.'; }
+  else if(resDown)         { word='SESSION NÉGATIVE';    tone='bad';  line='Perf habituelle, mais le bilan est mauvais.'; }
+  if(trend && trend.delta<=-10 && tone!=='good') line+=' Et tu as clairement baissé en cours de route.';
+  return { word, tone, line, dIndex:d };
+}
+
+/* Analyse complète d'une session -> verdict + ce qui allait / n'allait pas /
+   à améliorer. Chaque règle est GARDÉE : si la donnée manque (pas de référence,
+   pas de détail de round), la règle ne produit rien plutôt que d'inventer. */
+function analyzeSession(session, ctx){
+  ctx=ctx||{};
+  const ms=session.matches.filter(M=>M && M.me);
+  const st=sessionStats(ms);
+  const facts=sessionFacts(ms);
+  const base=ctx.baseline||null;
+  const bf=base&&base.facts||null;
+  const trend=sessionTrend(ms);
+  const good=[], bad=[], tips=[];
+  const G=(t,x)=>good.push({title:t,text:x});
+  const B=(t,x)=>bad.push({title:t,text:x});
+  const T=(t,x)=>tips.push({title:t,text:x});
+  const one=v=>Math.round(v*100)/100;
+  const sign=v=>(v>0?'+':'')+v;
+  const d=(a,b)=>(a==null||b==null)?null:a-b;
+
+  const dIdx=d(st.index, base&&base.index), dAcs=d(st.acs, base&&base.acs);
+  const dAdr=d(st.adr, base&&base.adr),     dHs=d(st.hs, base&&base.hs);
+  const dKd=d(st.kd, base&&base.kd),        dDpr=d(st.dpr, base&&base.dpr);
+  const dKast=(st.kast!=null&&base&&base.kast!=null)?st.kast-base.kast:null;
+
+  // --- Performance globale vs ta référence
+  if(dIdx!=null && dIdx>=6)  G('Au-dessus de ton niveau', `Indice moyen ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude (${sign(Math.round(dIdx))}).`);
+  if(dIdx!=null && dIdx<=-6) B('En dessous de ton niveau', `Indice moyen ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude (${sign(Math.round(dIdx))}).`);
+
+  // --- Impact
+  if(dAcs!=null && dAcs>=15)  G('Impact en hausse', `${Math.round(st.acs)} ACS contre ${Math.round(base.acs)} en moyenne.`);
+  if(dAcs!=null && dAcs<=-15) B('Impact en baisse', `${Math.round(st.acs)} ACS contre ${Math.round(base.acs)} en moyenne.`);
+  if(dAdr!=null && dAdr<=-12){
+    B('Moins de dégâts', `${Math.round(st.adr)} ADR contre ${Math.round(base.adr)} d'habitude.`);
+    T('Cherche le dégât, pas le kill', 'Tire sur tout ce qui dépasse : un adversaire à 40 PV, c\'est un round gagné par ton équipe même si tu ne le finis pas.');
+  }
+
+  // --- Duels & survie
+  if(dKd!=null && dKd>=0.25)  G('Duels gagnés', `K/D ${one(st.kd)} contre ${one(base.kd)} d'habitude.`);
+  if(dKd!=null && dKd<=-0.25) B('Duels perdus', `K/D ${one(st.kd)} contre ${one(base.kd)} d'habitude.`);
+  if(dDpr!=null && dDpr>=0.06){
+    B('Tu meurs plus souvent', `${one(st.dpr)} mort par round contre ${one(base.dpr)} d'habitude.`);
+    T('Prends moins de duels gratuits', 'Attends l\'utilitaire et le trade de ton coéquipier avant d\'ouvrir. Une mort en début de round coûte le round entier.');
+  }
+  if(dKast!=null && dKast>=6)  G('Toujours dans le coup', `KAST ${Math.round(st.kast)}% contre ${Math.round(base.kast)}% d'habitude.`);
+  if(dKast!=null && dKast<=-6){
+    B('Souvent hors du coup', `KAST ${Math.round(st.kast)}% contre ${Math.round(base.kast)}% d'habitude : beaucoup de rounds sans kill, sans assist, sans survie et sans trade.`);
+    T('Joue plus proche de ton équipe', 'Le KAST monte tout seul quand tu es tradable : reste à portée d\'un coéquipier au lieu de tenir un angle isolé.');
+  }
+
+  // --- Visée
+  if(dHs!=null && dHs>=4)  G('Visée au-dessus de ton niveau', `${Math.round(st.hs)}% de headshots contre ${Math.round(base.hs)}% d'habitude.`);
+  if(dHs!=null && dHs<=-4){
+    B('Visée en dessous', `${Math.round(st.hs)}% de headshots contre ${Math.round(base.hs)}% d'habitude.`);
+    T('Échauffe-toi avant de lancer', '10 minutes de Range ou un deathmatch avant la première classée : la première partie d\'une session est presque toujours la moins précise.');
+  }
+
+  // --- Entrées de round (nécessite le détail des rounds)
+  if(facts && facts.n>=2){
+    if(facts.firstDeaths>=4 && facts.firstDeaths>=facts.firstBloods*2){
+      B('Tu meurs souvent en premier', `${facts.firstDeaths} premières morts pour ${facts.firstBloods} premiers sangs sur ${facts.n} partie${facts.n>1?'s':''} détaillée${facts.n>1?'s':''}.`);
+      T('Ne rentre pas en premier sans info', 'Laisse partir un flash, un drone ou un coéquipier avant de prendre l\'angle. Sinon ton équipe joue le round à 4 contre 5.');
+    }
+    if(facts.firstBloods>=4 && facts.firstBloods>=facts.firstDeaths*1.5)
+      G('Tu ouvres bien les rounds', `${facts.firstBloods} premiers sangs pour seulement ${facts.firstDeaths} premières morts.`);
+    if(facts.clutches>=2) G('Clutch', `${facts.clutches} rounds gagnés en dernier survivant.`);
+    if(facts.aces>=1) G('Ace', `${facts.aces} ace${facts.aces>1?'s':''} dans la session.`);
+    if(facts.ecoWR!=null && facts.ecoN>=5 && facts.ecoWR>=35)
+      G('Bons rounds d\'eco', `${Math.round(facts.ecoWR)}% de rounds gagnés en eco (${facts.ecoN} rounds).`);
+    if(facts.fullWR!=null && facts.fullN>=8 && facts.fullWR<=40){
+      B('Full buys gâchés', `Seulement ${Math.round(facts.fullWR)}% de rounds gagnés en full buy (${facts.fullN} rounds).`);
+      T('Le problème n\'est pas l\'argent', 'Avec l\'arme il reste l\'exécution : jouez les rounds ensemble, avec un plan de prise de site, plutôt qu\'en solo.');
+    }
+  }
+
+  // --- Tilt / durée de session
+  if(trend){
+    if(trend.delta>=8) G('Montée en régime', `Indice ${trend.first} sur la première moitié, ${trend.last} sur la seconde (${sign(trend.delta)}).`);
+    if(trend.delta<=-8){
+      B('Tu baisses en cours de session', `Indice ${trend.first} sur la première moitié, ${trend.last} sur la seconde (${sign(trend.delta)}).`);
+      T('Coupe plus tôt', `Sur cette session, tes meilleures parties sont les premières. Au-delà de ${Math.ceil(trend.n/2)} parties d'affilée, une pause vaut mieux qu'une partie de plus.`);
+    }
+  }
+  if(st.n>=8 && (!trend || trend.delta<0))
+    T('Session longue', `${st.n} parties d'affilée, sans progression sur la fin. Découpe en deux sessions avec une vraie coupure.`);
+
+  // --- Bilan
+  if(st.n>=3 && st.winrate>=70) G('Série gagnante', `${st.wins} victoires sur ${st.n} parties.`);
+  if(st.n>=3 && st.winrate<=30) B('Série perdante', `${st.losses} défaites sur ${st.n} parties.`);
+  if(st.rrNet!=null && st.rrNet>=30) G('RR bien remonté', `${sign(st.rrNet)} RR sur ${st.rrGames} partie${st.rrGames>1?'s':''} classée${st.rrGames>1?'s':''}.`);
+  if(st.rrNet!=null && st.rrNet<=-30) B('RR lâché', `${st.rrNet} RR sur ${st.rrGames} partie${st.rrGames>1?'s':''} classée${st.rrGames>1?'s':''}.`);
+
+  // --- Divergence perf / résultat : le constat le plus utile de tous.
+  if(dIdx!=null){
+    if(dIdx>=5 && st.rrNet!=null && st.rrNet<0)
+      T('Rien à changer côté perso', 'Tu as joué au-dessus de ta moyenne et tu as quand même perdu du RR. Ce genre de session ne se corrige pas : elle se rejoue.');
+    if(dIdx<=-5 && st.rrNet!=null && st.rrNet>0)
+      T('Le RR cache ta perf', 'Le bilan RR est positif alors que tu étais en dessous de ta moyenne : ne prends pas cette session comme une référence.');
+  }
+
+  // --- Maps & agents de la session
+  const maps=bestWorst(ms, M=>M.map, 2);
+  if(maps && maps.best.index-maps.worst.index>=10){
+    G('Ta map de la session', `${maps.best.key} — indice ${maps.best.index} sur ${maps.best.n} partie${maps.best.n>1?'s':''}.`);
+    B('Ta map compliquée', `${maps.worst.key} — indice ${maps.worst.index} sur ${maps.worst.n} partie${maps.worst.n>1?'s':''}.`);
+  }
+  const ags=bestWorst(ms, M=>M.me.agent, 2);
+  if(ags && ags.best.index-ags.worst.index>=10)
+    T('Choix d\'agent', `${ags.best.key} t'a bien réussi (indice ${ags.best.index}) là où ${ags.worst.key} a moins marché (${ags.worst.index}). À garder en tête au prochain agent select.`);
+
+  if(st.forfeits>0)
+    T('Parties écourtées', `${st.forfeits} partie${st.forfeits>1?'s':''} coupée${st.forfeits>1?'s':''} par forfait : l'échantillon est trop court pour juger, l'indice a été rapproché de la moyenne.`);
+
+  if(!base) T('Pas encore de référence', `Il faut au moins ${BASELINE_MIN} autres parties dans les mêmes modes pour comparer cette session à tes habitudes. Reviens quand l'historique aura grossi.`);
+
+  return { st, facts, base, trend, maps, ags,
+           verdict:sessionVerdict(st, base, trend), good, bad, tips };
+}
+
+// Rapport COMMUN : chaque membre COSMO présent dans la session, avec ses
+// propres stats sur LES PARTIES DE CETTE SESSION uniquement.
+function sessionSquadReport(session, squadIndex, selfKey, selfInfo){
+  const per={};
+  (session.matches||[]).forEach(M=>{
+    ((squadIndex||{})[M.id]||[]).forEach(e=>{
+      if(e.team!==M.myTeamId) return;              // adversaire : pas la même session
+      const r=per[e.key]||(per[e.key]={ key:e.key, name:e.name, tag:e.tag, color:e.color, matches:[] });
+      r.matches.push(e.M);
+    });
+  });
+  // Le joueur du profil : on utilise SES parties (format riche) plutôt que la
+  // version compacte du blob, pour rester cohérent avec le reste de la page.
+  const me=selfInfo||{ name:(typeof STATE!=='undefined'&&STATE.name)||'moi', tag:(typeof STATE!=='undefined'&&STATE.tag)||'' };
+  per[selfKey]={ key:selfKey, name:me.name, tag:me.tag, color:me.color||'', matches:session.matches.slice(), self:true };
+  return Object.keys(per).map(k=>{
+    const r=per[k];
+    r.st=sessionStats(r.matches);
+    r.n=r.st.n;
+    return r;
+  }).filter(r=>r.n>0).sort((x,y)=>(y.st.index||0)-(x.st.index||0));
+}
+
+/* --- Historique de toute la squad (croisement par match_id) -----------------
+   Lecture des blobs uniquement (aucun appel HenrikDev, donc aucun rate limit).
+   Sert à savoir QUI a joué avec qui, sur toute la profondeur d'historique. */
+let SQUAD_INDEX = null;      // match_id -> [{key,name,tag,color,team,M}]
+let SQUAD_LOADING = null;
+
+async function ensureSquadHistories(){
+  if(SQUAD_INDEX) return SQUAD_INDEX;
+  if(SQUAD_LOADING) return SQUAD_LOADING;
+  SQUAD_LOADING=(async()=>{
+    const idx={};
+    const lists=await Promise.all(ROSTER.map(m=>fetchHistorique(m.name, m.tag).catch(()=>[])));
+    ROSTER.forEach((m,i)=>{
+      const key=memberKey(m), target={ puuid:null, name:m.name, tag:m.tag };
+      (lists[i]||[]).forEach(raw=>{
+        let M=null;
+        try{ M=normalizeAny(raw, target); }catch(e){ M=null; }
+        if(!M || !M.id) return;
+        (idx[M.id]=idx[M.id]||[]).push({ key, name:m.name, tag:m.tag, color:m.color||'', team:M.myTeamId, M });
+      });
+    });
+    SQUAD_INDEX=idx; SQUAD_LOADING=null;
+    return idx;
+  })();
+  return SQUAD_LOADING;
 }
 
 /* ===================== HOME & PROFIL ===================== */
@@ -1115,6 +1505,208 @@ function markScrollable(){
 // Rang ordinal en français : 1 -> "1er", sinon "Ne".
 function ordinalFr(n){ return n===1 ? '1er' : n+'e'; }
 
+/* ============ RAPPORTS DE SESSION (liste + modale) ============ */
+const FR_DAYS=['dimanche','lundi','mardi','mercredi','jeudi','vendredi','samedi'];
+const FR_MONTHS=['janv.','févr.','mars','avr.','mai','juin','juil.','août','sept.','oct.','nov.','déc.'];
+const pad2=n=>String(n).padStart(2,'0');
+function fmtDay(ms){ const d=new Date(ms); return `${FR_DAYS[d.getDay()]} ${d.getDate()} ${FR_MONTHS[d.getMonth()]}`; }
+function fmtHM(ms){ const d=new Date(ms); return pad2(d.getHours())+':'+pad2(d.getMinutes()); }
+function fmtDur(ms){
+  const m=Math.max(1, Math.round(ms/60000)), h=Math.floor(m/60);
+  return h ? `${h} h ${pad2(m%60)}` : `${m} min`;
+}
+// Une session peut traverser minuit (samedi 23h -> dimanche 2h) : on le dit
+// explicitement plutôt que d'afficher un créneau "23:02 → 02:14" ambigu.
+function sessionSpan(s){
+  const a=new Date(s.startMs), b=new Date(s.endMs);
+  const cross=a.getDate()!==b.getDate()||a.getMonth()!==b.getMonth();
+  return `${fmtHM(s.startMs)} → ${fmtHM(s.endMs)}${cross?' <i>('+FR_DAYS[b.getDay()]+')</i>':''} · ${fmtDur(s.durationMs)}`;
+}
+const signed=v=>(v>0?'+':'')+v;
+
+let SESSIONS=[];             // sessions du profil courant (plus récente en premier)
+let SESSIONS_SHOWN=8;
+let SESSIONS_ONLY_COMMON=false;
+
+function compChip(comp){
+  if(!comp) return '';
+  const names=comp.mates.slice(0,3).map(m=>esc(m.name)).join(', ');
+  const extra=comp.mates.length>3?` +${comp.mates.length-3}`:'';
+  const label=comp.label+(comp.mixed?'*':'');
+  return `<span class="sx-comp s${comp.dominant}">${esc(label)}${names?' · '+names+extra:''}</span>`;
+}
+
+function renderSessions(){
+  const host=$('sxList'); if(!host) return;
+  const selfKey=memberKey(STATE);
+  let list=SESSIONS;
+  if(SESSIONS_ONLY_COMMON) list=list.filter(s=>sessionComposition(s.matches, SQUAD_INDEX, selfKey).mates.length>0);
+  if(!list.length){
+    host.innerHTML=`<div class="md-empty">${SESSIONS_ONLY_COMMON
+      ? 'Aucune session jouée avec un autre membre de la squad dans cet historique.'
+      : 'Pas encore assez de parties horodatées pour découper des sessions.'}</div>`;
+    const more=$('btnSxMore'); if(more) more.hidden=true;
+    return;
+  }
+  const shown=list.slice(0, SESSIONS_SHOWN);
+  host.innerHTML=shown.map(s=>{
+    const st=sessionStats(s.matches);
+    const comp=sessionComposition(s.matches, SQUAD_INDEX, selfKey);
+    const t=tierOf(Math.round(st.index||0));
+    const rr=st.rrNet!=null?`<span class="sx-rr ${st.rrNet>=0?'up':'dn'}">${signed(st.rrNet)} RR</span>`:'';
+    return `<button class="sx-row" type="button" data-sx="${esc(s.key)}">
+      <div class="sx-when"><b>${esc(fmtDay(s.startMs))}</b><span>${sessionSpan(s)}</span></div>
+      <div class="sx-tags">${compChip(comp)}<span class="sx-n">${st.n} partie${st.n>1?'s':''}</span></div>
+      <div class="sx-wl"><span class="sx-vd"><b class="w">${st.wins}</b>V · <b class="l">${st.losses}</b>D</span>${rr}</div>
+      <div class="scorebadge score-mini" style="--sc:${t.c}">${Math.round(st.index||0)}</div>
+    </button>`;
+  }).join('');
+  const more=$('btnSxMore');
+  if(more){
+    more.hidden=list.length<=SESSIONS_SHOWN;
+    more.textContent=`Voir plus de sessions (${shown.length}/${list.length})`;
+  }
+}
+
+// Tuile de bilan. `value` et `sub` peuvent contenir du HTML : c'est à l'appelant
+// d'échapper ce qui vient des données.
+function sxTile(label, value, sub, color){
+  return `<div class="md-tile"><b${color?` style="color:${color}"`:''}>${value}</b>
+    <span>${esc(label)}</span>${sub?`<span class="sx-tsub">${sub}</span>`:''}</div>`;
+}
+function pointList(items, kind){
+  if(!items.length) return '';
+  return `<ul class="sx-points ${kind}">${items.map(p=>
+    `<li><b>${esc(p.title)}</b><span>${esc(p.text)}</span></li>`).join('')}</ul>`;
+}
+
+function openSessionReport(key){
+  const s=SESSIONS.find(x=>x.key===key); if(!s) return;
+  const modal=$('sessionModal'), body=$('sessionModalBody');
+  if(!modal||!body) return;
+  const selfKey=memberKey(STATE);
+  const base=sessionBaseline(s, STATE.allMatches);
+  const A=analyzeSession(s, { baseline:base });
+  const comp=sessionComposition(s.matches, SQUAD_INDEX, selfKey);
+  const st=A.st, t=tierOf(Math.round(st.index||0));
+  // Écart vs la référence long terme, affiché sous la valeur de la tuile.
+  const dl=(v,b,dec)=>{
+    if(v==null||b==null) return '';
+    const x=v-b, s=dec?Math.abs(x).toFixed(2):String(Math.abs(Math.round(x)));
+    // Un écart qui s'arrondit à zéro s'affiche "= habitude", jamais "-0.00".
+    if(Number(s)===0) return '<em class="flat">= habitude</em>';
+    return `<em class="${x>0?'up':'dn'}">${x>0?'+':'−'}${s} vs habitude</em>`;
+  };
+
+  // Mini-graphe : indice de chaque partie de la session, dans l'ordre.
+  const bars=s.matches.filter(M=>M.me).map((M,i)=>{
+    const v=M.me.score100, h=Math.max(6, Math.round(v));
+    return `<div class="sx-bar ${M.result}" style="height:${h}%" title="${esc(M.map)} · ${esc(M.mode)} · indice ${v}${M.rr&&M.rr.change!=null?' · '+signed(M.rr.change)+' RR':''}"><i>${v}</i></div>`;
+  }).join('');
+
+  const squad=sessionSquadReport(s, SQUAD_INDEX, selfKey);
+  const common=squad.length>1 ? `
+    <div class="md-sec">Rapport commun · ${squad.length} membres COSMO</div>
+    <div class="sx-tablewrap"><table class="sb"><thead><tr>
+      <th>Joueur</th><th>N</th><th>V-D</th><th>Indice</th><th>ACS</th><th>K/D</th><th>RR</th>
+    </tr></thead><tbody>${squad.map(r=>{
+      const rt=tierOf(Math.round(r.st.index||0));
+      return `<tr${r.self?' class="sx-self"':''}>
+        <td><b>${esc(r.name)}</b>${r.self?' <em>(toi)</em>':''}</td>
+        <td>${r.n}</td>
+        <td><b class="w">${r.st.wins}</b>-<b class="l">${r.st.losses}</b></td>
+        <td class="scell" style="color:${rt.c}">${Math.round(r.st.index||0)}</td>
+        <td>${Math.round(r.st.acs||0)}</td>
+        <td>${(r.st.kd||0).toFixed(2)}</td>
+        <td class="${(r.st.rrNet||0)>=0?'up':'dn'}">${r.st.rrNet!=null?signed(r.st.rrNet):'—'}</td>
+      </tr>`;
+    }).join('')}</tbody></table></div>
+    <div class="md-none">Les membres listés sont ceux qui étaient dans TON équipe sur au moins une partie de la session. Leurs chiffres viennent de leur propre historique.</div>`
+    : `<div class="md-sec">Rapport commun</div>
+       <div class="md-empty">Session jouée sans autre membre de la squad — rien à comparer en commun.</div>`;
+
+  const partyNote = comp.partyKnown && comp.partyExtra>0
+    ? `<div class="md-none">Party détectée jusqu'à ${comp.partyMax} joueurs, dont ${comp.partyExtra} hors squad COSMO (info disponible sur ${comp.partyKnown} partie${comp.partyKnown>1?'s':''} au format complet).</div>` : '';
+  const mixNote = comp.mixed
+    ? `<div class="md-none">Composition variable dans la session : ${Object.keys(comp.bySize).sort((a,b)=>a-b).map(k=>`${comp.bySize[k]}× ${STACK_LABEL[k]||k+'-stack'}`).join(', ')}.</div>` : '';
+
+  body.innerHTML=`
+    <div class="sx-head">
+      <div>
+        <h3>${esc(fmtDay(s.startMs))}</h3>
+        <div class="sx-sub">${sessionSpan(s)}</div>
+        <div class="sx-tags">${compChip(comp)}</div>
+      </div>
+      <div class="sx-verdict ${A.verdict.tone}">
+        <div class="scorebadge score-hero" style="--sc:${t.c}">${Math.round(st.index||0)}<span class="out">/100</span></div>
+        <div><div class="sx-word">${esc(A.verdict.word)}</div><div class="sx-line">${esc(A.verdict.line)}</div></div>
+      </div>
+    </div>
+    ${mixNote}${partyNote}
+
+    <div class="md-sec">Bilan de la session</div>
+    <div class="md-tiles">
+      ${sxTile('Parties', st.n, `${st.roundsWon}–${st.roundsLost} en rounds`)}
+      ${sxTile('Bilan', `<i class="wv">${st.wins}</i>–<i class="lv">${st.losses}</i>`, st.winrate!=null?Math.round(st.winrate)+'% de victoires':'')}
+      ${sxTile('RR', st.rrNet!=null?signed(st.rrNet):'—', st.rrGames?`sur ${st.rrGames} classée${st.rrGames>1?'s':''}`:'aucune classée', st.rrNet!=null?(st.rrNet>=0?'var(--win)':'var(--loss)'):'')}
+      ${sxTile('Indice moyen', Math.round(st.index||0), esc(t.label)+dl(st.index, base&&base.index), t.c)}
+      ${sxTile('ACS', Math.round(st.acs||0), dl(st.acs, base&&base.acs))}
+      ${sxTile('K/D', (st.kd||0).toFixed(2), `${st.k}/${st.d}/${st.a}`+dl(st.kd, base&&base.kd, true))}
+      ${sxTile('ADR', Math.round(st.adr||0), dl(st.adr, base&&base.adr))}
+      ${sxTile('HS%', Math.round(st.hs||0)+'%', dl(st.hs, base&&base.hs))}
+      ${st.kast!=null?tile('KAST', Math.round(st.kast)+'%', dl(st.kast, base&&base.kast)):''}
+    </div>
+    ${base?`<div class="md-none">Comparaisons faites avec tes ${base.n} autres parties dans les mêmes modes (indice moyen ${Math.round(base.index)}, ${Math.round(base.acs)} ACS, K/D ${base.kd.toFixed(2)}).</div>`:''}
+
+    <div class="md-sec">Déroulé de la session</div>
+    <div class="sx-chart">${bars||'<div class="md-empty">—</div>'}</div>
+    <div class="md-legend"><span class="sx-dot w"></span> victoire <span class="sx-dot l"></span> défaite · hauteur = indice COSMO de la partie
+      ${A.trend?` · première moitié ${A.trend.first} → seconde moitié ${A.trend.last} (${signed(A.trend.delta)})`:''}</div>
+
+    ${A.good.length?`<div class="md-sec">Ce qui allait</div>${pointList(A.good,'good')}`:''}
+    ${A.bad.length?`<div class="md-sec">Ce qui n'allait pas</div>${pointList(A.bad,'bad')}`:''}
+    ${A.tips.length?`<div class="md-sec">À améliorer</div>${pointList(A.tips,'tip')}`:''}
+    ${(!A.good.length&&!A.bad.length)?`<div class="md-empty">Session parfaitement dans tes standards : rien ne ressort ni en bien ni en mal.</div>`:''}
+
+    ${common}
+
+    <div class="md-sec">Les parties</div>
+    <div class="sx-tablewrap"><table class="sb"><thead><tr>
+      <th>#</th><th>Map</th><th>Agent</th><th>Score</th><th>K/D/A</th><th>ACS</th><th>Indice</th><th>RR</th>
+    </tr></thead><tbody>${s.matches.filter(M=>M.me).map((M,i)=>{
+      const mt=tierOf(M.me.score100);
+      return `<tr>
+        <td>${i+1}</td>
+        <td><b>${esc(M.map)}</b><br><em class="sx-mode">${esc(M.mode)}</em></td>
+        <td>${esc(M.me.agent)}</td>
+        <td class="${M.result==='w'?'w':'l'}"><b>${M.myScore}–${M.oppScore}</b>${M.forfeit?' <em>ff</em>':''}</td>
+        <td>${M.me.k}/${M.me.d}/${M.me.a}</td>
+        <td>${M.me.acs}</td>
+        <td class="scell" style="color:${mt.c}">${M.me.score100}</td>
+        <td class="${M.rr&&M.rr.change>=0?'up':'dn'}">${M.rr&&M.rr.change!=null?signed(M.rr.change):'—'}</td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+
+  modal.hidden=false;
+  document.body.style.overflow='hidden';
+}
+function closeSessionReport(){
+  const m=$('sessionModal'); if(m) m.hidden=true;
+  document.body.style.overflow='';
+}
+
+// Recalcule les sessions du profil courant. Les historiques de la squad sont
+// chargés en tâche de fond (blobs uniquement) puis le rendu est rafraîchi :
+// la liste s'affiche tout de suite, les compositions arrivent juste après.
+function refreshSessions(){
+  SESSIONS=buildSessions(STATE.allMatches);
+  SESSIONS_SHOWN=8;
+  renderSessions();
+  if(!SQUAD_INDEX){
+    ensureSquadHistories().then(()=>renderSessions()).catch(()=>{});
+  }
+}
+
 /* ============ DÉTAIL DU CALCUL DE L'INDICE (modale) ============ */
 let SB_LINES=[];   // lignes du scoreboard affiché (pour ouvrir le détail au clic)
 
@@ -1483,7 +2075,7 @@ async function loadProfile(){
     populateSeasonFilter();
     populateStatsSeasonFilter();
     populateCompareFilter();
-    renderRank(mmr,overall); renderCurvePeriod(); renderPeakActs();
+    renderRank(mmr,overall); renderCurvePeriod(); renderPeakActs(); refreshSessions();
     if(STATE.matches.length){ 
        const s=STATE.matches[0].me;
        if(s){
@@ -2090,7 +2682,25 @@ function wireStatic(){
     if(e.target.closest('#matchModalX')||e.target.classList.contains('modal-back')){ closeMatchFacts(); return; }
     const rc=e.target.closest('.rchip'); if(rc) renderRoundDetail(+rc.dataset.round);
   });
-  document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeScoreDetail(); closeMatchFacts(); } });
+  // Rapports de session
+  $('sxList')?.addEventListener('click',e=>{
+    const r=e.target.closest('[data-sx]'); if(r) openSessionReport(r.dataset.sx);
+  });
+  $('sessionModal')?.addEventListener('click',e=>{
+    if(e.target.closest('#sessionModalX')||e.target.classList.contains('modal-back')) closeSessionReport();
+  });
+  $('btnSxMore')?.addEventListener('click',()=>{ SESSIONS_SHOWN+=8; renderSessions(); });
+  $('sxGap')?.addEventListener('change',e=>{ SESSION_GAP_MIN=+e.target.value||120; refreshSessions(); });
+  $('sxScope')?.addEventListener('click',e=>{
+    const b=e.target.closest('button[data-scope]'); if(!b) return;
+    SESSIONS_ONLY_COMMON = b.dataset.scope==='common';
+    document.querySelectorAll('#sxScope button').forEach(x=>x.classList.toggle('on', x===b));
+    SESSIONS_SHOWN=8;
+    // Le filtre « communes » a besoin des historiques de la squad.
+    if(SESSIONS_ONLY_COMMON && !SQUAD_INDEX) ensureSquadHistories().then(renderSessions).catch(()=>renderSessions());
+    else renderSessions();
+  });
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeScoreDetail(); closeMatchFacts(); closeSessionReport(); } });
   $('phead').addEventListener('click',e=>{if(e.target.closest('.refresh'))loadProfile();});
   $('btnMore')?.addEventListener('click', loadMoreMatches);
 

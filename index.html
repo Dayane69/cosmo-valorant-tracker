@@ -475,6 +475,79 @@
   .duo-empty{padding:20px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:13px}
   @media(max-width:600px){ .duo-row{grid-template-columns:1fr auto auto;gap:10px;padding:11px 13px} .duo-stat.hide-sm{display:none} }
 
+  /* ============ RAPPORTS DE SESSION ============ */
+  .sxctl{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .sxlab{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+  .sx-row{display:grid;grid-template-columns:1fr auto auto auto;gap:12px;align-items:center;width:100%;
+    background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px;
+    text-align:left;color:var(--txt);font-family:var(--sans);cursor:pointer;transition:border-color .12s,transform .12s}
+  .sx-row:hover{border-color:var(--amber);transform:translateY(-1px)}
+  .sx-when{min-width:0}
+  .sx-when b{display:block;font-size:14px;font-weight:800}
+  .sx-when b::first-letter{text-transform:uppercase}
+  .sx-when span{display:block;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px}
+  .sx-when i{font-style:normal;color:var(--dim)}
+  .sx-tags{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .sx-comp{font-family:var(--mono);font-size:10px;font-weight:700;border-radius:999px;padding:4px 9px;
+    background:rgba(134,150,166,.16);color:var(--muted);white-space:nowrap;max-width:230px;overflow:hidden;text-overflow:ellipsis}
+  .sx-comp.s2{background:rgba(86,216,201,.16);color:var(--cyan)}
+  .sx-comp.s3{background:rgba(242,178,52,.16);color:var(--amber)}
+  .sx-comp.s4,.sx-comp.s5{background:rgba(255,70,85,.16);color:var(--red)}
+  .sx-n{font-family:var(--mono);font-size:10px;color:var(--dim);white-space:nowrap}
+  .sx-wl{font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap}
+  .sx-wl b.w{color:var(--win)} .sx-wl b.l{color:var(--loss)}
+  .sx-rr{display:block;font-size:10.5px;margin-top:2px}
+  .sx-rr.up{color:var(--win)} .sx-rr.dn{color:var(--loss)}
+  /* en-tête de la modale */
+  .sx-head{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center}
+  .sx-head h3{margin:0;font-size:19px;font-weight:800}
+  .sx-head h3::first-letter{text-transform:uppercase}
+  .sx-sub{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin:4px 0 8px}
+  .sx-sub i{font-style:normal;color:var(--dim)}
+  .sx-verdict{display:flex;gap:12px;align-items:center;border:1px solid var(--line);border-radius:12px;
+    padding:10px 14px;background:var(--panel2);max-width:360px}
+  .sx-verdict.good{border-color:rgba(86,216,201,.5)} .sx-verdict.bad{border-color:rgba(255,93,93,.5)}
+  .sx-verdict.mixed{border-color:rgba(242,178,52,.5)}
+  .sx-word{font-family:var(--mono);font-size:11.5px;font-weight:800;letter-spacing:.08em}
+  .sx-verdict.good .sx-word{color:var(--win)} .sx-verdict.bad .sx-word{color:var(--loss)}
+  .sx-verdict.mixed .sx-word{color:var(--amber)} .sx-verdict.mid .sx-word{color:var(--muted)}
+  .sx-line{font-size:11.5px;color:var(--muted);margin-top:3px;line-height:1.45}
+  /* .md-tile span est en display:block : les fragments colorés d'une valeur
+     doivent donc être des <i> pour rester sur une seule ligne. */
+  .md-tiles .md-tile b{white-space:nowrap}
+  .md-tile b i{font-style:normal}
+  .md-tile b i.wv{color:var(--win)} .md-tile b i.lv{color:var(--loss)}
+  .sx-tsub{display:block;font-family:var(--mono);font-size:9px;color:var(--dim);margin-top:2px}
+  .sx-tsub em{display:block;font-style:normal;margin-top:2px}
+  .sx-tsub em.up{color:var(--win)} .sx-tsub em.dn{color:var(--loss)} .sx-tsub em.flat{color:var(--dim)}
+  /* mini-graphe du déroulé */
+  .sx-chart{display:flex;align-items:flex-end;gap:5px;height:130px;padding:6px 0;overflow-x:auto;
+    -webkit-overflow-scrolling:touch}
+  .sx-bar{flex:1 0 22px;min-width:22px;border-radius:5px 5px 0 0;position:relative;
+    background:linear-gradient(180deg,rgba(134,150,166,.75),rgba(134,150,166,.3))}
+  .sx-bar.w{background:linear-gradient(180deg,rgba(86,216,201,.85),rgba(86,216,201,.22))}
+  .sx-bar.l{background:linear-gradient(180deg,rgba(255,93,93,.85),rgba(255,93,93,.22))}
+  .sx-bar i{position:absolute;top:-16px;left:0;right:0;text-align:center;font-style:normal;
+    font-family:var(--mono);font-size:9.5px;color:var(--muted)}
+  .sx-dot{width:9px;height:9px;border-radius:3px;display:inline-block;margin:0 3px 0 8px}
+  .sx-dot.w{background:rgba(86,216,201,.85)} .sx-dot.l{background:rgba(255,93,93,.85)}
+  /* listes de points */
+  .sx-points{list-style:none;margin:0;padding:0;display:grid;gap:7px}
+  .sx-points li{border-left:3px solid var(--line);border-radius:0 9px 9px 0;background:var(--panel2);padding:9px 12px}
+  .sx-points.good li{border-left-color:var(--win)}
+  .sx-points.bad li{border-left-color:var(--loss)}
+  .sx-points.tip li{border-left-color:var(--amber)}
+  .sx-points b{display:block;font-size:13px;font-weight:800}
+  .sx-points span{display:block;font-size:12px;color:var(--muted);line-height:1.55;margin-top:2px}
+  /* tableaux de la modale */
+  .sx-tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .sx-tablewrap .sb{min-width:520px}
+  .sx-tablewrap td.w,.sx-tablewrap b.w,.sx-tablewrap .up{color:var(--win)}
+  .sx-tablewrap td.l,.sx-tablewrap b.l,.sx-tablewrap .dn{color:var(--loss)}
+  .sx-tablewrap tr.sx-self{background:rgba(242,178,52,.08)}
+  .sx-tablewrap td em{font-style:normal;color:var(--dim);font-size:10px}
+  .sx-mode{font-family:var(--mono);font-size:9.5px}
+
   /* ==================================================================
      MOBILE / PWA — vérifié sur iPhone 13 (390px) et petits Android (360px)
      Objectifs : zéro débordement horizontal, zones tactiles >= 40px,
@@ -549,6 +622,19 @@
     /* --- lobby : une colonne, agent masqué (info secondaire) --- */
     .mt-r{grid-template-columns:1fr auto 24px;gap:6px;font-size:11.5px}
     .mt-a{display:none}
+
+    /* --- sessions : la ligne passe sur deux rangs plutôt que de déborder --- */
+    .sx-row{grid-template-columns:1fr auto;grid-template-areas:"when score" "tags tags" "wl wl";
+      gap:8px 12px;padding:12px 13px}
+    .sx-when{grid-area:when} .sx-tags{grid-area:tags} .sx-wl{grid-area:wl}
+    .sx-row .scorebadge{grid-area:score}
+    .sx-wl{display:flex;gap:12px;align-items:baseline}
+    .sx-vd{white-space:nowrap}
+    .sx-rr{display:inline;margin-top:0}
+    .sx-comp{max-width:100%}
+    .sx-head{grid-template-columns:1fr;gap:12px;padding-right:44px}
+    .sx-verdict{max-width:none}
+    .sx-points b{font-size:12.5px} .sx-points span{font-size:11.5px}
   }
 
   /* Zones tactiles : sur TOUT appareil tactile (y compris tablette, qui ne
@@ -562,6 +648,7 @@
     .edrow input{min-height:44px}
     .edrow .edrm{width:44px;height:44px}
     .chip{min-height:44px}
+    .sx-row{min-height:56px}
   }
 
   @media(max-width:380px){
@@ -672,6 +759,31 @@
         </div>
       </div>
       
+      <!-- RAPPORTS DE SESSION -->
+      <div class="card full">
+        <h2 class="tabs-header">
+          <span>Rapports de session <em>clique pour le rapport complet</em></span>
+          <div class="sxctl">
+            <label class="sxlab" for="sxGap">Coupure</label>
+            <select id="sxGap" class="rrsel" title="Écart à partir duquel une nouvelle session commence">
+              <option value="60">1 h</option>
+              <option value="120" selected>2 h</option>
+              <option value="180">3 h</option>
+              <option value="240">4 h</option>
+            </select>
+            <div class="seg" id="sxScope" style="margin:0;">
+              <button data-scope="all" class="on">Toutes</button>
+              <button data-scope="common">Communes</button>
+            </div>
+          </div>
+        </h2>
+        <div id="sxList"></div>
+        <div style="text-align:center;margin-top:14px;">
+          <button class="btn" id="btnSxMore" hidden>Voir plus de sessions</button>
+        </div>
+        <div class="secnote">Une session = des parties enchaînées à moins de la coupure choisie. Le découpage suit les horaires réels, pas le calendrier : une session du samedi 23 h au dimanche 2 h reste une seule session, et deux sessions le même jour restent séparées.</div>
+      </div>
+
       <div class="hero even" id="statsSplit">
         <div class="card"><h2 class="tabs-header"><span>Stats par agent <em>selon le filtre</em></span>
           <select id="statsSeason" class="rrsel" title="Filtrer les stats par saison / acte"><option value="all">Toutes les saisons</option></select></h2>
@@ -785,6 +897,15 @@
   </div>
 </div>
 
-<script src="app.js?v=20260818" defer></script>
+<!-- ===================== RAPPORT DE SESSION ===================== -->
+<div id="sessionModal" class="modal" hidden>
+  <div class="modal-back"></div>
+  <div class="modal-panel wide" role="dialog" aria-modal="true" aria-label="Rapport de session">
+    <button class="modal-x" id="sessionModalX" type="button" aria-label="Fermer">✕</button>
+    <div id="sessionModalBody"></div>
+  </div>
+</div>
+
+<script src="app.js?v=20260822" defer></script>
 </body>
 </html>
