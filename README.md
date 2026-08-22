@@ -29,7 +29,7 @@ afin de garder la clé API **hors du navigateur**.
 - **Records de session** — le « best of » d'une période (30 j / 90 j / tout) : meilleure et pire session, plus grosse remontée et plus grosse chute de RR, session la plus longue, meilleure session commune, et la **plus longue série de victoires** — qui, elle, se calcule sur les parties et peut donc **traverser plusieurs sessions**. Meilleure/pire exigent au moins `RECORD_MIN_GAMES` parties : sur une session de deux parties, l'échantillon ne veut rien dire. Un record sans vainqueur n'est pas affiché (pas de « plus grosse remontée » si aucune session n'est positive). Chaque record est cliquable et ouvre le rapport de sa session.
 - **Partage d'une session** — bouton *🔗 Copier le lien* dans le rapport. Le lien porte **qui** et **quand** (`?s=Pseudo%23tag&t=<début>&g=<coupure>`) et la page **recalcule** le rapport depuis les mêmes données publiques : pas de stockage, pas de fonction serverless en plus, rien qui expire, et le rapport reste toujours cohérent avec le site. À l'ouverture, le profil se charge et le rapport s'affiche directement — après les historiques de la squad, pour que le **rapport commun** soit complet. La coupure transportée est bornée (une valeur farfelue déplacerait les frontières de session), la cible est retrouvée même si le découpage a un peu bougé depuis, et si la session est introuvable un **message clair** le dit au lieu d'ouvrir un rapport au hasard. Un lien partagé sous un **ancien pseudo** continue de fonctionner (cf. alias). Le site étant déjà public, partager un lien n'expose rien de plus qu'un profil.
 - **Tribunal COSMO** — la jauge *Unlucky or Bad* qui juge tes dernières parties classées.
-- **Leaderboard** — classement de la squad, badges (Carry, Bourreau, Headhunter…), comparateur 1v1 et détection des duos.
+- **Leaderboard** — classement de la squad sur les N dernières classées, badges (Carry, Bourreau, Headhunter, Le plus konstant, Late night warrior…), comparateur 1v1, et **duos détectés** : les paires retrouvées dans la **même équipe** (croisement par `match_id`), avec le winrate du duo **et son écart face au winrate de chacun sans l'autre** — le chiffre intéressant. Un duo qui ne joue jamais séparément n'a pas de référence : l'écart affiche `—` plutôt qu'un nombre inventé.
 - **Historique grandissant** — un cron quotidien fait grossir l'historique stocké de chaque membre côté serveur, sans qu'il faille ouvrir un profil (voir plus bas).
 - **Comparaison 2 joueurs** — superpose la progression RR d'un second joueur sur le graphe.
 - **Roster éditable depuis l'UI** — ⚙ Paramètres → *Modifier le roster* : ajoute/retire/édite les membres (stocké côté serveur dans un blob, protégé par `REFRESH_TOKEN`, `roster.json` reste la valeur de départ).
@@ -148,7 +148,7 @@ Le site sera dispo sur `http://localhost:8888`.
 
 ```bash
 npm install   # jsdom + @netlify/blobs
-npm test      # node --test : fusion/dédoublonnage, profil, tribunal ranked-only, cron idempotent, sessions
+npm test      # node --test : fusion/dédoublonnage, profil, tribunal ranked-only, cron idempotent, sessions, duos
 npm run check # node --check sur tous les fichiers .js / .mjs
 ```
 

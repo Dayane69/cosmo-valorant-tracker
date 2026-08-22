@@ -478,13 +478,14 @@
   .duo-box{background:linear-gradient(180deg,#141f2a,#101822);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-top:6px}
   .duo-row{display:grid;grid-template-columns:1fr auto auto auto;gap:14px;padding:13px 16px;align-items:center;border-top:1px solid var(--line)}
   .duo-row:first-child{border-top:0}
-  .duo-pair{font-size:15px;font-weight:700}
+  .duo-pair{font-size:15px;font-weight:700;min-width:0;overflow-wrap:anywhere}
   .duo-x{margin:0 8px;color:var(--dim);font-family:var(--mono);font-weight:400}
   .duo-stat{font-family:var(--mono);text-align:right;min-width:62px}
   .duo-stat b{display:block;font-size:15px;font-weight:800}
   .duo-stat span{display:block;font-size:9.5px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;margin-top:1px}
   .duo-empty{padding:20px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:13px}
-  @media(max-width:600px){ .duo-row{grid-template-columns:1fr auto auto;gap:10px;padding:11px 13px} .duo-stat.hide-sm{display:none} }
+  @media(max-width:600px){ .duo-row{grid-template-columns:minmax(0,1fr) auto auto;gap:10px;padding:11px 13px}
+    .duo-pair{font-size:13.5px} .duo-stat{min-width:52px} .duo-stat.hide-sm{display:none} }
 
   /* ============ RAPPORTS DE SESSION ============ */
   .sxctl{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -709,10 +710,8 @@
 <!-- ===================== HOME ===================== -->
 <section id="home">
   <div class="gear">
-    <!-- Masqués pour l'instant (peu utilisés) : les pages Leaderboard et Tribunal
-         restent entièrement fonctionnelles — retire l'attribut "hidden" pour les réafficher. -->
-    <button id="btnLeaderboard" hidden>🏆 Leaderboard</button>
-    <button id="btnTribunal" hidden>⚖ Tribunal COSMO</button>
+    <button id="btnLeaderboard">🏆 Leaderboard</button>
+    <button id="btnTribunal">⚖ Tribunal COSMO</button>
     <button id="btnGear">⚙ Paramètres</button>
   </div>
   <div class="hwrap">
@@ -925,7 +924,7 @@
       </div>
 
       <div class="card full" style="margin-top:14px;text-align:left;">
-        <h2 class="tabs-header"><span>Duos détectés <em>matchs où deux membres étaient dans la même équipe</em></span></h2>
+        <h2 class="tabs-header"><span>Duos détectés <em>même équipe · sur tout l'historique chargé</em></span></h2>
         <div id="duoList"></div>
       </div>
     </div>
@@ -959,6 +958,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260822e" defer></script>
+<script src="app.js?v=20260822f" defer></script>
 </body>
 </html>

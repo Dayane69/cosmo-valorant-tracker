@@ -675,7 +675,7 @@ function modeName(meta){
 const modeKey = meta => String(modeName(meta)).toLowerCase();
 
 // Normalise une partie au format "matches v4" (metadata + players[] + teams[]).
-function normMatch(m, targetState = STATE){
+function normMatch(m, targetState = STATE, opts){
   const meta=m.metadata||{};
   const players=Array.isArray(m.players)?m.players:[];
   const teams=Array.isArray(m.teams)?m.teams:[];
@@ -710,7 +710,10 @@ function normMatch(m, targetState = STATE){
   if(meStat) meStat.placement = placement;
 
   const startedMs=tsMs(meta);
-  const facts = me ? matchFacts(m, rounds, me) : null;
+  // Le détail par round (timeline, duels, éco) pèse ~28 Ko par partie et coûte
+  // cher à extraire : on ne le calcule que si l'appelant va s'en servir.
+  const wantFacts = !opts || opts.facts !== false;
+  const facts = (me && wantFacts) ? matchFacts(m, rounds, me) : null;
   // Groupe de queue : les joueurs qui partagent MON party_id. Un party_id seul
   // (taille 1) = solo. Absent du format compact du blob -> null, pas 1.
   let party=null;
@@ -730,7 +733,7 @@ function normMatch(m, targetState = STATE){
 
 // Normalise une partie au format "stored-matches v1" (meta + stats + teams:{red,blue}).
 // Ce format est compact (uniquement le joueur interrogé), pas la liste complète.
-function normStored(entry, targetState = STATE){
+function normStored(entry, targetState = STATE){   // format compact : jamais de détail de round
   const meta=entry.meta||{}, st=entry.stats||{}, tms=entry.teams||{};
   const teamKey=(st.team||'').toLowerCase();
   const myScore=num(tms[teamKey]);
@@ -759,11 +762,11 @@ function normStored(entry, targetState = STATE){
 }
 
 // Détecte le format puis normalise. v4 = "metadata", stored v1 = "meta"+"stats".
-function normalizeAny(raw, targetState = STATE){
+function normalizeAny(raw, targetState = STATE, opts){
   if(!raw || typeof raw!=='object') return null;
-  if(raw.metadata) return normMatch(raw, targetState);
+  if(raw.metadata) return normMatch(raw, targetState, opts);
   if(raw.meta && raw.stats) return normStored(raw, targetState);
-  return normMatch(raw, targetState); // repli défensif (guards en place)
+  return normMatch(raw, targetState, opts); // repli défensif (guards en place)
 }
 
 // Index match_id -> infos RR/rang, depuis la série RR normalisée (blob + live).
@@ -2349,14 +2352,14 @@ function openProfile(idx){
   STATE={puuid:null,allMatches:[],matches:[],name:m.name,tag:m.tag,alias:m.alias||null};
   PROFILE_SHOWN = FRESH_SIZE;
 
-  const bustSrc = m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`; // bustportrait.png n'existe pas (404) chez valorant-api
+  const bustSrc = esc(m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`); // bustportrait.png n'existe pas (404) chez valorant-api
 
   $('phead').innerHTML=`
-    <div class="pbust ${m.customImg?'custom':''}" style="--pc:${m.color}">
+    <div class="pbust ${m.customImg?'custom':''}" style="--pc:${esc(m.color)}">
       <img src="${bustSrc}" alt="${esc(m.agent)}">
       <div class="mg">${esc(m.agent.slice(0,2))}</div>
     </div>
-    <div><div class="eb" style="color:${m.color}">${m.agent} · ${m.role}</div><h1>${m.name}<b>#${m.tag}</b></h1></div>
+    <div><div class="eb" style="color:${esc(m.color)}">${esc(m.agent)} · ${esc(m.role)}</div><h1>${esc(m.name)}<b>#${esc(m.tag)}</b></h1></div>
     <div class="ptools"><button class="btn refresh">Rafraîchir</button></div>`;
 
   const bust=$('phead').querySelector('.pbust img');
@@ -2584,8 +2587,8 @@ function clearStatusTrib() { $('statusTrib').className = 'status'; }
 
 function renderTribMembers() {
   $('tribMembers').innerHTML = ROSTER.map((m, i) => `
-    <button class="chip ${i === TRIB.active ? 'on' : ''}" style="--c:${m.color}" data-i="${i}">
-      ${m.name}<b>#${m.tag}</b>
+    <button class="chip ${i === TRIB.active ? 'on' : ''}" style="--c:${esc(m.color)}" data-i="${i}">
+      ${esc(m.name)}<b>#${esc(m.tag)}</b>
     </button>`).join('');
 }
 
@@ -2594,20 +2597,46 @@ function renderTribMembers() {
 // par matchid. Sert au tribunal ET au leaderboard.
 // Le blob contient tous les modes : on garde ici uniquement le competitive pour
 // préserver le caractère « ranked-only » du tribunal et du leaderboard.
+// Exécute par petits paquets plutôt qu'en une rafale : 8 appels HenrikDev
+// simultanés, c'est exactement le motif qui déclenche des 429.
+const SQUAD_POOL = 3;
+async function pooled(items, size, fn){
+  const out = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(...await Promise.all(items.slice(i, i + size).map(fn)));
+  }
+  return out;
+}
+
 async function loadSquadMatches(region) {
-  const reqs = ROSTER.map(m => Promise.allSettled([
-    api(`/valorant/v4/matches/${region}/pc/${enc(m.name)}/${enc(m.tag)}?mode=competitive&size=15`),
-    fetchHistoriqueAll(m)
-  ]));
-  const results = await Promise.all(reqs);
-  return results.map((pair, i) => {
-    const member = ROSTER[i];
-    const fresh = pair[0].status === 'fulfilled' ? (pair[0].value.data || []) : [];
+  return pooled(ROSTER, SQUAD_POOL, async (member) => {
+    const pair = await Promise.allSettled([
+      api(`/valorant/v4/matches/${region}/pc/${enc(member.name)}/${enc(member.tag)}?mode=competitive&size=15`),
+      fetchHistoriqueAll(member)
+    ]);
+    const freshOk = pair[0].status === 'fulfilled';
+    const fresh = freshOk ? (pair[0].value.data || []) : [];
     const blob  = pair[1].status === 'fulfilled' ? (pair[1].value || []) : [];
     const data  = combineMatches(fresh, blob);
-    const norm  = data.map(m => normalizeAny(m, member)).filter(M => M && (M.mode || '').toLowerCase() === 'competitive');
-    return { member, data, norm };
+    // Ni le leaderboard ni le tribunal ne lisent le détail par round : on
+    // économise ~3 Mo et ~100 ms sur une squad de 8.
+    const norm  = data.map(m => normalizeAny(m, member, { facts:false }))
+                      .filter(M => M && (M.mode || '').toLowerCase() === 'competitive');
+    return { member, data, norm, freshFailed: !freshOk };
   });
+}
+
+// Nombre de membres dont le rafraîchissement a échoué (rate limit, réseau…).
+// Leurs chiffres viennent alors du seul historique stocké : il faut le dire.
+const squadStale = squads => (squads||[]).filter(s => s && s.freshFailed).length;
+
+// Message honnête quand une partie de la squad n'a pas pu être rafraîchie :
+// mieux vaut un classement annoté qu'un classement faux et silencieux.
+function staleNote(squads){
+  const n=squadStale(squads);
+  if(!n) return '';
+  return `<div class="sx-miss">${n} membre${n>1?'s n\'ont':' n\'a'} pas pu être rafraîchi${n>1?'s':''} (limite de l'API atteinte). `
+    + `Leurs chiffres viennent du seul historique stocké et peuvent être en retard — réessaie dans une minute.</div>`;
 }
 
 async function loadTribunal() {
@@ -2617,6 +2646,17 @@ async function loadTribunal() {
   $('tribunal').hidden = false;
   $('appTrib').hidden = true;
 
+  // Le leaderboard réutilisait déjà les données ; l'inverse n'était pas vrai.
+  if (TRIB.matches && TRIB.matches.length) {
+    TRIB.active = 0;
+    renderTribMembers();
+    resetStage('Trib');
+    const warn0=staleNote(TRIB.matches);
+    if(warn0) statusTrib('err', warn0); else clearStatusTrib();
+    $('appTrib').hidden = false;
+    return;
+  }
+
   statusTrib('load', 'Convocation du tribunal (analyse des parties classées de chaque membre)...');
   const region = REGION();
   try {
@@ -2625,6 +2665,8 @@ async function loadTribunal() {
     renderTribMembers();
     resetStage('Trib');
     clearStatusTrib();
+    const warn=staleNote(TRIB.matches);
+    if(warn) statusTrib('err', warn); else clearStatusTrib();
     $('appTrib').hidden = false;
   } catch(e) {
     statusTrib('err', "Erreur lors de la récupération des données de l'équipe.");
@@ -2657,7 +2699,8 @@ async function loadLeaderboard() {
   const region = REGION();
   try {
     TRIB.matches = await loadSquadMatches(region);
-    clearStatusLb();
+    const warn=staleNote(TRIB.matches);
+    if(warn) statusLb('err', warn); else clearStatusLb();
     renderLeaderboard();
     $('appLb').hidden = false;
   } catch (e) {
@@ -2752,6 +2795,7 @@ function renderLeaderboard() {
   renderBadges();
   renderVsPickers();
   renderVs();
+  renderDuos();
   const ranked = TRIB.matches
     .map(tm => computeMemberStats(tm.member, tm.norm, LB.n))
     .sort((a, b) => (b.count ? b.avg : -1) - (a.count ? a.avg : -1));
@@ -2766,14 +2810,14 @@ function renderLeaderboard() {
     const rankHtml = (!empty && idx < 3)
       ? `<div class="lb-rank medal">${medals[idx]}</div>`
       : `<div class="lb-rank">${idx+1}.</div>`;
-    const bustSrc = m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`; // bustportrait.png n'existe pas (404) chez valorant-api
+    const bustSrc = esc(m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`); // bustportrait.png n'existe pas (404) chez valorant-api
     const bustImg = m.customImg
       ? `<img src="${bustSrc}" alt="" style="width:100%;left:0;top:0;height:100%;object-fit:cover;">`
       : `<img src="${bustSrc}" alt="">`;
     return `<div class="lb-row ${topClass} ${empty?'empty':''}">
       ${rankHtml}
-      <div class="lb-bust" style="--pc:${m.color}">${bustImg}</div>
-      <div class="lb-name"><b style="color:${m.color}">${m.name}</b><span>#${m.tag} · ${m.agent}</span></div>
+      <div class="lb-bust" style="--pc:${esc(m.color)}">${bustImg}</div>
+      <div class="lb-name"><b style="color:${esc(m.color)}">${esc(m.name)}</b><span>#${esc(m.tag)} · ${esc(m.agent)}</span></div>
       <div class="lb-stat"><div class="v" style="color:${empty?'var(--dim)':t.c}">${empty?'—':s.avg}</div><div class="l">indice</div></div>
       <div class="lb-stat hide-sm"><div class="v" style="color:${empty?'var(--dim)':wrColor}">${empty?'—':s.wr+'%'}</div><div class="l">winrate</div></div>
       <div class="lb-stat"><div class="v">${s.wins}/${s.count}</div><div class="l">parties</div></div>
@@ -2781,11 +2825,78 @@ function renderLeaderboard() {
   }).join('');
 }
 
+/* ===================== DUOS DÉTECTÉS =====================
+   Deux membres retrouvés dans la MÊME équipe sur une même partie (croisement
+   par match_id, comme pour les sessions). L'intérêt n'est pas le winrate brut
+   du duo mais son ÉCART avec le winrate de chacun quand il joue sans l'autre. */
+const DUO_MIN_GAMES = 3;
+
+function computeDuos(squads, minGames){
+  const min = minGames!=null ? minGames : DUO_MIN_GAMES;
+  const byMatch={}, byKey={};
+  (squads||[]).forEach(sq=>{
+    if(!sq || !sq.member) return;
+    const k=memberKey(sq.member);
+    byKey[k]=sq;
+    (sq.norm||[]).forEach(M=>{ if(M && M.id) (byMatch[M.id]=byMatch[M.id]||[]).push({k, M}); });
+  });
+
+  const pairs={};
+  Object.keys(byMatch).forEach(id=>{
+    const l=byMatch[id];
+    for(let i=0;i<l.length;i++) for(let j=i+1;j<l.length;j++){
+      if(l[i].M.myTeamId!==l[j].M.myTeamId) continue;         // adversaires : pas un duo
+      const x = l[i].k < l[j].k ? l[i] : l[j];
+      const y = l[i].k < l[j].k ? l[j] : l[i];
+      const pk = x.k+'|'+y.k;
+      const p = pairs[pk] || (pairs[pk]={ a:x.k, b:y.k, n:0, wins:0, ids:{} });
+      if(p.ids[id]) continue;                                  // une partie ne compte qu'une fois
+      p.ids[id]=true; p.n++;
+      if(x.M.result==='w') p.wins++;
+    }
+  });
+
+  return Object.keys(pairs).map(pk=>{
+    const p=pairs[pk], A=byKey[p.a], B=byKey[p.b];
+    if(!A || !B) return null;
+    // Winrate de chacun SANS l'autre : la vraie référence.
+    const solo=sq=>{
+      const rest=(sq.norm||[]).filter(M=>M && M.id && !p.ids[M.id]);
+      return rest.length ? rest.filter(M=>M.result==='w').length/rest.length*100 : null;
+    };
+    const sa=solo(A), sb=solo(B);
+    const base=(sa!=null && sb!=null) ? (sa+sb)/2 : (sa!=null?sa:sb);
+    const wr=p.n ? p.wins/p.n*100 : 0;
+    return { a:A.member, b:B.member, n:p.n, wins:p.wins, wr, base,
+             delta: base!=null ? wr-base : null };
+  }).filter(d=>d && d.n>=min).sort((x,y)=>y.n-x.n || y.wr-x.wr);
+}
+
+function renderDuos(){
+  const host=$('duoList'); if(!host) return;
+  const duos=computeDuos(TRIB.matches);
+  if(!duos.length){
+    host.innerHTML=`<div class="duo-empty">Aucun duo sur les parties chargées — il en faut au moins ${DUO_MIN_GAMES} dans la même équipe.</div>`;
+    return;
+  }
+  host.innerHTML=duos.map(d=>{
+    const wrC = d.wr>=50 ? 'var(--win)' : 'var(--loss)';
+    const dl = d.delta==null ? '<b>—</b><span>vs séparés</span>'
+      : `<b style="color:${d.delta>=0?'var(--win)':'var(--loss)'}">${d.delta>=0?'+':''}${Math.round(d.delta)}</b><span>vs séparés</span>`;
+    return `<div class="duo-row">
+      <div class="duo-pair"><b style="color:${esc(d.a.color)}">${esc(d.a.name)}</b><span class="duo-x">+</span><b style="color:${esc(d.b.color)}">${esc(d.b.name)}</b></div>
+      <div class="duo-stat"><b>${d.n}</b><span>ensemble</span></div>
+      <div class="duo-stat"><b style="color:${wrC}">${Math.round(d.wr)}%</b><span>winrate</span></div>
+      <div class="duo-stat hide-sm">${dl}</div>
+    </div>`;
+  }).join('');
+}
+
 /* ===================== 1v1 COMPARATEUR ===================== */
 function renderVsPickers() {
   const mk = (side, sel) => ROSTER.map((m, i) => `
-    <button class="chip ${i === sel ? 'on' : ''}" style="--c:${m.color}" data-side="${side}" data-i="${i}">
-      ${m.name}<b>#${m.tag}</b>
+    <button class="chip ${i === sel ? 'on' : ''}" style="--c:${esc(m.color)}" data-side="${side}" data-i="${i}">
+      ${esc(m.name)}<b>#${esc(m.tag)}</b>
     </button>`).join('');
   $('vsPickerA').innerHTML = mk('a', VS.a);
   $('vsPickerB').innerHTML = mk('b', VS.b);
@@ -3001,7 +3112,7 @@ function wireStatic(){
   $('btnBack').addEventListener('click',showHome);
   $('btnBackTrib').addEventListener('click',showHome);
   $('btnBackLb').addEventListener('click',showHome);
-  // Boutons masqués pour l'instant : on garde le câblage (et on tolère leur absence).
+  // On tolère l'absence de ces boutons (page allégée / variante d'UI).
   $('btnTribunal')?.addEventListener('click',loadTribunal);
   $('btnLeaderboard')?.addEventListener('click',loadLeaderboard);
   
