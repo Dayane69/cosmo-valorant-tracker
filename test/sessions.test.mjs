@@ -15,7 +15,10 @@ function load() {
   let code = readFileSync(join(root, "app.js"), "utf8");
   code += `\nglobalThis.__x = { buildSessions, sessionStats, sessionFacts, sessionBaseline,
     sessionTrend, sessionComposition, sessionVerdict, analyzeSession, sessionSquadReport,
-    bestWorst, matchDuration, durMs, memberKey, BASELINE_MIN, isRanked, normStored };`;
+    bestWorst, matchDuration, durMs, memberKey, BASELINE_MIN, isRanked, rankedOnly, normStored,
+    addSquadEntry, indexSquadFromFullMatches, mateMatch,
+    setRoster: r => { ROSTER = r; }, setPuuidMap: p => { PUUID_MEMBER = p; },
+    getPuuidMap: () => JSON.stringify(PUUID_MEMBER) };`;
   vm.runInContext(code, ctx);
   return ctx.__x;
 }
@@ -378,4 +381,135 @@ test("le rapport commun d'une session solo ne contient que le joueur", () => {
 
 test("memberKey est insensible à la casse (croisement fiable des historiques)", () => {
   assert.equal(X.memberKey({ name: "SEVENDAYY", tag: "6340" }), X.memberKey({ name: "sevendayy", tag: "6340" }));
+});
+
+/* ------------------------------------------------------- classé uniquement */
+
+test("rankedOnly ne garde que le mode classé", () => {
+  const list = [match({ mode: "Competitive" }), match({ mode: "Deathmatch" }),
+                match({ mode: "Unrated" }), match({ mode: "Swiftplay" }),
+                match({ mode: "Classé" }), match({ mode: "Team Deathmatch" })];
+  const kept = X.rankedOnly(list).map(m => m.mode);
+  assert.equal(kept.join(","), "Competitive,Classé");
+});
+
+test("les sessions se construisent sur les seules parties classées", () => {
+  // Un deathmatch intercalé ne doit ni rallonger la session, ni la souder à la suivante.
+  const ms = [
+    match({ mode: "Competitive", startedMs: SAT23, durMs: 30 * MIN }),
+    match({ mode: "Deathmatch", startedMs: SAT23 + 2 * H, durMs: 10 * MIN }),
+    match({ mode: "Competitive", startedMs: SAT23 + 4 * H, durMs: 30 * MIN }),
+  ];
+  const s = X.buildSessions(X.rankedOnly(ms), 2 * H);
+  assert.equal(s.length, 2, "les deux classées sont trop éloignées : deux sessions");
+  assert.equal(s[0].matches.length, 1);
+  assert.equal(s[0].matches[0].mode, "Competitive");
+});
+
+/* -------------------------------------- index de squad basé sur le roster */
+
+const ROSTER_FIX = [
+  { name: "Yakuza", tag: "2826", color: "#9aa7b2" },
+  { name: "SevenDayy", tag: "6340", color: "#e07b2c" },
+  { name: "Gogemine", tag: "0202", color: "#c8623a" },
+];
+// Partie au format complet : liste de joueurs avec les pseudos ACTUELS.
+const full = (id, players) => ({ id, players });
+const P = (name, tag, team, puuid) => ({ name, tag, team_id: team, puuid });
+
+test("addSquadEntry ne duplique jamais un membre sur une même partie", () => {
+  const idx = {};
+  X.addSquadEntry(idx, "m1", { key: "a#1", name: "A", team: "Blue" });
+  X.addSquadEntry(idx, "m1", { key: "a#1", name: "A", team: "Blue" });
+  X.addSquadEntry(idx, "m1", { key: "b#2", name: "B", team: "Blue" });
+  assert.equal(idx.m1.length, 2, "une équipe compte 5 joueurs, pas des doublons");
+});
+
+test("addSquadEntry complète une entrée du blob avec l'équipe du format complet", () => {
+  const idx = {};
+  X.addSquadEntry(idx, "m1", { key: "a#1", name: "A", team: null, M: { id: "m1" } });
+  X.addSquadEntry(idx, "m1", { key: "a#1", name: "A", team: "Red" });
+  assert.equal(idx.m1[0].team, "Red");
+  assert.ok(idx.m1[0].M, "…sans perdre la ligne de stats venue du blob");
+});
+
+test("le format complet reconnaît un membre RENOMMÉ, via son pseudo actuel", () => {
+  X.setRoster(ROSTER_FIX);            // le roster dit désormais « Yakuza »
+  X.setPuuidMap({});
+  const idx = X.indexSquadFromFullMatches([
+    full("m1", [P("Yakuza", "2826", "Blue", "PU-yak"), P("SevenDayy", "6340", "Blue", "PU-sev"),
+                P("Random", "9999", "Red", "PU-rnd")]),
+  ], {});
+  assert.equal(idx.m1.length, 2, "seuls les membres du roster sont retenus");
+  assert.equal(idx.m1.map(e => e.name).sort().join(","), "SevenDayy,Yakuza");
+  assert.equal(idx.m1[0].team, "Blue");
+});
+
+test("le puuid appris rattache une partie où le pseudo était encore l'ancien", () => {
+  X.setRoster(ROSTER_FIX);
+  X.setPuuidMap({});
+  const idx = {};
+  // 1) une partie récente donne le puuid de Yakuza…
+  X.indexSquadFromFullMatches([full("m1", [P("Yakuza", "2826", "Blue", "PU-yak"), P("X", "1", "Red", "PU-x")])], idx);
+  assert.ok(JSON.parse(X.getPuuidMap())["PU-yak"], "le puuid a été appris");
+  // 2) …une partie plus ancienne, où il s'appelait encore Arsh26, est rattachée.
+  X.indexSquadFromFullMatches([full("m2", [P("Arsh26", "2826", "Red", "PU-yak"), P("X", "1", "Blue", "PU-x")])], idx);
+  assert.equal(idx.m2.length, 1);
+  assert.equal(idx.m2[0].name, "Yakuza", "affiché sous son pseudo ACTUEL, celui du roster");
+  assert.equal(idx.m2[0].team, "Red");
+});
+
+test("une partie au format compact n'alimente pas l'index par la liste de joueurs", () => {
+  X.setRoster(ROSTER_FIX);
+  X.setPuuidMap({});
+  // normStored ne produit qu'UN joueur : on ne peut rien déduire du lobby.
+  const idx = X.indexSquadFromFullMatches([full("m1", [P("Yakuza", "2826", "Blue", "PU-yak")])], {});
+  assert.equal(Object.keys(idx).length, 0);
+});
+
+test("un membre retiré du roster n'apparaît plus dans les compositions", () => {
+  X.setRoster([ROSTER_FIX[1]]);       // seul SevenDayy reste
+  X.setPuuidMap({});
+  const idx = X.indexSquadFromFullMatches([
+    full("m1", [P("Yakuza", "2826", "Blue", "PU-yak"), P("SevenDayy", "6340", "Blue", "PU-sev")]),
+  ], {});
+  assert.equal(idx.m1.length, 1);
+  assert.equal(idx.m1[0].name, "SevenDayy");
+});
+
+test("un coéquipier sans historique stocké garde ses stats, prises au scoreboard", () => {
+  X.setRoster(ROSTER_FIX);
+  X.setPuuidMap({});
+  // Partie complète : je suis Blue, SevenDayy aussi. Son blob est vide.
+  const M = Object.assign(match({ id: "m1", myTeamId: "Blue", result: "w", myScore: 13, oppScore: 8 }), {
+    players: [P("Yakuza", "2826", "Blue", "PU-yak"), P("SevenDayy", "6340", "Blue", "PU-sev")],
+    lines: [{ k: 20, d: 10, a: 4, acs: 260, adr: 160, hs: 25, kd: 2, rounds: 21, shots: 90, score100: 78, agent: "Cypher" },
+            { k: 12, d: 16, a: 9, acs: 170, adr: 120, hs: 18, kd: 0.75, rounds: 21, shots: 80, score100: 51, agent: "Brimstone" }],
+  });
+  const mm = X.mateMatch(M, { key: X.memberKey({ name: "SevenDayy", tag: "6340" }), team: "Blue" });
+  assert.ok(mm, "les stats du coéquipier sont récupérables depuis le scoreboard");
+  assert.equal(mm.me.score100, 51);
+  assert.equal(mm.result, "w", "même équipe -> même résultat");
+  assert.equal(mm.rr, null, "son ±RR n'est pas connu depuis MA partie : on n'invente pas");
+
+  const rows = X.sessionSquadReport({ matches: [M] },
+    { m1: [{ key: X.memberKey({ name: "SevenDayy", tag: "6340" }), name: "SevenDayy", tag: "6340", team: "Blue" }] },
+    "yakuza#2826", { name: "Yakuza", tag: "2826" });
+  assert.equal(rows.length, 2, "le coéquipier apparaît bien dans le rapport commun");
+  assert.equal(rows.map(r => r.name).join(","), "Yakuza,SevenDayy", "trié par indice");
+});
+
+test("un coéquipier introuvable au scoreboard n'est pas inventé", () => {
+  X.setPuuidMap({});
+  const M = Object.assign(match({ id: "m1", myTeamId: "Blue" }), { players: [], lines: [] });
+  assert.equal(X.mateMatch(M, { key: "inconnu#0", team: "Blue" }), null);
+});
+
+test("la composition plafonne à 5 : une équipe Valorant n'a pas 8 joueurs", () => {
+  const ms = [match({ id: "m1", myTeamId: "Blue" })];
+  const squad = { m1: ["a", "b", "c", "d", "e", "f", "g"].map(k =>
+    ({ key: k + "#1", name: k.toUpperCase(), tag: "1", team: "Blue" })) };
+  const c = X.sessionComposition(ms, squad, "moi#eu");
+  assert.equal(c.dominant, 5, "plafonné, plutôt que d'afficher un stack impossible");
+  assert.equal(c.label, "5-stack");
 });

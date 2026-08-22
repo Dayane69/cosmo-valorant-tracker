@@ -749,6 +749,10 @@ const BASELINE_MIN = 6;                  // parties hors session nécessaires po
 const STACK_LABEL = {1:'Solo', 2:'Duo', 3:'Trio', 4:'Quatuor', 5:'5-stack'};
 const RANKED_RE = /competitive|class[ée]|comp[ée]titif/;
 const isRanked = M => RANKED_RE.test(String((M&&M.mode)||'').toLowerCase());
+// Les rapports de session ne portent QUE sur les parties classées : un
+// deathmatch ou un swiftplay n'a ni le même format, ni le même enjeu, et
+// polluerait aussi bien le découpage que les moyennes.
+const rankedOnly = list => (list||[]).filter(isRanked);
 const memberKey = m => String((m&&m.name)||'').toLowerCase()+'#'+String((m&&m.tag)||'').toLowerCase();
 
 const mean = a => a.length ? a.reduce((x,y)=>x+y,0)/a.length : null;
@@ -902,7 +906,9 @@ function sessionComposition(list, squadIndex, selfKey){
     }
   });
   const sizes=Object.keys(bySize).map(Number).sort((a,b)=>bySize[b]-bySize[a] || b-a);
-  const dominant=sizes.length?sizes[0]:1;
+  // Une équipe Valorant compte 5 joueurs : au-delà, c'est du bruit de données
+  // (doublon dans le roster, ancien pseudo encore présent…), on plafonne.
+  const dominant=Math.min(sizes.length?sizes[0]:1, 5);
   const mixed=sizes.length>1;
   return {
     dominant, mixed, bySize,
@@ -1053,13 +1059,32 @@ function analyzeSession(session, ctx){
 
 // Rapport COMMUN : chaque membre COSMO présent dans la session, avec ses
 // propres stats sur LES PARTIES DE CETTE SESSION uniquement.
+// Stats d'un coéquipier sur UNE partie. Deux provenances : son propre
+// historique quand on l'a (e.M), sinon le scoreboard complet de la partie —
+// indispensable pour les parties récentes, où son blob n'a pas encore été
+// rafraîchi (ou vient d'être remis à zéro par un changement de pseudo).
+function mateMatch(M, e){
+  if(e.M) return e.M;
+  if(!M || !Array.isArray(M.players) || !Array.isArray(M.lines)) return null;
+  const i=M.players.findIndex(p=>p && (memberKey(p)===e.key || (p.puuid && PUUID_MEMBER[p.puuid]===e.key)));
+  const line=i>=0 ? M.lines[i] : null;
+  if(!line) return null;
+  const same = e.team===M.myTeamId;
+  return { id:M.id, rounds:M.rounds, mode:M.mode, map:M.map, startedMs:M.startedMs,
+           forfeit:M.forfeit, myTeamId:e.team, me:line, rr:null,   // son ±RR n'est pas dans MA partie
+           result: same ? M.result : (M.result==='w'?'l':(M.result==='l'?'w':'?')),
+           myScore: same ? M.myScore : M.oppScore,
+           oppScore: same ? M.oppScore : M.myScore };
+}
+
 function sessionSquadReport(session, squadIndex, selfKey, selfInfo){
   const per={};
   (session.matches||[]).forEach(M=>{
     ((squadIndex||{})[M.id]||[]).forEach(e=>{
       if(e.team!==M.myTeamId) return;              // adversaire : pas la même session
+      const mm=mateMatch(M, e); if(!mm) return;
       const r=per[e.key]||(per[e.key]={ key:e.key, name:e.name, tag:e.tag, color:e.color, matches:[] });
-      r.matches.push(e.M);
+      r.matches.push(mm);
     });
   });
   // Le joueur du profil : on utilise SES parties (format riche) plutôt que la
@@ -1074,17 +1099,68 @@ function sessionSquadReport(session, squadIndex, selfKey, selfInfo){
   }).filter(r=>r.n>0).sort((x,y)=>(y.st.index||0)-(x.st.index||0));
 }
 
-/* --- Historique de toute la squad (croisement par match_id) -----------------
-   Lecture des blobs uniquement (aucun appel HenrikDev, donc aucun rate limit).
-   Sert à savoir QUI a joué avec qui, sur toute la profondeur d'historique. */
-let SQUAD_INDEX = null;      // match_id -> [{key,name,tag,color,team,M}]
-let SQUAD_LOADING = null;
+/* --- Qui a joué avec qui (index match_id -> membres du roster) --------------
+   Deux sources complémentaires, toutes deux ancrées sur le ROSTER courant :
 
+   1. Les parties au format COMPLET (matches v4) : elles contiennent tout le
+      lobby avec le pseudo ACTUEL de chaque joueur, tel que Riot le renvoie. Un
+      membre qui change de pseudo est donc reconnu immédiatement, sans rien
+      reconfigurer — c'est la source prioritaire.
+   2. L'historique stocké de chaque membre (blobs) : indispensable pour les
+      parties anciennes, dont on ne garde qu'une version compacte à un joueur.
+      Lecture de blobs uniquement, donc aucun appel HenrikDev ni rate limit.
+
+   Le puuid, stable à travers un changement de pseudo, sert de pont entre les
+   deux : appris en 1 ou 2, il rattache les entrées dont le nom a changé. */
+let SQUAD_INDEX = null;      // match_id -> [{key,name,tag,color,team,M?}]
+let SQUAD_LOADING = null;
+let SQUAD_BLOBS_DONE = false;
+let PUUID_MEMBER = {};       // puuid -> clé roster (survit à un changement de pseudo)
+
+// N'ajoute jamais deux fois le même membre sur une même partie : une équipe
+// compte 5 joueurs, et les deux sources se recoupent volontairement.
+function addSquadEntry(idx, id, e){
+  const list = idx[id] || (idx[id] = []);
+  const prev = list.find(x => x.key === e.key);
+  if(prev){
+    if(!prev.team && e.team) prev.team = e.team;   // le format complet fait foi
+    if(!prev.M && e.M) prev.M = e.M;               // …mais on garde la ligne de stats du blob
+    return prev;
+  }
+  list.push(e); return e;
+}
+
+// Table de correspondance roster : par pseudo#tag ET par puuid déjà connu.
+function rosterLookup(){
+  const byName={}, byKey={};
+  ROSTER.forEach(m=>{ const k=memberKey(m); byName[k]=m; byKey[k]=m; });
+  return { byName, byKey };
+}
+
+// Source 1 : les parties au format complet, qui portent les pseudos actuels.
+function indexSquadFromFullMatches(matches, idx){
+  const { byName, byKey } = rosterLookup();
+  (matches||[]).forEach(M=>{
+    if(!M || !M.id || !Array.isArray(M.players) || M.players.length < 2) return;  // format compact : 1 joueur
+    M.players.forEach(p=>{
+      if(!p) return;
+      const nk = memberKey(p);
+      const key = byName[nk] ? nk : (p.puuid && PUUID_MEMBER[p.puuid]) || null;
+      const m = key && byKey[key];
+      if(!m) return;
+      if(p.puuid) PUUID_MEMBER[p.puuid] = key;     // on apprend le puuid au passage
+      addSquadEntry(idx, M.id, { key, name:m.name, tag:m.tag, color:m.color||'', team:p.team_id });
+    });
+  });
+  return idx;
+}
+
+// Source 2 : l'historique stocké de chaque membre du roster.
 async function ensureSquadHistories(){
-  if(SQUAD_INDEX) return SQUAD_INDEX;
+  if(SQUAD_BLOBS_DONE) return SQUAD_INDEX;
   if(SQUAD_LOADING) return SQUAD_LOADING;
   SQUAD_LOADING=(async()=>{
-    const idx={};
+    const idx = SQUAD_INDEX || (SQUAD_INDEX = {});
     const lists=await Promise.all(ROSTER.map(m=>fetchHistorique(m.name, m.tag).catch(()=>[])));
     ROSTER.forEach((m,i)=>{
       const key=memberKey(m), target={ puuid:null, name:m.name, tag:m.tag };
@@ -1092,13 +1168,22 @@ async function ensureSquadHistories(){
         let M=null;
         try{ M=normalizeAny(raw, target); }catch(e){ M=null; }
         if(!M || !M.id) return;
-        (idx[M.id]=idx[M.id]||[]).push({ key, name:m.name, tag:m.tag, color:m.color||'', team:M.myTeamId, M });
+        const pu=M.players && M.players[0] && M.players[0].puuid;
+        if(pu) PUUID_MEMBER[pu]=key;
+        addSquadEntry(idx, M.id, { key, name:m.name, tag:m.tag, color:m.color||'', team:M.myTeamId, M });
       });
     });
-    SQUAD_INDEX=idx; SQUAD_LOADING=null;
+    // Un puuid appris tardivement peut rattacher des parties complètes vues avant.
+    indexSquadFromFullMatches(STATE.allMatches, idx);
+    SQUAD_BLOBS_DONE=true; SQUAD_LOADING=null;
     return idx;
   })();
   return SQUAD_LOADING;
+}
+
+// Un changement de roster (pseudo, membre ajouté/retiré) invalide l'index.
+function resetSquadIndex(){
+  SQUAD_INDEX=null; SQUAD_LOADING=null; SQUAD_BLOBS_DONE=false; PUUID_MEMBER={};
 }
 
 /* ===================== HOME & PROFIL ===================== */
@@ -1543,8 +1628,8 @@ function renderSessions(){
   if(SESSIONS_ONLY_COMMON) list=list.filter(s=>sessionComposition(s.matches, SQUAD_INDEX, selfKey).mates.length>0);
   if(!list.length){
     host.innerHTML=`<div class="md-empty">${SESSIONS_ONLY_COMMON
-      ? 'Aucune session jouée avec un autre membre de la squad dans cet historique.'
-      : 'Pas encore assez de parties horodatées pour découper des sessions.'}</div>`;
+      ? 'Aucune session classée jouée avec un autre membre de la squad dans cet historique.'
+      : 'Aucune partie classée dans l\'historique — les rapports de session ne prennent en compte que le mode classé.'}</div>`;
     const more=$('btnSxMore'); if(more) more.hidden=true;
     return;
   }
@@ -1585,7 +1670,7 @@ function openSessionReport(key){
   const modal=$('sessionModal'), body=$('sessionModalBody');
   if(!modal||!body) return;
   const selfKey=memberKey(STATE);
-  const base=sessionBaseline(s, STATE.allMatches);
+  const base=sessionBaseline(s, rankedOnly(STATE.allMatches));
   const A=analyzeSession(s, { baseline:base });
   const comp=sessionComposition(s.matches, SQUAD_INDEX, selfKey);
   const st=A.st, t=tierOf(Math.round(st.index||0));
@@ -1654,7 +1739,7 @@ function openSessionReport(key){
       ${sxTile('K/D', (st.kd||0).toFixed(2), `${st.k}/${st.d}/${st.a}`+dl(st.kd, base&&base.kd, true))}
       ${sxTile('ADR', Math.round(st.adr||0), dl(st.adr, base&&base.adr))}
       ${sxTile('HS%', Math.round(st.hs||0)+'%', dl(st.hs, base&&base.hs))}
-      ${st.kast!=null?tile('KAST', Math.round(st.kast)+'%', dl(st.kast, base&&base.kast)):''}
+      ${st.kast!=null?sxTile('KAST', Math.round(st.kast)+'%', dl(st.kast, base&&base.kast)):''}
     </div>
     ${base?`<div class="md-none">Comparaisons faites avec tes ${base.n} autres parties dans les mêmes modes (indice moyen ${Math.round(base.index)}, ${Math.round(base.acs)} ACS, K/D ${base.kd.toFixed(2)}).</div>`:''}
 
@@ -1699,12 +1784,14 @@ function closeSessionReport(){
 // chargés en tâche de fond (blobs uniquement) puis le rendu est rafraîchi :
 // la liste s'affiche tout de suite, les compositions arrivent juste après.
 function refreshSessions(){
-  SESSIONS=buildSessions(STATE.allMatches);
+  SESSIONS=buildSessions(rankedOnly(STATE.allMatches));
   SESSIONS_SHOWN=8;
+  // Les parties au format complet donnent déjà la composition (avec les pseudos
+  // actuels) : on indexe tout de suite, sans attendre les blobs.
+  SQUAD_INDEX=SQUAD_INDEX||{};
+  indexSquadFromFullMatches(STATE.allMatches, SQUAD_INDEX);
   renderSessions();
-  if(!SQUAD_INDEX){
-    ensureSquadHistories().then(()=>renderSessions()).catch(()=>{});
-  }
+  if(!SQUAD_BLOBS_DONE) ensureSquadHistories().then(()=>renderSessions()).catch(()=>{});
 }
 
 /* ============ DÉTAIL DU CALCUL DE L'INDICE (modale) ============ */
@@ -2625,6 +2712,7 @@ async function saveRoster(){
     const d=await r.json().catch(()=>({}));
     if(!r.ok || d.ok===false){ if(out) out.textContent='Échec : '+((d&&d.error)||('http '+r.status)); return; }
     if(out) out.textContent=`Enregistré ✓ (${d.count} membres). Mise à jour…`;
+    resetSquadIndex();   // pseudos/membres modifiés : l'index "qui joue avec qui" est périmé
     await loadRoster(); renderRoster(); fillRanks(); renderRosterEditor();
   }catch(e){ if(out) out.textContent='Erreur réseau : '+((e&&e.message)||e); }
 }

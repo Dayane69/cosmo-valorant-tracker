@@ -1,7 +1,7 @@
 {
   "region": "eu",
   "members": [
-    { "agent": "Cypher",    "role": "Sentinelle", "uuid": "117ed9e3-49f3-6512-3ccf-0cada7e3823b", "color": "#9aa7b2", "name": "Arsh26",    "tag": "2826",  "mono": "Cy" },
+    { "agent": "Cypher",    "role": "Sentinelle", "uuid": "117ed9e3-49f3-6512-3ccf-0cada7e3823b", "color": "#9aa7b2", "name": "Yakuza",    "tag": "2826",  "mono": "Cy" },
     { "agent": "Brimstone", "role": "Contrôleur", "uuid": "9f0d8ba9-4140-b941-57d3-a7ad57c6b417", "color": "#e07b2c", "name": "SevenDayy", "tag": "6340",  "mono": "Br" },
     { "agent": "Breach",    "role": "Initiateur", "uuid": "5f8d3a7f-467b-97f3-062c-13acf203c006", "color": "#c8623a", "name": "Gogemine",  "tag": "0202",  "mono": "Br" },
     { "agent": "Jett",      "role": "Duelliste",  "uuid": "add6443a-41bd-e414-f6ad-e58d267f4e95", "color": "#74e0dd", "name": "kingsto",   "tag": "0000",  "mono": "Je" },

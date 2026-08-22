@@ -762,7 +762,7 @@
       <!-- RAPPORTS DE SESSION -->
       <div class="card full">
         <h2 class="tabs-header">
-          <span>Rapports de session <em>clique pour le rapport complet</em></span>
+          <span>Rapports de session <em>parties classées · clique pour le rapport complet</em></span>
           <div class="sxctl">
             <label class="sxlab" for="sxGap">Coupure</label>
             <select id="sxGap" class="rrsel" title="Écart à partir duquel une nouvelle session commence">
@@ -781,7 +781,7 @@
         <div style="text-align:center;margin-top:14px;">
           <button class="btn" id="btnSxMore" hidden>Voir plus de sessions</button>
         </div>
-        <div class="secnote">Une session = des parties enchaînées à moins de la coupure choisie. Le découpage suit les horaires réels, pas le calendrier : une session du samedi 23 h au dimanche 2 h reste une seule session, et deux sessions le même jour restent séparées.</div>
+        <div class="secnote">Seules les <b>parties classées</b> sont prises en compte. Une session = des parties enchaînées à moins de la coupure choisie, mesurée de la fin d'une partie au début de la suivante. Le découpage suit les horaires réels, pas le calendrier : une session du samedi 23 h au dimanche 2 h reste une seule session, et deux sessions le même jour restent séparées.</div>
       </div>
 
       <div class="hero even" id="statsSplit">
@@ -906,6 +906,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260822" defer></script>
+<script src="app.js?v=20260822b" defer></script>
 </body>
 </html>
