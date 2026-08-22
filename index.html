@@ -87,6 +87,10 @@
   .edrow{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:7px}
   .edrow input{background:var(--bg);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:7px 8px;font-family:var(--mono);font-size:12px;flex:1;min-width:70px}
   .edrow input[data-f="name"],.edrow input[data-f="customImg"]{min-width:110px}
+  /* Anciens pseudos : champ large, sur sa propre ligne, avec un liseré qui le
+     distingue des champs d'identité courante. */
+  .edrow .edalias{flex:1 0 100%;min-width:0;border-color:rgba(242,178,52,.35);color:var(--amber)}
+  .edrow .edalias::placeholder{color:var(--dim)}
   .edrow .edrm{flex:none;border:1px solid var(--line);border-radius:6px;color:var(--loss);width:30px;height:30px;font-size:12px}
   .edrow .edrm:hover{border-color:var(--loss);background:rgba(255,93,93,.1)}
 
@@ -704,7 +708,7 @@
         <button class="btn" id="edAdd" type="button" style="margin-top:8px;">+ Ajouter un membre</button>
         <div class="field" style="margin-top:14px;max-width:280px;"><label for="edToken">Clé REFRESH_TOKEN</label><input id="edToken" type="password" autocomplete="off" placeholder="secret serveur"></div>
         <div style="margin-top:10px;"><button class="btn" id="edSave" type="button">Enregistrer le roster</button></div>
-        <div class="secnote" id="edStatus">Les modifs sont partagées (stockées côté serveur) et remplacent roster.json. Laisse « uuid agent » vide et mets une URL GIF pour un membre custom.</div>
+        <div class="secnote" id="edStatus">Les modifs sont partagées (stockées côté serveur) et remplacent roster.json. Laisse « uuid agent » vide et mets une URL GIF pour un membre custom. <b>Anciens pseudos</b> : si quelqu'un a changé de nom Riot, mets son ancien <i>Pseudo#tag</i> ici — son historique et surtout sa <b>progression RR</b> d'avant le changement sont stockés sous cet ancien nom et seraient perdus sinon.</div>
       </div>
     </div>
     <!-- Cartes générées dynamiquement depuis roster.json par renderRoster() (app.js) -->
@@ -906,6 +910,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260822b" defer></script>
+<script src="app.js?v=20260822c" defer></script>
 </body>
 </html>

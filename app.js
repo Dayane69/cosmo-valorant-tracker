@@ -300,6 +300,47 @@ async function fetchHistorique(name, tag){
   }catch(e){ return []; }
 }
 
+/* --- Anciens pseudos -------------------------------------------------------
+   Les blobs (historique ET progression RR) sont indexés par pseudo#tag. Changer
+   de pseudo Riot laisse donc toutes les données accumulées orphelines sous
+   l'ancienne clé. Les matchs, eux, finissent par revenir (stored-matches est
+   rattaché au compte), mais la série RR long terme, elle, est PERDUE : l'API
+   mmr-history ne renvoie qu'une fenêtre courte, c'est le blob qui accumule.
+   Les alias servent de pont : on relit les anciennes clés et on fusionne. */
+function memberAliases(m){
+  const raw=m && m.alias;
+  const list=Array.isArray(raw)?raw:(typeof raw==='string'?raw.split(','):[]);
+  const out=[], seen={}, self=memberKey(m||{});
+  list.forEach(entry=>{
+    const s=String(entry==null?'':entry).trim();
+    const i=s.lastIndexOf('#');
+    if(i<1 || i===s.length-1) return;                 // il faut un pseudo ET un tag
+    const name=s.slice(0,i).trim(), tag=s.slice(i+1).trim();
+    if(!name || !tag) return;
+    const k=(name+'#'+tag).toLowerCase();
+    if(k===self || seen[k]) return;                   // le pseudo actuel n'est pas un alias
+    seen[k]=true; out.push({name, tag});
+  });
+  return out.slice(0,5);
+}
+// Toutes les identités sous lesquelles chercher les données d'un membre.
+const memberIdentities = m => [{name:m.name, tag:m.tag}, ...memberAliases(m)];
+
+// Historique matchs d'un membre, anciens pseudos compris (dédoublonné par matchid).
+async function fetchHistoriqueAll(m){
+  const ids=memberIdentities(m);
+  if(ids.length===1) return fetchHistorique(m.name, m.tag);
+  const lists=await Promise.all(ids.map(x=>fetchHistorique(x.name, x.tag).catch(()=>[])));
+  return combineMatches(...lists);
+}
+// Série RR d'un membre, anciens pseudos compris (dédoublonnée par match_id/date).
+async function fetchRRHistoryAll(m){
+  const ids=memberIdentities(m);
+  if(ids.length===1) return fetchRRHistory(m.name, m.tag);
+  const lists=await Promise.all(ids.map(x=>fetchRRHistory(x.name, x.tag).catch(()=>[])));
+  return mergeRRclient(...lists);
+}
+
 // Récupère l'historique RR accumulé (progression long terme) depuis le blob cosmo-rr.
 async function fetchRRHistory(name, tag){
   try{
@@ -1161,7 +1202,7 @@ async function ensureSquadHistories(){
   if(SQUAD_LOADING) return SQUAD_LOADING;
   SQUAD_LOADING=(async()=>{
     const idx = SQUAD_INDEX || (SQUAD_INDEX = {});
-    const lists=await Promise.all(ROSTER.map(m=>fetchHistorique(m.name, m.tag).catch(()=>[])));
+    const lists=await Promise.all(ROSTER.map(m=>fetchHistoriqueAll(m).catch(()=>[])));
     ROSTER.forEach((m,i)=>{
       const key=memberKey(m), target={ puuid:null, name:m.name, tag:m.tag };
       (lists[i]||[]).forEach(raw=>{
@@ -1288,7 +1329,7 @@ async function setCompareMember(idx){
   const region=REGION();
   try{
     const [blobR, liveR]=await Promise.allSettled([
-      fetchRRHistory(m.name, m.tag),
+      fetchRRHistoryAll(m),
       api(`/valorant/v2/mmr-history/${region}/pc/${enc(m.name)}/${enc(m.tag)}`)
     ]);
     const blob=blobR.status==='fulfilled'?(blobR.value||[]):[];
@@ -2094,7 +2135,7 @@ function showMatch(i){
 function openProfile(idx){
   const m=ROSTER[idx];
   if(!m) return;
-  STATE={puuid:null,allMatches:[],matches:[],name:m.name,tag:m.tag};
+  STATE={puuid:null,allMatches:[],matches:[],name:m.name,tag:m.tag,alias:m.alias||null};
   PROFILE_SHOWN = FRESH_SIZE;
 
   const bustSrc = m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`; // bustportrait.png n'existe pas (404) chez valorant-api
@@ -2126,8 +2167,8 @@ async function loadProfile(){
       api(`/valorant/v3/mmr/${region}/pc/${n}/${t}`),
       api(`/valorant/v2/mmr-history/${region}/pc/${n}/${t}`),
       api(`/valorant/v4/matches/${region}/pc/${n}/${t}?size=${FRESH_SIZE}`), // données fraîches du moment
-      fetchHistorique(STATE.name, STATE.tag),                                 // historique matchs accumulé (blob)
-      fetchRRHistory(STATE.name, STATE.tag)                                   // progression RR accumulée (blob)
+      fetchHistoriqueAll(STATE),                                              // historique matchs accumulé (blob + anciens pseudos)
+      fetchRRHistoryAll(STATE)                                                // progression RR accumulée (blob + anciens pseudos)
     ]);
     // Caches médias : têtes d'agents (scoreboard), icônes de rang et fonds de map
     await Promise.all([ensureTiers(), ensureAgents(), ensureMaps()]);
@@ -2345,7 +2386,7 @@ function renderTribMembers() {
 async function loadSquadMatches(region) {
   const reqs = ROSTER.map(m => Promise.allSettled([
     api(`/valorant/v4/matches/${region}/pc/${enc(m.name)}/${enc(m.tag)}?mode=competitive&size=15`),
-    fetchHistorique(m.name, m.tag)
+    fetchHistoriqueAll(m)
   ]));
   const results = await Promise.all(reqs);
   return results.map((pair, i) => {
@@ -2674,9 +2715,12 @@ function renderRoster(){
 function rosterRowHTML(m){
   m=m||{};
   const f=(k,ph)=>`<input data-f="${k}" placeholder="${ph}" value="${esc(m[k]||'')}">`;
+  const aliasVal=memberAliases(m).map(a=>a.name+'#'+a.tag).join(', ');
   return `<div class="edrow">
     ${f('name','pseudo')}${f('tag','tag')}${f('agent','agent')}${f('role','rôle')}
     ${f('color','#couleur')}${f('uuid','uuid agent')}${f('customImg','URL GIF (optionnel)')}
+    <input data-f="alias" class="edalias" placeholder="anciens pseudos : Ancien#tag, Autre#tag"
+      title="Anciens pseudos Riot, séparés par des virgules. Sert à récupérer l'historique et la progression RR d'avant le changement de nom." value="${esc(aliasVal)}">
     <button class="edrm" type="button" title="Retirer ce membre">✕</button>
   </div>`;
 }
@@ -2693,6 +2737,8 @@ function collectRoster(){
     const m={ name:g('name'), tag:g('tag'), agent:g('agent'), role:g('role'), color:g('color')||'#8696a6' };
     const uuid=g('uuid'), img=g('customImg');
     if(uuid) m.uuid=uuid; if(img) m.customImg=img;
+    const alias=memberAliases({ name:m.name, tag:m.tag, alias:g('alias') });
+    if(alias.length) m.alias=alias.map(a=>a.name+'#'+a.tag);
     m.mono=(m.agent||m.name).slice(0,2);
     return m;
   }).filter(m=>m.name && m.tag);

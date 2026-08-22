@@ -9,6 +9,31 @@ import { getStore } from "@netlify/blobs";
 const json = (o, s) =>
   new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
+// Anciens pseudos d'un membre, au format "Pseudo#tag".
+// Les blobs (historique et RR) sont indexés par pseudo#tag : un renommage laisse
+// les anciennes données orphelines. Les alias servent de pont pour les relire.
+// Accepte un tableau ou une chaîne séparée par des virgules.
+export function cleanAlias(raw, selfKey) {
+  const list = Array.isArray(raw) ? raw : (typeof raw === "string" ? raw.split(",") : []);
+  const out = [], seen = new Set();
+  for (const entry of list) {
+    const s = String(entry == null ? "" : entry).trim();
+    const i = s.lastIndexOf("#");
+    if (i < 1 || i === s.length - 1) continue;              // il faut un pseudo ET un tag
+    const name = s.slice(0, i).trim(), tag = s.slice(i + 1).trim();
+    if (!name || !tag) continue;
+    // Hors des limites Riot (pseudo 3-16, tag 3-5) : on REJETTE plutôt que de
+    // tronquer, une troncature produirait une clé de blob qui n'existe pas.
+    if (name.length > 32 || tag.length > 16) continue;
+    const key = `${name}#${tag}`.toLowerCase();
+    if (key === selfKey || seen.has(key)) continue;         // le pseudo actuel n'est pas un alias
+    seen.add(key);
+    out.push(`${name}#${tag}`);
+    if (out.length >= 5) break;
+  }
+  return out;
+}
+
 function cleanRoster(r) {
   if (!r || typeof r !== "object" || !Array.isArray(r.members)) return null;
   const members = r.members
@@ -25,6 +50,8 @@ function cleanRoster(r) {
       };
       if (m.uuid) out.uuid = String(m.uuid).slice(0, 64);
       if (m.customImg) out.customImg = String(m.customImg).slice(0, 500);
+      const alias = cleanAlias(m.alias, `${out.name}#${out.tag}`.toLowerCase());
+      if (alias.length) out.alias = alias;
       return out;
     });
   if (!members.length) return null;
