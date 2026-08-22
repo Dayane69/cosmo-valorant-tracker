@@ -13,12 +13,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
 
 const roster = JSON.parse(readFileSync(join(root, "roster.json"), "utf8"));
+// Le 1er membre du roster : les fixtures s'y accrochent pour ne pas casser
+// au prochain changement de pseudo.
+const ME = roster.members[0];
 
 function rawMatch(id, iso, won = true, mode = "Competitive") {
   return {
     metadata: { match_id: id, started_at: iso, map: { name: "Ascent" }, queue: { name: mode } },
     players: [
-      { puuid: "p1", name: "Arsh26", tag: "2826", team_id: "Blue", agent: { id: "uuid-cypher", name: "Cypher" },
+      { puuid: "p1", name: ME.name, tag: ME.tag, team_id: "Blue", agent: { id: "uuid-cypher", name: "Cypher" },
         stats: { kills: 15, deaths: 10, assists: 5, score: 5000, headshots: 20, bodyshots: 30, legshots: 5, damage: { dealt: 4000, received: 3000 } } },
       { puuid: "e1", name: "Foe", tag: "9999", team_id: "Red", agent: { id: "uuid-jett", name: "Jett" },
         stats: { kills: 10, deaths: 12, assists: 3, score: 3500, headshots: 10, bodyshots: 25, legshots: 5, damage: { dealt: 3000, received: 3500 } } },
@@ -40,7 +43,7 @@ function fullMatchById() {
   });
   return {
     metadata: { match_id: "m3", started_at: "2026-06-22T10:00:00Z", map: { name: "Ascent" }, queue: { name: "Competitive" } },
-    players: [mk("p1", "Arsh26", "Blue", 5000), mk("pX", "Mate", "Blue", 4000), mk("pY", "Foe", "Red", 3000)],
+    players: [mk("p1", ME.name, "Blue", 5000), mk("pX", "Mate", "Blue", 4000), mk("pY", "Foe", "Red", 3000)],
     teams: [
       { team_id: "Blue", won: true, rounds: { won: 13, lost: 7 } },
       { team_id: "Red", won: false, rounds: { won: 7, lost: 13 } },
@@ -168,7 +171,7 @@ test("le scoreboard affiche le classement par ACS (1er, 2e, …)", async () => {
   T.openProfile(0);
   await T.loadProfile();
   const doc = dom.window.document;
-  // m1 : Arsh26 (score 5000) > Foe (score 3500) -> Arsh26 1er, Foe 2e
+  // m1 : le joueur (score 5000) > Foe (score 3500) -> 1er, Foe 2e
   const positions = [...doc.querySelectorAll("#sb td.pos")].map((e) => e.textContent.trim());
   assert.ok(positions.includes("1er"), "le meilleur ACS est marqué 1er");
   assert.ok(positions.includes("2e"), "le second ACS est marqué 2e");

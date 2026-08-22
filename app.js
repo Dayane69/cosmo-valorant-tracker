@@ -41,6 +41,7 @@ let TIERS = null;                                       // cache nom de palier -
 let TIER_BY_NUM = null;                                 // cache numéro de palier -> {name,color,icon} (lignes de rang du graphe)
 let ELO_TIER_OFFSET = 3;                                // numéro de palier = floor(elo/100) + offset (Iron 1 = palier 3, elo 0)
 const ANIM_BUSY = { Trib: false, Prof: false };
+let RANKS_FILLED = false;               // les rangs de l'accueil ont-ils déjà été chargés
 
 const $ = id => document.getElementById(id);
 const enc = s => encodeURIComponent(s);
@@ -1222,6 +1223,124 @@ async function ensureSquadHistories(){
   return SQUAD_LOADING;
 }
 
+/* --- Records de session -----------------------------------------------------
+   Le « best of » d'une période, calculé sur les sessions déjà découpées. Une
+   session d'une ou deux parties ne peut pas être une meilleure/pire session :
+   l'échantillon serait ridicule, on exige RECORD_MIN_GAMES parties. */
+const RECORD_MIN_GAMES = 3;
+
+// Plus longue série de victoires d'affilée. Elle peut traverser des sessions
+// (c'est bien le but), donc elle se calcule sur les parties, pas sur les sessions.
+function bestStreak(matches){
+  const P=(matches||[]).filter(M=>M && M.me).slice().sort((a,b)=>a.startedMs-b.startedMs);
+  let best=0, cur=0, end=-1;
+  P.forEach((M,i)=>{
+    if(M.result==='w'){ cur++; if(cur>best){ best=cur; end=i; } }
+    else cur=0;
+  });
+  if(best<2) return null;                       // « série » de 1, ça n'existe pas
+  return { n:best, from:P[end-best+1], to:P[end] };
+}
+
+// ctx : { squadIndex, selfKey, minGames }
+function sessionRecords(sessions, ctx){
+  ctx=ctx||{};
+  const minG=ctx.minGames!=null?ctx.minGames:RECORD_MIN_GAMES;
+  const rows=(sessions||[]).map(s=>({
+    s, st:sessionStats(s.matches),
+    mates: ctx.squadIndex ? sessionComposition(s.matches, ctx.squadIndex, ctx.selfKey).mates : [],
+  })).filter(r=>r.st.n>0);
+  if(!rows.length) return [];
+
+  const big=rows.filter(r=>r.st.n>=minG && r.st.index!=null);
+  const top=(list,cmp)=>list.length?list.slice().sort(cmp)[0]:null;
+  const out=[];
+  // value/sub sont évalués ICI, avec la ligne complète {s, st, mates} : le record
+  // produit ne porte que des chaînes prêtes à afficher.
+  const add=(key,label,icon,r,value,sub)=>{
+    if(!r) return;
+    out.push({ key, label, icon, session:r.s, st:r.st,
+      value: typeof value==='function' ? value(r) : value,
+      sub:   typeof sub==='function'   ? sub(r)   : sub });
+  };
+  const when=r=>fmtDay(r.s.startMs);
+  const wl=r=>`${r.st.wins}V-${r.st.losses}D`;
+
+  add('best','Meilleure session','🔥', top(big,(a,b)=>b.st.index-a.st.index),
+      r=>Math.round(r.st.index), r=>`${when(r)} · ${r.st.n} parties · ${wl(r)}`);
+  add('worst','Pire session','💀', top(big,(a,b)=>a.st.index-b.st.index),
+      r=>Math.round(r.st.index), r=>`${when(r)} · ${r.st.n} parties · ${wl(r)}`);
+
+  const rr=rows.filter(r=>r.st.rrNet!=null);
+  const up=top(rr.filter(r=>r.st.rrNet>0),(a,b)=>b.st.rrNet-a.st.rrNet);
+  const dn=top(rr.filter(r=>r.st.rrNet<0),(a,b)=>a.st.rrNet-b.st.rrNet);
+  add('rrup','Plus grosse remontée','📈', up, r=>'+'+r.st.rrNet+' RR', r=>`${when(r)} · ${r.st.n} parties · ${wl(r)}`);
+  add('rrdown','Plus grosse chute','📉', dn, r=>r.st.rrNet+' RR', r=>`${when(r)} · ${r.st.n} parties · ${wl(r)}`);
+
+  add('long','Session la plus longue','⏱', top(rows,(a,b)=>b.st.n-a.st.n || b.s.durationMs-a.s.durationMs),
+      r=>r.st.n+' parties', r=>`${when(r)} · ${fmtDur(r.s.durationMs)} · ${wl(r)}`);
+
+  const team=big.filter(r=>r.mates.length>0);
+  add('team','Meilleure session commune','🤝', top(team,(a,b)=>b.st.index-a.st.index),
+      r=>Math.round(r.st.index), r=>`${when(r)} · avec ${r.mates.map(m=>m.name).join(', ')}`);
+
+  // La série de victoires n'appartient à aucune session en particulier : on la
+  // rattache à celle où elle s'est terminée, pour que le clic mène quelque part.
+  const streak=bestStreak(rows.reduce((a,r)=>a.concat(r.s.matches),[]));
+  if(streak){
+    const host=rows.find(r=>r.s.matches.some(M=>M.id===streak.to.id));
+    if(host) out.push({ key:'streak', label:'Plus longue série', icon:'⚡',
+      value: streak.n+' victoires',
+      sub: `jusqu'au ${fmtDay(streak.to.startedMs)}`
+         + (fmtDay(streak.from.startedMs)!==fmtDay(streak.to.startedMs) ? ` (depuis le ${fmtDay(streak.from.startedMs)})` : ''),
+      session:host.s, st:host.st });
+  }
+  return out;
+}
+
+/* --- Lien de partage d'une session ------------------------------------------
+   Pas de stockage ni de nouvelle fonction serverless : le lien porte QUI et
+   QUAND, et la page recalcule le rapport depuis les mêmes données publiques.
+   Il reste donc toujours cohérent avec le site, et rien n'expire. */
+function shareParams(){
+  try{ return new URLSearchParams(location.search); }catch(e){ return new URLSearchParams(''); }
+}
+function sessionShareURL(s, who){
+  const id=who||STATE;
+  const u=new URL(location.href);
+  u.search=''; u.hash='';
+  u.searchParams.set('s', `${id.name}#${id.tag}`);
+  u.searchParams.set('t', String(s.startMs));
+  u.searchParams.set('g', String(SESSION_GAP_MIN));
+  return u.toString();
+}
+// Cible d'un lien partagé, lue dans l'URL. `g` est borné : une valeur farfelue
+// changerait le découpage et ferait pointer le lien sur une autre session.
+function parseShareTarget(search){
+  const p=typeof search==='string' ? new URLSearchParams(search) : (search||shareParams());
+  const s=p.get('s'), t=p.get('t');
+  if(!s || !t) return null;
+  const i=s.lastIndexOf('#');
+  if(i<1 || i===s.length-1) return null;
+  const ts=Number(t);
+  if(!ts || !isFinite(ts)) return null;
+  const g=parseInt(p.get('g'),10);
+  return { name:s.slice(0,i), tag:s.slice(i+1), ts,
+           gap:(g>=15 && g<=720) ? g : null };
+}
+// Retrouve la session visée. Tolérant : le découpage a pu bouger entre-temps
+// (historique qui s'allonge, coupure différente), on accepte un recouvrement.
+function findSessionAt(sessions, ts){
+  if(!ts) return null;
+  const list=sessions||[];
+  return list.find(x=>x.startMs===ts)
+      || list.find(x=>ts>=x.startMs && ts<=x.endMs)
+      || list.reduce((best,x)=>{
+           const d=Math.abs(x.startMs-ts);
+           return (d<=6*3600000 && (!best || d<Math.abs(best.startMs-ts))) ? x : best;
+         }, null);
+}
+
 // Un changement de roster (pseudo, membre ajouté/retiré) invalide l'index.
 function resetSquadIndex(){
   SQUAD_INDEX=null; SQUAD_LOADING=null; SQUAD_BLOBS_DONE=false; PUUID_MEMBER={};
@@ -1229,6 +1348,7 @@ function resetSquadIndex(){
 
 /* ===================== HOME & PROFIL ===================== */
 async function fillRanks(){
+  RANKS_FILLED = true;
   await ensureTiers();
   const region=REGION();
   ROSTER.forEach(async (m,i)=>{
@@ -1254,6 +1374,15 @@ function showHome(){
   $('leaderboard').hidden = true;
   $('home').hidden = false;
   window.scrollTo(0,0);
+  // On nettoie les paramètres de partage : un rafraîchissement depuis l'accueil
+  // ne doit pas rouvrir le rapport qu'on vient de quitter.
+  SHARE_TARGET=null; SHARE_MISS=false;
+  try{
+    if(location.search && shareParams().get('s') && history.replaceState)
+      history.replaceState(null, '', location.pathname);
+  }catch(e){}
+  // Les rangs de l'accueil ne sont pas chargés quand on arrive par un lien partagé.
+  if(!RANKS_FILLED) fillRanks();
 }
 function status(kind,html){ const s=$('status'); s.className='status show '+kind; s.innerHTML=html; }
 function clearStatus(){ $('status').className='status'; }
@@ -1653,6 +1782,9 @@ const signed=v=>(v>0?'+':'')+v;
 let SESSIONS=[];             // sessions du profil courant (plus récente en premier)
 let SESSIONS_SHOWN=8;
 let SESSIONS_ONLY_COMMON=false;
+let RECORDS_DAYS=0;          // fenêtre des records en jours (0 = tout l'historique)
+let SHARE_TARGET=null;       // session visée par un lien partagé, en attente d'ouverture
+let SHARE_MISS=false;        // le lien pointait sur une session introuvable
 
 function compChip(comp){
   if(!comp) return '';
@@ -1665,17 +1797,19 @@ function compChip(comp){
 function renderSessions(){
   const host=$('sxList'); if(!host) return;
   const selfKey=memberKey(STATE);
+  const miss = SHARE_MISS
+    ? `<div class="sx-miss">Le lien partagé pointe sur une session absente de cet historique. Elle est peut-être trop ancienne, ou la coupure a changé depuis. Les sessions ci-dessous restent accessibles.</div>` : '';
   let list=SESSIONS;
   if(SESSIONS_ONLY_COMMON) list=list.filter(s=>sessionComposition(s.matches, SQUAD_INDEX, selfKey).mates.length>0);
   if(!list.length){
-    host.innerHTML=`<div class="md-empty">${SESSIONS_ONLY_COMMON
+    host.innerHTML=miss+`<div class="md-empty">${SESSIONS_ONLY_COMMON
       ? 'Aucune session classée jouée avec un autre membre de la squad dans cet historique.'
       : 'Aucune partie classée dans l\'historique — les rapports de session ne prennent en compte que le mode classé.'}</div>`;
     const more=$('btnSxMore'); if(more) more.hidden=true;
     return;
   }
   const shown=list.slice(0, SESSIONS_SHOWN);
-  host.innerHTML=shown.map(s=>{
+  host.innerHTML=miss+shown.map(s=>{
     const st=sessionStats(s.matches);
     const comp=sessionComposition(s.matches, SQUAD_INDEX, selfKey);
     const t=tierOf(Math.round(st.index||0));
@@ -1692,6 +1826,74 @@ function renderSessions(){
     more.hidden=list.length<=SESSIONS_SHOWN;
     more.textContent=`Voir plus de sessions (${shown.length}/${list.length})`;
   }
+}
+
+function renderRecords(){
+  const host=$('recList'); if(!host) return;
+  const cut = RECORDS_DAYS ? Date.now() - RECORDS_DAYS*86400000 : 0;
+  const inRange = SESSIONS.filter(s=>s.startMs>=cut);
+  const recs = sessionRecords(inRange, { squadIndex:SQUAD_INDEX, selfKey:memberKey(STATE) });
+  if(!recs.length){
+    host.innerHTML=`<div class="md-empty">Pas encore de quoi établir des records sur cette période — il faut au moins une session de ${RECORD_MIN_GAMES} parties classées.</div>`;
+    return;
+  }
+  host.innerHTML=recs.map(r=>`
+    <button class="rec" type="button" data-sx="${esc(r.session.key)}" title="Voir le rapport de cette session">
+      <span class="rec-ico">${r.icon}</span>
+      <span class="rec-body">
+        <span class="rec-lab">${esc(r.label)}</span>
+        <span class="rec-val">${esc(r.value)}</span>
+        <span class="rec-sub">${esc(r.sub)}</span>
+      </span>
+    </button>`).join('');
+}
+
+/* --- Partage d'une session ------------------------------------------------- */
+async function copyShareLink(url, btn){
+  let ok=false;
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(url); ok=true; }
+  }catch(e){ ok=false; }
+  if(!ok){
+    // Repli (http, vieux navigateurs, permission refusée) : sélection + copie.
+    try{
+      const ta=document.createElement('textarea');
+      ta.value=url; ta.setAttribute('readonly',''); ta.style.position='fixed'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.select();
+      ok=document.execCommand('copy');
+      document.body.removeChild(ta);
+    }catch(e){ ok=false; }
+  }
+  if(btn){
+    const old=btn.textContent;
+    btn.textContent = ok ? '✓ Lien copié' : '⚠ Copie impossible';
+    btn.classList.toggle('done', ok);
+    setTimeout(()=>{ btn.textContent=old; btn.classList.remove('done'); }, 2200);
+  }
+  // Si la copie échoue, le lien reste lisible et sélectionnable dans la modale.
+  return ok;
+}
+
+// Ouvre le profil d'un membre depuis un « pseudo#tag ». Les anciens pseudos sont
+// acceptés : un lien partagé avant un renommage continue de fonctionner.
+function openProfileByKey(name, tag){
+  const k=String(name+'#'+tag).toLowerCase();
+  const i=ROSTER.findIndex(m=>memberKey(m)===k || memberAliases(m).some(a=>memberKey(a)===k));
+  if(i<0) return false;
+  openProfile(i);
+  return true;
+}
+
+// Ouvre la session visée par un lien partagé, une fois les données prêtes.
+function consumeShareTarget(){
+  if(!SHARE_TARGET) return;
+  const k=String(SHARE_TARGET.name+'#'+SHARE_TARGET.tag).toLowerCase();
+  const mine = memberKey(STATE)===k || memberAliases(STATE).some(a=>memberKey(a)===k);
+  if(!mine) return;                       // le profil ouvert n'est pas celui du lien
+  const s=findSessionAt(SESSIONS, SHARE_TARGET.ts);
+  SHARE_TARGET=null;
+  if(s){ SHARE_MISS=false; openSessionReport(s.key); }
+  else { SHARE_MISS=true; renderSessions(); }
 }
 
 // Tuile de bilan. `value` et `sub` peuvent contenir du HTML : c'est à l'appelant
@@ -1730,6 +1932,7 @@ function openSessionReport(key){
     return `<div class="sx-bar ${M.result}" style="height:${h}%" title="${esc(M.map)} · ${esc(M.mode)} · indice ${v}${M.rr&&M.rr.change!=null?' · '+signed(M.rr.change)+' RR':''}"><i>${v}</i></div>`;
   }).join('');
 
+  const shareURL=sessionShareURL(s);
   const squad=sessionSquadReport(s, SQUAD_INDEX, selfKey);
   const common=squad.length>1 ? `
     <div class="md-sec">Rapport commun · ${squad.length} membres COSMO</div>
@@ -1767,6 +1970,10 @@ function openSessionReport(key){
         <div class="scorebadge score-hero" style="--sc:${t.c}">${Math.round(st.index||0)}<span class="out">/100</span></div>
         <div><div class="sx-word">${esc(A.verdict.word)}</div><div class="sx-line">${esc(A.verdict.line)}</div></div>
       </div>
+    </div>
+    <div class="sx-share">
+      <button class="btn" id="sxShareBtn" type="button" data-url="${esc(shareURL)}">🔗 Copier le lien de la session</button>
+      <input class="sx-url" id="sxShareUrl" readonly value="${esc(shareURL)}" aria-label="Lien de la session">
     </div>
     ${mixNote}${partyNote}
 
@@ -1831,8 +2038,12 @@ function refreshSessions(){
   // actuels) : on indexe tout de suite, sans attendre les blobs.
   SQUAD_INDEX=SQUAD_INDEX||{};
   indexSquadFromFullMatches(STATE.allMatches, SQUAD_INDEX);
-  renderSessions();
-  if(!SQUAD_BLOBS_DONE) ensureSquadHistories().then(()=>renderSessions()).catch(()=>{});
+  renderSessions(); renderRecords();
+  // Un lien partagé s'ouvre APRÈS les historiques de la squad : le rapport
+  // commun est justement ce qu'on partage, autant qu'il soit complet.
+  const after=()=>{ renderSessions(); renderRecords(); consumeShareTarget(); };
+  if(!SQUAD_BLOBS_DONE) ensureSquadHistories().then(after).catch(after);
+  else after();
 }
 
 /* ============ DÉTAIL DU CALCUL DE L'INDICE (modale) ============ */
@@ -2824,6 +3035,21 @@ function wireStatic(){
     if(e.target.closest('#sessionModalX')||e.target.classList.contains('modal-back')) closeSessionReport();
   });
   $('btnSxMore')?.addEventListener('click',()=>{ SESSIONS_SHOWN+=8; renderSessions(); });
+  $('recList')?.addEventListener('click',e=>{
+    const r=e.target.closest('[data-sx]'); if(r) openSessionReport(r.dataset.sx);
+  });
+  $('recPeriod')?.addEventListener('click',e=>{
+    const b=e.target.closest('button[data-days]'); if(!b) return;
+    RECORDS_DAYS=+b.dataset.days||0;
+    document.querySelectorAll('#recPeriod button').forEach(x=>x.classList.toggle('on', x===b));
+    renderRecords();
+  });
+  $('sessionModalBody')?.addEventListener('click',e=>{
+    const b=e.target.closest('#sxShareBtn'); if(b) copyShareLink(b.dataset.url, b);
+  });
+  $('sessionModalBody')?.addEventListener('focus',e=>{
+    if(e.target && e.target.id==='sxShareUrl') e.target.select();   // copie manuelle facile
+  }, true);
   $('sxGap')?.addEventListener('change',e=>{ SESSION_GAP_MIN=+e.target.value||120; refreshSessions(); });
   $('sxScope')?.addEventListener('click',e=>{
     const b=e.target.closest('button[data-scope]'); if(!b) return;
@@ -2910,8 +3136,18 @@ async function init(){
   renderRoster();
   wireStatic();
   drawGauge('gaugeTrib');
-  fillRanks();
   registerSW();
+  // Lien de session partagé : on ouvre directement le profil concerné, et le
+  // rapport s'ouvrira dès que les données seront prêtes (cf. refreshSessions).
+  const sh=parseShareTarget();
+  if(sh){
+    SHARE_TARGET=sh;
+    if(sh.gap) SESSION_GAP_MIN=sh.gap;
+    const gapSel=$('sxGap'); if(gapSel) gapSel.value=String(SESSION_GAP_MIN);
+    if(openProfileByKey(sh.name, sh.tag)) return;   // fillRanks est inutile ici
+    SHARE_TARGET=null;                              // joueur inconnu : accueil normal
+  }
+  fillRanks();
 }
 if(typeof document!=='undefined'){
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init);

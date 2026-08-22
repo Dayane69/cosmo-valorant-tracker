@@ -5,7 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>COSMO — Valo Tracker</title>
 <meta name="theme-color" content="#0a0f15">
-<meta name="description" content="Tracker Valorant de la squad COSMO : rangs, indice, tribunal, progression RR.">
+<meta name="description" content="Tracker Valorant de la squad COSMO : rangs, indice, tribunal, progression RR, rapports de session.">
+<!-- Carte d'aperçu (Discord, etc.) quand on partage un rapport de session.
+     Pas d'og:image : l'icône du site est un SVG, que les embeds ne rendent pas. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="COSMO">
+<meta property="og:title" content="COSMO — Valo Tracker">
+<meta property="og:description" content="Rapports de session, indice COSMO et progression RR de la squad.">
+<meta name="twitter:card" content="summary">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icon.svg">
@@ -552,6 +559,29 @@
   .sx-tablewrap td em{font-style:normal;color:var(--dim);font-size:10px}
   .sx-mode{font-family:var(--mono);font-size:9.5px}
 
+  /* ============ RECORDS DE SESSION ============ */
+  .rec-grid,#recList{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px}
+  .rec{display:flex;gap:11px;align-items:center;text-align:left;width:100%;
+    background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px 13px;
+    color:var(--txt);font-family:var(--sans);cursor:pointer;transition:border-color .12s,transform .12s}
+  .rec:hover{border-color:var(--amber);transform:translateY(-1px)}
+  .rec-ico{flex:none;font-size:20px;line-height:1;width:34px;height:34px;border-radius:9px;
+    background:var(--panel);display:grid;place-items:center}
+  .rec-body{min-width:0;display:block}
+  .rec-lab{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--dim)}
+  .rec-val{display:block;font-size:18px;font-weight:800;line-height:1.2;margin-top:2px}
+  .rec-sub{display:block;font-size:11px;color:var(--muted);margin-top:2px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ============ PARTAGE D'UNE SESSION ============ */
+  .sx-share{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
+  .sx-share .btn.done{border-color:var(--win);color:var(--win)}
+  .sx-url{flex:1;min-width:180px;background:var(--bg);border:1px solid var(--line);color:var(--muted);
+    border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:11px}
+  .sx-miss{background:rgba(242,178,52,.09);border:1px solid rgba(242,178,52,.35);border-radius:10px;
+    padding:11px 13px;font-size:12px;color:var(--muted);line-height:1.55;margin-bottom:10px}
+
   /* ==================================================================
      MOBILE / PWA — vérifié sur iPhone 13 (390px) et petits Android (360px)
      Objectifs : zéro débordement horizontal, zones tactiles >= 40px,
@@ -639,6 +669,10 @@
     .sx-head{grid-template-columns:1fr;gap:12px;padding-right:44px}
     .sx-verdict{max-width:none}
     .sx-points b{font-size:12.5px} .sx-points span{font-size:11.5px}
+    /* --- records : une colonne, et le lien de partage sous le bouton --- */
+    #recList{grid-template-columns:1fr}
+    .sx-share{flex-direction:column;align-items:stretch}
+    .sx-url{width:100%}
   }
 
   /* Zones tactiles : sur TOUT appareil tactile (y compris tablette, qui ne
@@ -653,6 +687,8 @@
     .edrow .edrm{width:44px;height:44px}
     .chip{min-height:44px}
     .sx-row{min-height:56px}
+    .rec{min-height:56px}
+    .sx-url{min-height:44px}
   }
 
   @media(max-width:380px){
@@ -763,6 +799,19 @@
         </div>
       </div>
       
+      <!-- RECORDS DE SESSION -->
+      <div class="card full">
+        <h2 class="tabs-header">
+          <span>Records de session <em>clique pour ouvrir la session</em></span>
+          <div class="seg" id="recPeriod" style="margin:0;">
+            <button data-days="30">30 j</button>
+            <button data-days="90">90 j</button>
+            <button data-days="0" class="on">Tout</button>
+          </div>
+        </h2>
+        <div id="recList"></div>
+      </div>
+
       <!-- RAPPORTS DE SESSION -->
       <div class="card full">
         <h2 class="tabs-header">
@@ -910,6 +959,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260822c" defer></script>
+<script src="app.js?v=20260822e" defer></script>
 </body>
 </html>

@@ -11,12 +11,13 @@ import vm from "node:vm";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function load() {
-  const ctx = vm.createContext({ console });
+  const ctx = vm.createContext({ console, URL, URLSearchParams });
   let code = readFileSync(join(root, "app.js"), "utf8");
   code += `\nglobalThis.__x = { buildSessions, sessionStats, sessionFacts, sessionBaseline,
     sessionTrend, sessionComposition, sessionVerdict, analyzeSession, sessionSquadReport,
     bestWorst, matchDuration, durMs, memberKey, BASELINE_MIN, isRanked, rankedOnly, normStored,
     addSquadEntry, indexSquadFromFullMatches, mateMatch,
+    sessionRecords, bestStreak, parseShareTarget, findSessionAt, RECORD_MIN_GAMES,
     setRoster: r => { ROSTER = r; }, setPuuidMap: p => { PUUID_MEMBER = p; },
     getPuuidMap: () => JSON.stringify(PUUID_MEMBER) };`;
   vm.runInContext(code, ctx);
@@ -512,4 +513,146 @@ test("la composition plafonne à 5 : une équipe Valorant n'a pas 8 joueurs", ()
   const c = X.sessionComposition(ms, squad, "moi#eu");
   assert.equal(c.dominant, 5, "plafonné, plutôt que d'afficher un stack impossible");
   assert.equal(c.label, "5-stack");
+});
+
+/* -------------------------------------------------------- records de session */
+
+// Fabrique une session prête à l'emploi à partir de parties chronologiques.
+function sess(startMs, matches) {
+  const list = matches.map((o, i) => match({ ...o, startedMs: startMs + i * 40 * MIN }));
+  return { key: "s" + startMs, startMs, endMs: startMs + list.length * 40 * MIN,
+           durationMs: list.length * 40 * MIN, matches: list };
+}
+const W = (o) => ({ result: "w", ...o }), L = (o) => ({ result: "l", ...o });
+
+test("meilleure et pire session exigent un échantillon minimum", () => {
+  const petite = sess(SAT23, [W({ score100: 99 }), W({ score100: 99 })]);   // 2 parties
+  const vraie = sess(SAT23 - 10 * H, [W({ score100: 60 }), W({ score100: 62 }), L({ score100: 58 })]);
+  const recs = X.sessionRecords([petite, vraie], {});
+  const best = recs.find(r => r.key === "best");
+  assert.ok(best, "il y a bien une meilleure session");
+  assert.equal(best.value, 60, "la session de 2 parties à 99 ne peut pas être un record");
+  assert.ok(X.RECORD_MIN_GAMES >= 3, "le seuil doit rester significatif");
+});
+
+test("meilleure / pire session sont bien départagées par l'indice", () => {
+  const bonne = sess(SAT23, [W({ score100: 85 }), W({ score100: 88 }), W({ score100: 82 })]);
+  const nulle = sess(SAT23 - 20 * H, [L({ score100: 30 }), L({ score100: 28 }), L({ score100: 35 })]);
+  const recs = X.sessionRecords([bonne, nulle], {});
+  assert.equal(recs.find(r => r.key === "best").session.key, bonne.key);
+  assert.equal(recs.find(r => r.key === "worst").session.key, nulle.key);
+});
+
+test("remontée et chute de RR : seuls les signes correspondants sont retenus", () => {
+  const monte = sess(SAT23, [W({ rr: { change: 25 } }), W({ rr: { change: 22 } }), W({ rr: { change: 20 } })]);
+  const descend = sess(SAT23 - 20 * H, [L({ rr: { change: -18 } }), L({ rr: { change: -20 } }), L({ rr: { change: -15 } })]);
+  const recs = X.sessionRecords([monte, descend], {});
+  assert.equal(recs.find(r => r.key === "rrup").value, "+67 RR");
+  assert.equal(recs.find(r => r.key === "rrdown").value, "-53 RR");
+});
+
+test("aucune session positive : pas de record de remontée inventé", () => {
+  const only = sess(SAT23, [L({ rr: { change: -18 } }), L({ rr: { change: -20 } }), L({ rr: { change: -15 } })]);
+  const recs = X.sessionRecords([only], {});
+  assert.equal(recs.find(r => r.key === "rrup"), undefined);
+  assert.ok(recs.find(r => r.key === "rrdown"), "la chute, elle, existe bien");
+});
+
+test("la session la plus longue se départage à la durée en cas d'égalité", () => {
+  const courte = sess(SAT23 - 30 * H, [W(), W(), W()]);
+  const longue = sess(SAT23, [W(), W(), W(), W(), W()]);
+  const recs = X.sessionRecords([courte, longue], {});
+  const rec = recs.find(r => r.key === "long");
+  assert.equal(rec.value, "5 parties");
+  assert.equal(rec.session.key, longue.key);
+});
+
+test("la série de victoires traverse les sessions et se rattache à sa fin", () => {
+  const s1 = sess(SAT23 - 30 * H, [W(), W(), W()]);
+  const s2 = sess(SAT23, [W(), W(), L()]);
+  const recs = X.sessionRecords([s1, s2], {});
+  const st = recs.find(r => r.key === "streak");
+  assert.equal(st.value, "5 victoires", "3 + 2 d'affilée, la défaite finale coupe");
+  assert.equal(st.session.key, s2.key, "rattachée à la session où elle se termine");
+});
+
+test("bestStreak : une victoire isolée n'est pas une série", () => {
+  const one = [match({ result: "w", startedMs: 1 }), match({ result: "l", startedMs: 2 })];
+  assert.equal(X.bestStreak(one), null);
+  const two = [match({ result: "w", startedMs: 1 }), match({ result: "w", startedMs: 2 }), match({ result: "l", startedMs: 3 })];
+  assert.equal(X.bestStreak(two).n, 2);
+});
+
+test("bestStreak remet les parties dans l'ordre avant de compter", () => {
+  const shuffled = [
+    match({ result: "w", startedMs: 3000 }), match({ result: "l", startedMs: 1000 }),
+    match({ result: "w", startedMs: 2000 }),
+  ];
+  assert.equal(X.bestStreak(shuffled).n, 2, "défaite puis 2 victoires");
+});
+
+test("la meilleure session commune ne retient que les sessions à plusieurs", () => {
+  const solo = sess(SAT23, [W({ id: "s1" }), W({ id: "s2" }), W({ id: "s3" })].map(o => ({ ...o, score100: 90 })));
+  const duo = sess(SAT23 - 20 * H, [W({ id: "d1" }), W({ id: "d2" }), W({ id: "d3" })].map(o => ({ ...o, score100: 70 })));
+  const squad = {};
+  duo.matches.forEach(m => { squad[m.id] = [{ key: "gog#eu", name: "Gogemine", tag: "eu", team: m.myTeamId }]; });
+  const recs = X.sessionRecords([solo, duo], { squadIndex: squad, selfKey: "moi#eu" });
+  const team = recs.find(r => r.key === "team");
+  assert.equal(team.session.key, duo.key, "la session solo à 90 n'est pas une session commune");
+  assert.match(team.sub, /Gogemine/);
+});
+
+test("sans historique, aucun record n'est fabriqué", () => {
+  assert.equal(X.sessionRecords([], {}).length, 0);
+  assert.equal(X.sessionRecords(null, {}).length, 0);
+});
+
+/* ------------------------------------------------------ liens de partage */
+
+test("parseShareTarget lit joueur, horodatage et coupure", () => {
+  const t = X.parseShareTarget("?s=Yakuza%232826&t=1783357329127&g=180");
+  assert.equal(t.name, "Yakuza");
+  assert.equal(t.tag, "2826");
+  assert.equal(t.ts, 1783357329127);
+  assert.equal(t.gap, 180);
+});
+
+test("parseShareTarget découpe sur le DERNIER # (pseudo contenant un #)", () => {
+  const t = X.parseShareTarget("?s=" + encodeURIComponent("Mon#Pseudo#2826") + "&t=1000");
+  assert.equal(t.name, "Mon#Pseudo");
+  assert.equal(t.tag, "2826");
+});
+
+test("un lien incomplet ou absurde ne déclenche rien", () => {
+  assert.equal(X.parseShareTarget("?t=1000"), null, "sans joueur");
+  assert.equal(X.parseShareTarget("?s=A%231"), null, "sans horodatage");
+  assert.equal(X.parseShareTarget("?s=sansdiese&t=1000"), null);
+  assert.equal(X.parseShareTarget("?s=A%231&t=zero"), null, "horodatage non numérique");
+  assert.equal(X.parseShareTarget(""), null);
+});
+
+test("une coupure hors bornes est ignorée plutôt que d'être appliquée", () => {
+  // Une coupure farfelue déplacerait les frontières et ferait pointer le lien
+  // sur une autre session que celle partagée.
+  assert.equal(X.parseShareTarget("?s=A%231&t=1000&g=99999").gap, null);
+  assert.equal(X.parseShareTarget("?s=A%231&t=1000&g=1").gap, null);
+  assert.equal(X.parseShareTarget("?s=A%231&t=1000&g=120").gap, 120);
+});
+
+test("findSessionAt retrouve la session par début exact", () => {
+  const a = sess(SAT23, [W(), W()]), b = sess(SAT23 - 20 * H, [W()]);
+  assert.equal(X.findSessionAt([a, b], SAT23).key, a.key);
+});
+
+test("findSessionAt tolère un horodatage TOMBANT DANS la session", () => {
+  const a = sess(SAT23, [W(), W(), W()]);
+  assert.equal(X.findSessionAt([a], SAT23 + 50 * MIN).key, a.key, "au milieu de la session");
+});
+
+test("findSessionAt accepte un léger décalage, mais pas n'importe quoi", () => {
+  const a = sess(SAT23, [W(), W()]);
+  assert.equal(X.findSessionAt([a], SAT23 - 2 * H).key, a.key, "2 h d'écart : toléré");
+  assert.equal(X.findSessionAt([a], SAT23 - 48 * H), null, "2 jours d'écart : refusé");
+  assert.equal(X.findSessionAt([], SAT23), null);
+  assert.equal(X.findSessionAt([a], 0), null);
 });
