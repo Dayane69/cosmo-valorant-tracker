@@ -39,12 +39,23 @@ export default async (req) => {
       headers: { Authorization: key },
     });
     const body = await r.text();
+    // On relaie les en-têtes de quota : sans eux, le navigateur est aveugle et
+    // ne peut ni temporiser correctement, ni expliquer un 429.
+    const passthrough = {};
+    for (const h of ["retry-after", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"]) {
+      const v = r.headers.get(h);
+      if (v) passthrough[h] = v;
+    }
     return new Response(body, {
       status: r.status,
       headers: {
         "content-type": r.headers.get("content-type") || "application/json",
-        "cache-control": "public, max-age=60, s-maxage=120",
+        // Une réponse en erreur ne doit surtout pas être mise en cache.
+        "cache-control": r.ok ? "public, max-age=60, s-maxage=120" : "no-store",
+        ...passthrough,
         ...corsHeaders(origin),
+        // Sans ceci, fetch() ne voit pas les en-têtes ci-dessus en cross-origin.
+        "access-control-expose-headers": Object.keys(passthrough).join(", ") || "content-type",
       },
     });
   } catch (e) {

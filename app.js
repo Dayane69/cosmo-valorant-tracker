@@ -26,6 +26,7 @@ let CURRENT_MODE = 'all';
 const MATCH_DETAILS = {};                               // cache id -> match complet (détail chargé à la demande)
 const DETAIL_PENDING = {};                              // id -> true pendant le chargement du détail
 let SELECTED_IDX = -1;                                  // ligne d'historique actuellement ouverte
+let SELECTED_ID = null;                                 // ...et son match_id, stable à travers un rafraîchissement
 let RR_FULL = [];                                       // série RR complète (blob + live) du profil courant
 let RR_PERIOD = 50;                                     // fenêtre affichée du graphe RR (0 = tout)
 let RR_SEASON = 'all';                                  // filtre saison/acte du graphe RR ('all' = toutes)
@@ -237,10 +238,40 @@ function sc(n){ n=clamp(n);
 }
 
 /* ===================== LOGIQUE MATCHES ===================== */
-async function api(path){
-  const r=await fetch(PROXY(path));
-  if(!r.ok){ const e=new Error('http '+r.status); e.status=r.status; throw e; }
-  return r.json();
+// Statuts qui méritent une nouvelle tentative : 429 = rafale trop rapide,
+// 5xx = hoquet passager d'HenrikDev. Le reste est définitif (404, 400…).
+const RETRYABLE = { 429:1, 500:1, 502:1, 503:1, 504:1 };
+const API_TRIES = 3;
+
+async function api(path, tries){
+  const max = tries || API_TRIES;
+  let wait = 1100;
+  for(let attempt=0; attempt<max; attempt++){
+    let r;
+    try{ r = await fetch(PROXY(path)); }
+    catch(err){                                   // coupure réseau
+      if(attempt === max-1){ const e=new Error('réseau'); e.status=0; throw e; }
+      await sleep(wait); wait*=2; continue;
+    }
+    if(r.ok) return r.json();
+    if(!RETRYABLE[r.status] || attempt === max-1){
+      const e=new Error('http '+r.status); e.status=r.status; throw e;
+    }
+    // HenrikDev indique parfois combien de temps patienter : on l'écoute.
+    const ra = Number(r.headers.get('retry-after'));
+    await sleep(ra > 0 ? Math.min(ra*1000, 10000) : wait);
+    wait *= 2;
+  }
+}
+
+// Message lisible plutôt qu'un « http 429 » brut.
+function apiErrMsg(e){
+  const st = e && e.status;
+  if(st === 429) return "trop de requêtes d'un coup côté API Valorant. Ça se calme tout seul en une minute.";
+  if(st === 404) return "compte introuvable côté Riot (pseudo ou tag incorrect ?).";
+  if(st === 0)   return "pas de réseau.";
+  if(st >= 500)  return "l'API Valorant est en vrac de son côté.";
+  return (e && e.message) || 'erreur inconnue';
 }
 
 // Identifiant / horodatage stables d'un match brut, quel que soit le format
@@ -428,6 +459,104 @@ async function saveAllHistory(){
   SAVE_RUNNING=false;
   return { ok, fail };
 }
+/* ===================== CACHE LOCAL (affichage instantané) =====================
+   On garde dans le navigateur de quoi peindre l'écran AVANT que l'API réponde,
+   puis on rafraîchit systématiquement en arrière-plan (le cache ne remplace
+   jamais un appel : il évite juste l'écran vide).
+
+   Ce qu'on stocke est une projection MINCE. Mesuré sur 20 parties :
+     brut de l'API v4 ......... 4 134 Ko
+     normalisé tel quel .......   972 Ko   (dont 579 de détail par round)
+     projection mince .........     8,9 Ko
+   Stocker le normalisé ferait exploser le quota (~5 Mo) dès le 5e membre ; le
+   détail par round et le scoreboard complet restent donc dehors — ils sont de
+   toute façon rechargeables à la demande. */
+const CACHE_KEY = 'cosmo.cache';
+const CACHE_SCHEMA = 1;          // À INCRÉMENTER dès que la forme change ci-dessous.
+let CACHE = null;
+
+function cacheLoad(){
+  if(CACHE) return CACHE;
+  CACHE = { v:CACHE_SCHEMA, ranks:{}, profiles:{} };
+  try{
+    const raw = localStorage.getItem(CACHE_KEY);
+    if(raw){
+      const d = JSON.parse(raw);
+      // Un cache écrit par une version antérieure n'a pas la même forme :
+      // le relire produirait un affichage cassé. On le jette.
+      if(d && d.v === CACHE_SCHEMA) CACHE = { v:CACHE_SCHEMA, ranks:d.ranks||{}, profiles:d.profiles||{} };
+    }
+  }catch(e){ /* navigation privée, stockage bloqué… : on tourne sans cache */ }
+  return CACHE;
+}
+
+function cacheSave(){
+  if(!CACHE) return false;
+  try{ localStorage.setItem(CACHE_KEY, JSON.stringify(CACHE)); return true; }
+  catch(e){
+    // Quota dépassé : on évince les profils les plus anciens, un par un.
+    const old = Object.keys(CACHE.profiles).sort((a,b)=>(CACHE.profiles[a].ts||0)-(CACHE.profiles[b].ts||0));
+    while(old.length){
+      delete CACHE.profiles[old.shift()];
+      try{ localStorage.setItem(CACHE_KEY, JSON.stringify(CACHE)); return true; }catch(e2){}
+    }
+    return false;   // stockage inutilisable : l'app fonctionne, sans instantané
+  }
+}
+
+// Projection mince d'une partie normalisée. `ctx` permet de reconstruire le
+// détail du calcul de l'indice (qui contient des fonctions, donc non sérialisable).
+function slimMatch(M){
+  const s = M && M.me;
+  return {
+    id:M.id, map:M.map, mode:M.mode, started:M.started, startedMs:M.startedMs,
+    durMs:M.durMs||0, rounds:M.rounds, result:M.result,
+    myScore:M.myScore, oppScore:M.oppScore, forfeit:!!M.forfeit,
+    myTeamId:M.myTeamId, party:M.party||null, rr:M.rr||null, season:M.season||null,
+    me: s ? { k:s.k, d:s.d, a:s.a, hs:s.hs, acs:s.acs, adr:s.adr, dd:s.dd, kd:s.kd,
+              rounds:s.rounds, kast:s.kast==null?null:s.kast, shots:s.shots,
+              name:s.name, tag:s.tag, team:s.team, agent:s.agent, agentId:s.agentId,
+              score100:s.score100, placement:s.placement==null?null:s.placement,
+              ctx:s.ctx||null } : null,
+  };
+}
+
+// Reconstruit une partie utilisable depuis la projection. Même forme qu'une
+// partie compacte du blob : un seul joueur, détail complet chargeable au clic.
+function rehydrateMatch(s){
+  if(!s || !s.id) return null;
+  let me = null;
+  if(s.me){
+    me = Object.assign({}, s.me);
+    delete me.ctx;
+    if(s.me.ctx){ me.detail = perfDetail(me, s.me.ctx); me.ctx = s.me.ctx; }
+    me.score100 = s.me.score100;      // on réaffiche la note telle qu'elle était
+  }
+  return { id:s.id, map:s.map, mode:s.mode, started:s.started, startedMs:s.startedMs,
+    durMs:s.durMs, rounds:s.rounds, result:s.result, myScore:s.myScore, oppScore:s.oppScore,
+    forfeit:s.forfeit, myTeamId:s.myTeamId, party:s.party, rr:s.rr, season:s.season,
+    players:[], lines: me ? [me] : [], facts:null, partial:true, cached:true, me };
+}
+
+function cacheGetProfile(key){
+  const c=cacheLoad(); const p=c.profiles[String(key).toLowerCase()];
+  return (p && Array.isArray(p.matches)) ? p : null;
+}
+function cachePutProfile(key, data){
+  const c=cacheLoad();
+  c.profiles[String(key).toLowerCase()] = {
+    ts: Date.now(), mmr: data.mmr||null,
+    matches: (data.matches||[]).map(slimMatch),
+    rr: data.rr||[],
+  };
+  cacheSave();
+}
+function cacheGetRank(key){ const c=cacheLoad(); return c.ranks[String(key).toLowerCase()]||null; }
+function cachePutRank(key, rank){
+  const c=cacheLoad();
+  c.ranks[String(key).toLowerCase()] = Object.assign({ ts:Date.now() }, rank);
+}
+
 // Caches valorant-api : on ne mémorise QUE en cas de succès, pour qu'un échec
 // transitoire (réseau, blip) ne désactive pas définitivement les icônes.
 
@@ -519,6 +648,10 @@ function applyScores(lines, ctx){
       lobbyN: useLobby ? n : null,
     });
     o.score100 = d.score; o.detail = d;
+    o.ctx = { rounds: ctx.rounds != null ? ctx.rounds : o.rounds, forfeit: !!ctx.forfeit,
+              win: ctx.winByTeam ? ctx.winByTeam[o.team] : undefined,
+              rel: useLobby ? (n - rank[i]) / (n - 1) * 100 : null,
+              rank: useLobby ? rank[i] : null, lobbyN: useLobby ? n : null };
   });
   return lines;
 }
@@ -526,8 +659,9 @@ function applyScores(lines, ctx){
 // Ligne unique (format compact du blob) : pas de contexte de lobby.
 function statline(p,rounds,ctx){
   const o=rawLine(p,rounds);
-  const d=perfDetail(o, Object.assign({rounds}, ctx||{}));
-  o.score100=d.score; o.detail=d;
+  const c=Object.assign({rounds}, ctx||{});
+  const d=perfDetail(o, c);
+  o.score100=d.score; o.detail=d; o.ctx=c;
   return o;
 }
 /* ============ DÉTAIL D'UNE PARTIE (timeline, faits d'armes, duels) ============
@@ -1427,26 +1561,122 @@ function resetSquadIndex(){
   SQUAD_INDEX=null; SQUAD_HIST=null; SQUAD_LOADING=null; SQUAD_BLOBS_DONE=false; PUUID_MEMBER={};
 }
 
+/* ===================== VOYANT DE FRAÎCHEUR =====================
+   Quatre états, dont un seul est ACTIONNABLE (le rouge). Une donnée vieille de
+   3 minutes n'est pas fausse : elle mérite de l'orange, pas une alarme. */
+const FRESH = {
+  home:    { state:'idle', ts:0, err:'' },
+  profile: { state:'idle', ts:0, err:'' },
+};
+const FRESH_LABEL = { idle:'—', cached:'en cache', loading:'mise à jour…', ok:'à jour', error:'échec · réessayer' };
+
+function freshAge(ts){
+  if(!ts) return '';
+  const s=Math.max(0, Math.round((Date.now()-ts)/1000));
+  if(s<45) return "à l'instant";
+  const m=Math.round(s/60);
+  if(m<60) return `il y a ${m} min`;
+  const h=Math.round(m/60);
+  return h<24 ? `il y a ${h} h` : `il y a ${Math.round(h/24)} j`;
+}
+
+function setFresh(scope, state, extra){
+  const f=FRESH[scope]; if(!f) return;
+  f.state=state;
+  if(extra && extra.ts) f.ts=extra.ts;
+  f.err=(extra && extra.err) || '';
+  renderFresh();
+}
+
+function renderFresh(){
+  ['home','profile'].forEach(scope=>{
+    const el=$('fresh'+scope[0].toUpperCase()+scope.slice(1));
+    if(!el) return;
+    const f=FRESH[scope];
+    if(f.state==='idle'){ el.hidden=true; return; }
+    el.hidden=false;
+    el.className='fresh '+f.state;
+    const age=freshAge(f.ts);
+    let lbl=FRESH_LABEL[f.state];
+    if(f.state==='ok' && age && age!=="à l'instant") lbl=age;
+    if(f.state==='cached') lbl=age ? 'en cache · '+age : 'en cache';
+    el.innerHTML=`<span class="fdot"></span><span class="flbl">${esc(lbl)}</span>`;
+    el.title = f.state==='error'
+      ? `Dernier rafraîchissement échoué : ${f.err}. Clique pour réessayer.`
+      : (f.state==='loading' ? 'Mise à jour en cours…'
+        : `Données ${f.state==='ok'?'à jour':'affichées depuis le cache'}${age?' ('+age+')':''}. Clique pour rafraîchir.`);
+  });
+}
+// L'âge doit vieillir tout seul, sinon « à l'instant » reste affiché 20 minutes.
+// Le tic s'arrête dès que l'onglet passe en arrière-plan : inutile de réveiller
+// un téléphone pour rafraîchir un libellé que personne ne regarde.
+let FRESH_TIMER=null;
+function freshTick(){
+  FRESH_TIMER=null;
+  if(typeof document!=='undefined' && document.hidden) return;   // reprendra au retour
+  renderFresh();
+  startFreshTicker();
+}
+function startFreshTicker(){
+  if(FRESH_TIMER || typeof setTimeout!=='function') return;
+  if(typeof document!=='undefined' && document.hidden) return;
+  FRESH_TIMER=setTimeout(freshTick, 30000);
+  // Sous Node (tests), un timer en attente retiendrait le processus.
+  if(FRESH_TIMER && typeof FRESH_TIMER.unref==='function') FRESH_TIMER.unref();
+}
+function stopFreshTicker(){
+  if(FRESH_TIMER && typeof clearTimeout==='function') clearTimeout(FRESH_TIMER);
+  FRESH_TIMER=null;
+}
+
 /* ===================== HOME & PROFIL ===================== */
+// Peint les rangs depuis le cache (instantané), puis rafraîchit toujours, par
+// paquets : 8 appels HenrikDev simultanés, c'est la rafale qui sort des 429.
+const RANK_POOL = 3;
+
+function paintRank(i, r){
+  const el=$('rank-'+i); if(!el || !r) return;
+  if(!r.tier){ el.textContent='non classé'; return; }
+  const rrTxt=r.rr!=null?' · '+r.rr+' RR':'';
+  el.innerHTML=`${r.icon?`<img class="rankicon" src="${esc(r.icon)}" alt="${esc(r.tier)}" loading="lazy">`:''}<span>${esc(r.tier)}${rrTxt}</span>`;
+}
+
 async function fillRanks(){
   RANKS_FILLED = true;
+  // 1) Instantané : ce qu'on savait la dernière fois.
+  let newest=0;
+  ROSTER.forEach((m,i)=>{
+    const c=cacheGetRank(memberKey(m));
+    const el=$('rank-'+i);
+    if(c){ paintRank(i,c); newest=Math.max(newest,c.ts||0); }
+    else if(el) el.textContent='rang…';
+  });
+  setFresh('home', newest?'cached':'loading', { ts:newest });
+
   await ensureTiers();
   const region=REGION();
-  ROSTER.forEach(async (m,i)=>{
-    const el=$('rank-'+i); if(el) el.textContent='rang…';
+  setFresh('home','loading',{ ts:newest });
+
+  // 2) Rafraîchissement systématique, en paquets.
+  let failed=0, lastErr=null;
+  await pooled(ROSTER, RANK_POOL, async (m, )=>{
+    const i=ROSTER.indexOf(m);
     try{
-      const r=await fetch(PROXY(`/valorant/v3/mmr/${region}/pc/${enc(m.name)}/${enc(m.tag)}`));
-      if(!r.ok){ if(el) el.textContent='rang n/c'; return; }
-      const d=(await r.json()).data||{}; const cur=d.current||d.current_data||{};
-      const tier=(cur.tier&&cur.tier.name)||cur.currenttierpatched||'';
-      const rr=cur.rr!=null?cur.rr:cur.ranking_in_tier;
-      if(!el) return;
-      if(!tier){ el.textContent='non classé'; return; }
-      const icon=rankIcon(cur,tier);
-      const rrTxt=rr!=null?' · '+rr+' RR':'';
-      el.innerHTML=`${icon?`<img class="rankicon" src="${esc(icon)}" alt="${esc(tier)}" loading="lazy">`:''}<span>${esc(tier)}${rrTxt}</span>`;
-    }catch(e){ if(el) el.textContent='rang n/c'; }
+      const d=(await api(`/valorant/v3/mmr/${region}/pc/${enc(m.name)}/${enc(m.tag)}`)).data||{};
+      const cur=d.current||d.current_data||{};
+      const rank={ tier:(cur.tier&&cur.tier.name)||cur.currenttierpatched||'',
+                   rr:(cur.rr!=null?cur.rr:cur.ranking_in_tier), icon:rankIcon(cur,(cur.tier&&cur.tier.name)||cur.currenttierpatched||'') };
+      cachePutRank(memberKey(m), rank);
+      paintRank(i, rank);
+    }catch(e){
+      failed++; lastErr=e;
+      // On garde la valeur en cache à l'écran : mieux qu'un « rang n/c ».
+      if(!cacheGetRank(memberKey(m))){ const el=$('rank-'+i); if(el) el.textContent='rang n/c'; }
+    }
   });
+  cacheSave();
+  if(failed) setFresh('home','error',{ ts:newest||Date.now(), err:apiErrMsg(lastErr)+` (${failed}/${ROSTER.length})` });
+  else setFresh('home','ok',{ ts:Date.now() });
 }
 function toggleSheet(){ $('sheet').hidden=!$('sheet').hidden; }
 function showHome(){
@@ -1826,8 +2056,12 @@ function renderList(){
     </div>`;
   }).join('');
   
-  // Selection auto du premier element filtré si existant
-  if(filtered.length > 0) showMatch(STATE.matches.indexOf(filtered[0]));
+  // On garde la partie ouverte si elle est toujours là : pendant un
+  // rafraîchissement en arrière-plan, le scoreboard ne doit pas sauter.
+  if(filtered.length > 0){
+    const keep = SELECTED_ID ? filtered.find(M=>M.id===SELECTED_ID) : null;
+    showMatch(STATE.matches.indexOf(keep || filtered[0]));
+  }
 }
 
 // Ajoute un dégradé sur les conteneurs qui débordent vraiment horizontalement,
@@ -2353,7 +2587,7 @@ function showMatch(i){
   document.querySelectorAll('.mrow').forEach(el=>el.classList.toggle('sel', +el.dataset.idx === i));
   const M=STATE.matches[i];
   if(!M) return;
-  SELECTED_IDX=i;
+  SELECTED_IDX=i; SELECTED_ID=M.id||null;
   // Pour une partie du blob (compacte), on normalise le détail complet (s'il est
   // chargé) selon le profil courant, sinon on garde la version compacte.
   const rawDetail=(M.partial && M.id && MATCH_DETAILS[M.id]) ? MATCH_DETAILS[M.id] : null;
@@ -2430,6 +2664,7 @@ function openProfile(idx){
   if(!m) return;
   STATE={puuid:null,allMatches:[],matches:[],name:m.name,tag:m.tag,alias:m.alias||null};
   PROFILE_SHOWN = FRESH_SIZE;
+  SELECTED_IDX=-1; SELECTED_ID=null;
 
   const bustSrc = esc(m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`); // bustportrait.png n'existe pas (404) chez valorant-api
 
@@ -2439,7 +2674,7 @@ function openProfile(idx){
       <div class="mg">${esc(m.agent.slice(0,2))}</div>
     </div>
     <div><div class="eb" style="color:${esc(m.color)}">${esc(m.agent)} · ${esc(m.role)}</div><h1>${esc(m.name)}<b>#${esc(m.tag)}</b></h1></div>
-    <div class="ptools"><button class="btn refresh">Rafraîchir</button></div>`;
+    <div class="ptools"><button class="fresh" id="freshProfile" type="button" hidden></button><button class="btn refresh">Rafraîchir</button></div>`;
 
   const bust=$('phead').querySelector('.pbust img');
   if(bust){const pb=bust.closest('.pbust');const f=()=>{bust.style.display='none';if(pb)pb.classList.add('noimg');};bust.addEventListener('error',f);if(bust.complete&&bust.naturalWidth===0)f();}
@@ -2447,12 +2682,68 @@ function openProfile(idx){
 
   CURRENT_MODE = 'all';
   document.querySelectorAll('#modeTabs button').forEach(x => x.classList.toggle('on', x.dataset.mode === 'all'));
+  renderFresh();   // le voyant vient d'être recréé avec le phead
   loadProfile();
 }
 
+// Peint tout le profil depuis l'état courant, qu'il vienne du cache ou de l'API.
+function paintProfile(mmr){
+  const scored=STATE.matches.slice(0,8).filter(M=>M.me);
+  const overall=scored.length?Math.round(scored.reduce((s,M)=>s+M.me.score100,0)/scored.length):0;
+  ELO_TIER_OFFSET = computeEloTierOffset(RR_FULL);   // aligne les paliers sur les vrais rangs
+  populateSeasonFilter();
+  populateStatsSeasonFilter();
+  populateCompareFilter();
+  renderRank(mmr, overall); renderCurvePeriod(); renderPeakActs(); refreshSessions();
+  if(STATE.matches.length){
+    const s=STATE.matches[0].me;
+    if(s){
+      const tc=tierOf(s.score100);
+      $('vcard').style.setProperty('--sc', tc.c);
+      $('verdict').innerHTML = `
+       <div class="vh-grid">
+         <div class="vh-score"><div class="scorebadge score-hero flair-${flair(s.kd)} sd" id="heroScore" title="Voir le détail du calcul" style="--sc:${tc.c}">${s.score100}<span class="out">/100</span>${flairHTML(flair(s.kd))}</div><div class="sd-cta mono">détail du calcul</div></div>
+         <div class="vh-body">
+           <div class="vh-top"><span class="reschip ${STATE.matches[0].result}">${STATE.matches[0].result==='w'?'VICTOIRE':'DÉFAITE'}</span>
+             <span class="map">${esc(STATE.matches[0].map)}</span><span class="mode">${esc(STATE.matches[0].mode)}</span></div>
+           <div class="vh-line">${esc(s.agent)} · <b>${s.k}/${s.d}/${s.a}</b> · ${s.acs} ACS · ${s.hs}% HS</div>
+         </div>
+       </div>`;
+    }
+    renderList();
+  } else {
+    $('verdict').innerHTML='<div class="vh-line">Aucun match récent.</div>';
+  }
+  updateMoreBtn();
+}
+
+/* Charge un profil en deux temps :
+   1. peinture IMMÉDIATE depuis le cache local (aucun écran d'attente) ;
+   2. rafraîchissement systématique en arrière-plan — on ne saute jamais l'appel,
+      pour qu'une partie qui vient de finir apparaisse tout de suite.
+   Si le rafraîchissement échoue (429, réseau) et qu'on avait du cache à l'écran,
+   on GARDE l'affichage et on le signale : une erreur ne doit pas vider la page. */
 async function loadProfile(){
-  $('app').hidden=true; status('load','Récupération des données HenrikDev…');
   const region=REGION(), n=enc(STATE.name), t=enc(STATE.tag);
+  const key=memberKey(STATE);
+  const cached=cacheGetProfile(key);
+  let painted=false;
+
+  if(cached && cached.matches.length){
+    try{
+      STATE.puuid=cached.puuid||null;
+      STATE.allMatches=cached.matches.map(rehydrateMatch).filter(Boolean);
+      PROFILE_SHOWN=Math.min(FRESH_SIZE, STATE.allMatches.length);
+      STATE.matches=STATE.allMatches.slice(0, PROFILE_SHOWN);
+      RR_FULL=cached.rr||[];
+      paintProfile(cached.mmr||{tier:'',rr:null,elo:null,peak:'',icon:null});
+      clearStatus(); $('app').hidden=false;
+      painted=true;
+    }catch(e){ painted=false; }   // cache douteux : on retombe sur le chargement normal
+  }
+  if(!painted){ $('app').hidden=true; status('load','Récupération des données HenrikDev…'); }
+  setFresh('profile','loading',{ ts: painted ? cached.ts : 0 });
+
   try{
     const acc=await api(`/valorant/v2/account/${n}/${t}`);
     STATE.puuid=acc.data&&acc.data.puuid;
@@ -2463,6 +2754,10 @@ async function loadProfile(){
       fetchHistoriqueAll(STATE),                                              // historique matchs accumulé (blob + anciens pseudos)
       fetchRRHistoryAll(STATE)                                                // progression RR accumulée (blob + anciens pseudos)
     ]);
+    // Si les trois appels HenrikDev ont échoué, il n'y a rien de neuf à montrer.
+    const allDown = [mmrR,histR,matchR].every(r=>r.status==='rejected');
+    if(allDown) throw (matchR.reason || histR.reason || mmrR.reason || new Error('indisponible'));
+
     // Caches médias : têtes d'agents (scoreboard), icônes de rang et fonds de map
     await Promise.all([ensureTiers(), ensureAgents(), ensureMaps()]);
 
@@ -2471,6 +2766,7 @@ async function loadProfile(){
       const tierName=(cur.tier&&cur.tier.name)||cur.currenttierpatched||'';
       mmr={tier:tierName, rr:(cur.rr!=null?cur.rr:cur.ranking_in_tier), elo:cur.elo, icon:rankIcon(cur,tierName),
            peak:(d.peak&&d.peak.tier&&d.peak.tier.name)||(d.highest_rank&&d.highest_rank.patched_tier)||''}; }
+    else if(cached && cached.mmr) mmr=cached.mmr;   // le rang seul a échoué : on garde le dernier connu
 
     // Série RR = live mmr-history + blob accumulé (long terme), fusionnés par match_id/date.
     let liveHist=[]; if(histR.status==='fulfilled'){ const d=histR.value.data; liveHist=(d&&d.history)||d||[]; }
@@ -2486,42 +2782,30 @@ async function loadProfile(){
     STATE.allMatches.forEach(M=>{ if(M&&M.id&&rrIdx[M.id]){ M.rr=rrIdx[M.id]; M.season=rrIdx[M.id].season; } });
     PROFILE_SHOWN=Math.min(FRESH_SIZE, STATE.allMatches.length);
     STATE.matches=STATE.allMatches.slice(0, PROFILE_SHOWN);
-
-    // L'indice COSMO général reste sur les 8 dernières
-    const scored=STATE.matches.slice(0,8).filter(M=>M.me);
-    const overall=scored.length?Math.round(scored.reduce((s,M)=>s+M.me.score100,0)/scored.length):0;
-    
     RR_FULL = rrSeries;
-    ELO_TIER_OFFSET = computeEloTierOffset(rrSeries);   // aligne les lignes de paliers sur les vrais rangs
-    populateSeasonFilter();
-    populateStatsSeasonFilter();
-    populateCompareFilter();
-    renderRank(mmr,overall); renderCurvePeriod(); renderPeakActs(); refreshSessions();
-    if(STATE.matches.length){ 
-       const s=STATE.matches[0].me;
-       if(s){
-         const tc=tierOf(s.score100);
-         $('vcard').style.setProperty('--sc', tc.c);
-         $('verdict').innerHTML = `
-          <div class="vh-grid">
-            <div class="vh-score"><div class="scorebadge score-hero flair-${flair(s.kd)} sd" id="heroScore" title="Voir le détail du calcul" style="--sc:${tc.c}">${s.score100}<span class="out">/100</span>${flairHTML(flair(s.kd))}</div><div class="sd-cta mono">détail du calcul</div></div>
-            <div class="vh-body">
-              <div class="vh-top"><span class="reschip ${STATE.matches[0].result}">${STATE.matches[0].result==='w'?'VICTOIRE':'DÉFAITE'}</span>
-                <span class="map">${esc(STATE.matches[0].map)}</span><span class="mode">${esc(STATE.matches[0].mode)}</span></div>
-              <div class="vh-line">${esc(s.agent)} · <b>${s.k}/${s.d}/${s.a}</b> · ${s.acs} ACS · ${s.hs}% HS</div>
-            </div>
-          </div>`;
-       }
-       renderList();
-    } else {
-       $('verdict').innerHTML='<div class="vh-line">Aucun match récent.</div>';
-    }
+
+    paintProfile(mmr);
     clearStatus(); $('app').hidden=false;
-    updateMoreBtn();
-    // Fait grossir le blob de ce joueur en arrière-plan (réparti les écritures).
-    saveHistorique(STATE.name, STATE.tag, region);
+    setFresh('profile','ok',{ ts:Date.now() });
+
+    // Cache : de quoi repeindre cet écran instantanément la prochaine fois.
+    try{
+      cachePutProfile(key, { mmr, matches:STATE.allMatches, rr:rrSeries });
+      const c=cacheLoad(); if(c.profiles[key]) { c.profiles[key].puuid=STATE.puuid; cacheSave(); }
+    }catch(e){}
+
+    // Fait grossir le blob de ce joueur, mais PLUS TARD : lancé tout de suite,
+    // il s'ajouterait à la rafale d'appels qu'on vient de faire.
+    const who={name:STATE.name, tag:STATE.tag};
+    setTimeout(()=>{ if(memberKey(STATE)===memberKey(who)) saveHistorique(who.name, who.tag, region); }, 5000);
   }catch(e){
-    status('err','<b>Erreur API :</b> '+(e.message||'network'));
+    if(painted){
+      // On garde ce qui est à l'écran : le voyant dit que c'est périmé.
+      setFresh('profile','error',{ ts:cached.ts, err:apiErrMsg(e) });
+    }else{
+      setFresh('profile','error',{ ts:0, err:apiErrMsg(e) });
+      status('err','<b>Erreur API :</b> '+apiErrMsg(e));
+    }
   }
 }
 
@@ -3279,6 +3563,7 @@ function wireStatic(){
   $('btnLeaderboard')?.addEventListener('click',loadLeaderboard);
   
   $('roster').addEventListener('click',e=>{const c=e.target.closest('.agentcard');if(c)openProfile(+c.dataset.idx);});
+  $('freshHome')?.addEventListener('click', ()=>{ if(FRESH.home.state!=='loading') fillRanks(); });
   $('alerts')?.addEventListener('click',e=>{
     const b=e.target.closest('[data-alert-member]');
     if(b) openAlert(b.dataset.alertMember, b.dataset.alertTs);
@@ -3338,7 +3623,10 @@ function wireStatic(){
     else renderSessions();
   });
   document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeScoreDetail(); closeMatchFacts(); closeSessionReport(); } });
-  $('phead').addEventListener('click',e=>{if(e.target.closest('.refresh'))loadProfile();});
+  $('phead').addEventListener('click',e=>{
+    if(e.target.closest('.refresh')){ loadProfile(); return; }
+    if(e.target.closest('#freshProfile') && FRESH.profile.state!=='loading') loadProfile();
+  });
   $('btnMore')?.addEventListener('click', loadMoreMatches);
 
   // Filtres (Onglets des Modes)
@@ -3414,6 +3702,10 @@ async function init(){
   wireStatic();
   drawGauge('gaugeTrib');
   registerSW();
+  startFreshTicker();
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.hidden) stopFreshTicker(); else { renderFresh(); startFreshTicker(); }
+  });
   // Lien de session partagé : on ouvre directement le profil concerné, et le
   // rapport s'ouvrira dès que les données seront prêtes (cf. refreshSessions).
   const sh=parseShareTarget();

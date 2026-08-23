@@ -2,7 +2,7 @@
 // Vérifie : init sans erreur, profil qui s'ouvre, fusion dédoublonnée par
 // matchid, et tribunal qui reste ranked-only après l'ajout de l'historique.
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -117,9 +117,15 @@ function makeFetch() {
   };
 }
 
+// Chaque boot() crée un DOM ; sans fermeture, leurs timers retiennent le
+// processus de test à la fin de la suite.
+const DOMS = [];
+after(() => DOMS.forEach(d => { try { d.window.close(); } catch (e) {} }));
+
 async function boot() {
   const html = readFileSync(join(root, "index.html"), "utf8");
   const dom = new JSDOM(html, { runScripts: "outside-only", url: "https://cosmo-valo.netlify.app/" });
+  DOMS.push(dom);
   const ctx = dom.getInternalVMContext();
   dom.window.scrollTo = () => {};
   dom.window.fetch = makeFetch();
