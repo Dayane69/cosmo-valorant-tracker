@@ -560,6 +560,22 @@
   .sx-tablewrap td em{font-style:normal;color:var(--dim);font-size:10px}
   .sx-mode{font-family:var(--mono);font-size:9.5px}
 
+  /* ============ ALERTES DE SESSION (ACCUEIL) ============ */
+  .alerts{display:grid;gap:8px;margin:0 auto 20px;max-width:820px}
+  .alert{display:grid;grid-template-columns:auto 1fr auto;gap:11px;align-items:center;width:100%;
+    text-align:left;background:var(--panel2);border:1px solid var(--line);border-left-width:3px;
+    border-radius:12px;padding:11px 14px;color:var(--txt);font-family:var(--sans);font-size:13px;
+    line-height:1.5;cursor:pointer;transition:border-color .12s,transform .12s}
+  .alert:hover{transform:translateY(-1px)}
+  .alert.warn{border-left-color:var(--amber)} .alert.warn:hover{border-color:var(--amber)}
+  .alert.bad{border-left-color:var(--loss)}   .alert.bad:hover{border-color:var(--loss)}
+  .alert.good{border-left-color:var(--win)}   .alert.good:hover{border-color:var(--win)}
+  .alert-ico{font-size:17px;line-height:1}
+  .alert-body{min-width:0;color:var(--muted)}
+  .alert-body b{color:var(--txt)}
+  .alert-cta{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--dim);white-space:nowrap}
+
   /* ============ RECORDS DE SESSION ============ */
   .rec-grid,#recList{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px}
   .rec{display:flex;gap:11px;align-items:center;text-align:left;width:100%;
@@ -670,6 +686,10 @@
     .sx-head{grid-template-columns:1fr;gap:12px;padding-right:44px}
     .sx-verdict{max-width:none}
     .sx-points b{font-size:12.5px} .sx-points span{font-size:11.5px}
+    /* --- alertes : la mention « voir la session » passe sous le texte --- */
+    .alert{grid-template-columns:auto 1fr;gap:9px;padding:11px 12px;font-size:12.5px}
+    .alert-cta{grid-column:2;margin-top:2px}
+
     /* --- records : une colonne, et le lien de partage sous le bouton --- */
     #recList{grid-template-columns:1fr}
     .sx-share{flex-direction:column;align-items:stretch}
@@ -689,6 +709,7 @@
     .chip{min-height:44px}
     .sx-row{min-height:56px}
     .rec{min-height:56px}
+    .alert{min-height:56px}
     .sx-url{min-height:44px}
   }
 
@@ -746,6 +767,8 @@
         <div class="secnote" id="edStatus">Les modifs sont partagées (stockées côté serveur) et remplacent roster.json. Laisse « uuid agent » vide et mets une URL GIF pour un membre custom. <b>Anciens pseudos</b> : si quelqu'un a changé de nom Riot, mets son ancien <i>Pseudo#tag</i> ici — son historique et surtout sa <b>progression RR</b> d'avant le changement sont stockés sous cet ancien nom et seraient perdus sinon.</div>
       </div>
     </div>
+    <!-- Alertes de session : remplies par loadHomeAlerts() (app.js), depuis les blobs. -->
+    <div class="alerts" id="alerts" hidden></div>
     <!-- Cartes générées dynamiquement depuis roster.json par renderRoster() (app.js) -->
     <div class="roster" id="roster"></div>
   </div>
@@ -861,7 +884,7 @@
       <div>
         <div class="eyebrow" style="color:var(--unlucky)">COSMO Tribunal</div>
         <h1 style="margin:8px 0 2px;font-size:30px;font-weight:900;letter-spacing:-.02em;text-transform:uppercase">Unlucky <span style="color:var(--dim);font-weight:600">or</span> Bad</h1>
-        <div class="tag" style="font-family:var(--mono);font-size:12.5px;color:var(--muted)">Analyse de la team sur les dernières parties classées</div>
+        <div class="tag" style="font-family:var(--mono);font-size:12.5px;color:var(--muted)">L'aiguille, c'est ta perf. Le verdict croise ta perf ET tes résultats.</div>
       </div>
     </div>
     
@@ -958,6 +981,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260822f" defer></script>
+<script src="app.js?v=20260822g" defer></script>
 </body>
 </html>

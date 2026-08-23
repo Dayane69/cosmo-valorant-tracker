@@ -1158,6 +1158,7 @@ function sessionSquadReport(session, squadIndex, selfKey, selfInfo){
    Le puuid, stable à travers un changement de pseudo, sert de pont entre les
    deux : appris en 1 ou 2, il rattache les entrées dont le nom a changé. */
 let SQUAD_INDEX = null;      // match_id -> [{key,name,tag,color,team,M?}]
+let SQUAD_HIST = null;       // clé roster -> ses parties normalisées (depuis les blobs)
 let SQUAD_LOADING = null;
 let SQUAD_BLOBS_DONE = false;
 let PUUID_MEMBER = {};       // puuid -> clé roster (survit à un changement de pseudo)
@@ -1206,13 +1207,21 @@ async function ensureSquadHistories(){
   if(SQUAD_LOADING) return SQUAD_LOADING;
   SQUAD_LOADING=(async()=>{
     const idx = SQUAD_INDEX || (SQUAD_INDEX = {});
-    const lists=await Promise.all(ROSTER.map(m=>fetchHistoriqueAll(m).catch(()=>[])));
+    const hist = SQUAD_HIST || (SQUAD_HIST = {});
+    const [lists, rrLists] = await Promise.all([
+      Promise.all(ROSTER.map(m=>fetchHistoriqueAll(m).catch(()=>[]))),
+      Promise.all(ROSTER.map(m=>fetchRRHistoryAll(m).catch(()=>[]))),
+    ]);
     ROSTER.forEach((m,i)=>{
       const key=memberKey(m), target={ puuid:null, name:m.name, tag:m.tag };
+      const rrIdx=rrIndexFromSeries(rrLists[i]||[]);
+      hist[key]=[];
       (lists[i]||[]).forEach(raw=>{
         let M=null;
         try{ M=normalizeAny(raw, target); }catch(e){ M=null; }
         if(!M || !M.id) return;
+        if(rrIdx[M.id]){ M.rr=rrIdx[M.id]; M.season=rrIdx[M.id].season; }
+        hist[key].push(M);
         const pu=M.players && M.players[0] && M.players[0].puuid;
         if(pu) PUUID_MEMBER[pu]=key;
         addSquadEntry(idx, M.id, { key, name:m.name, tag:m.tag, color:m.color||'', team:M.myTeamId, M });
@@ -1301,6 +1310,75 @@ function sessionRecords(sessions, ctx){
   return out;
 }
 
+/* --- Alertes de session (accueil) -------------------------------------------
+   Un bandeau discret quand une session récente mérite qu'on en parle : surtout
+   la session trop longue qui part en vrille, mais aussi les gros mouvements de
+   RR — pour que le bandeau ne soit pas qu'un rabat-joie.
+
+   Source : les blobs d'historique uniquement (aucun appel HenrikDev sur
+   l'accueil). Conséquence assumée : une session jouée ce soir n'apparaît
+   qu'une fois le blob rafraîchi (cron de 04:00 UTC, ou ouverture du profil). */
+const ALERT_DAYS = 3;          // on ne parle que des sessions récentes
+const ALERT_MIN_GAMES = 6;     // « session qui dépasse 6 parties »
+const ALERT_TILT = -8;         // baisse d'indice entre les deux moitiés
+const ALERT_RR = 40;           // mouvement de RR jugé notable
+const ALERT_MAX = 3;           // au-delà, ce n'est plus un bandeau mais une liste
+
+const DAY_PART = h => h<5 ? 'nuit' : (h<12 ? 'matin' : (h<18 ? 'après-midi' : 'soir'));
+// « hier soir », « ce matin », « il y a 3 jours » — jamais une date brute.
+function relDay(ms, nowMs){
+  const d=new Date(ms), now=new Date(nowMs||Date.now());
+  const day=x=>new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff=Math.round((day(now)-day(d))/86400000);
+  const p=DAY_PART(d.getHours());
+  if(diff<=0) return p==='nuit' ? 'cette nuit' : (p==='après-midi' ? 'cet après-midi' : 'ce '+p);
+  if(diff===1) return p==='nuit' ? 'la nuit dernière' : 'hier '+p;
+  return `il y a ${diff} jours`;
+}
+
+// perMember : [{ member, matches }] (parties normalisées, tous modes).
+function sessionAlerts(perMember, opts){
+  opts=opts||{};
+  const now=opts.now||Date.now();
+  const since=now - (opts.days||ALERT_DAYS)*86400000;
+  const out=[];
+  (perMember||[]).forEach(entry=>{
+    if(!entry || !entry.member) return;
+    buildSessions(rankedOnly(entry.matches), opts.gapMs).forEach(s=>{
+      if(s.endMs < since || s.startMs > now) return;
+      const st=sessionStats(s.matches), tr=sessionTrend(s.matches);
+      const base={ member:entry.member, session:s, st, trend:tr, when:relDay(s.startMs, now) };
+
+      if(st.n>=ALERT_MIN_GAMES && tr && tr.delta<=ALERT_TILT){
+        const tail=tr.n-Math.ceil(tr.n/2);
+        out.push({ ...base, kind:'tilt', tone:'warn', icon:'📉',
+          severity: 100 + Math.abs(tr.delta),
+          text:`${st.n} parties d'affilée ${base.when} — les ${tail} dernières bien en dessous (indice ${tr.first} → ${tr.last}).` });
+      }
+      if(st.rrNet!=null && st.rrNet<=-ALERT_RR){
+        out.push({ ...base, kind:'rrdrop', tone:'bad', icon:'🩸',
+          severity: 60 + Math.abs(st.rrNet),
+          text:`${st.rrNet} RR ${base.when} en ${st.n} partie${st.n>1?'s':''} (${st.wins}V-${st.losses}D).` });
+      }
+      if(st.rrNet!=null && st.rrNet>=ALERT_RR && (!tr || tr.delta>=0)){
+        out.push({ ...base, kind:'hot', tone:'good', icon:'🚀',
+          severity: 50 + st.rrNet,
+          text:`+${st.rrNet} RR ${base.when} en ${st.n} partie${st.n>1?'s':''} (${st.wins}V-${st.losses}D).` });
+      }
+    });
+  });
+  // Une seule alerte par membre : la plus forte. Sinon un seul joueur en
+  // mauvaise passe monopolise le bandeau.
+  const best={};
+  out.forEach(a=>{
+    const k=memberKey(a.member);
+    if(!best[k] || a.severity>best[k].severity) best[k]=a;
+  });
+  return Object.keys(best).map(k=>best[k])
+    .sort((a,b)=>b.severity-a.severity || b.session.startMs-a.session.startMs)
+    .slice(0, opts.max||ALERT_MAX);
+}
+
 /* --- Lien de partage d'une session ------------------------------------------
    Pas de stockage ni de nouvelle fonction serverless : le lien porte QUI et
    QUAND, et la page recalcule le rapport depuis les mêmes données publiques.
@@ -1346,7 +1424,7 @@ function findSessionAt(sessions, ts){
 
 // Un changement de roster (pseudo, membre ajouté/retiré) invalide l'index.
 function resetSquadIndex(){
-  SQUAD_INDEX=null; SQUAD_LOADING=null; SQUAD_BLOBS_DONE=false; PUUID_MEMBER={};
+  SQUAD_INDEX=null; SQUAD_HIST=null; SQUAD_LOADING=null; SQUAD_BLOBS_DONE=false; PUUID_MEMBER={};
 }
 
 /* ===================== HOME & PROFIL ===================== */
@@ -1384,8 +1462,9 @@ function showHome(){
     if(location.search && shareParams().get('s') && history.replaceState)
       history.replaceState(null, '', location.pathname);
   }catch(e){}
-  // Les rangs de l'accueil ne sont pas chargés quand on arrive par un lien partagé.
+  // Rangs et alertes ne sont pas chargés quand on arrive par un lien partagé.
   if(!RANKS_FILLED) fillRanks();
+  loadHomeAlerts();
 }
 function status(kind,html){ const s=$('status'); s.className='status show '+kind; s.innerHTML=html; }
 function clearStatus(){ $('status').className='status'; }
@@ -2475,10 +2554,18 @@ function loadMoreMatches(){
 }
 
 /* ===================== LOGIQUE TRIBUNAL & JAUGE ===================== */
+// Seuils de PERFORMANCE. L'arc de la jauge en découle directement, pour que la
+// position de l'aiguille corresponde toujours à la zone annoncée.
+const TRIB_PERF_HIGH = 72;   // nettement au-dessus de la moyenne (~64 avec la courbe)
+const TRIB_PERF_LOW  = 60;   // nettement en dessous
+const TRIB_STEADY    = 10;   // écart-type au-delà duquel c'est en dents de scie
+
+// L'arc mesure la PERF, pas le verdict : le verdict, lui, croise perf et
+// résultat et s'affiche en toutes lettres sous la jauge.
 const Z=[
-  {from:0,  to:48, color:"var(--bad)",     label:"BAD"},
-  {from:48, to:72, color:"var(--unlucky)", label:"UNLUCKY"},
-  {from:72, to:100,color:"var(--cracked)", label:"CRACKED"},
+  {from:0,               to:TRIB_PERF_LOW,  color:"var(--bad)",     label:"FAIBLE"},
+  {from:TRIB_PERF_LOW,   to:TRIB_PERF_HIGH, color:"var(--unlucky)", label:"CORRECT"},
+  {from:TRIB_PERF_HIGH,  to:100,            color:"var(--cracked)", label:"ÉNORME"},
 ];
 const CX=200, CYY=200, R=156;
 const ang=s=>180-(s*1.8);
@@ -2511,33 +2598,68 @@ function resetStage(prefix) {
   setNeedle(`gauge${prefix}`, 50);
 }
 
-function computeVerdict(matches, n) {
-  // Ranked uniquement : on filtre le competitive avant de prendre les n dernières
-  const gs = matches.filter(m => m.me && (m.mode||'').toLowerCase()==='competitive').slice(0, n);
-  if(!gs.length) return {tier:'?', avg:0, line:'Pas de parties classées trouvées.', pct:'Lance quelques ranked !', color:'var(--muted)'};
-  
-  const avg = Math.round(gs.reduce((a,g)=>a+g.me.score100,0)/gs.length);
-  const losses = gs.filter(g => g.result !== 'w');
-  const unluckyL = losses.filter(g => (g.me.placement != null && g.me.placement <= 5) || g.me.score100 >= 55).length;
-  const top3 = gs.filter(g => g.me.placement != null && g.me.placement <= 3).length;
+/* Verdict du tribunal (v2).
 
+   L'ancienne version décidait sur le SEUL indice moyen : « UNLUCKY » n'était
+   qu'une note médiane, ce qui n'a rien à voir avec la chance. Le mot est
+   maintenant tranché en croisant deux axes indépendants :
+     - la PERFORMANCE (indice moyen, pondéré par les rounds) ;
+     - le RÉSULTAT (RR net, à défaut le winrate).
+   Bien jouer et perdre, c'est UNLUCKY. Mal jouer et gagner, c'est PORTÉ.
+   L'aiguille continue d'indiquer la performance : à aiguille identique, le
+   verdict peut différer — c'est précisément l'information. */
+// La phrase s'adapte au résultat : « moyen » ne veut pas dire la même chose
+// selon que la fenêtre se solde par des victoires ou des défaites.
+const VERDICTS = {
+  CRACKED: { color:'var(--cracked)', line:()=>"Tu es juste trop fort pour ce lobby." },
+  UNLUCKY: { color:'var(--unlucky)', line:()=>"Tu as fait ta part. C'est ailleurs que ça a lâché." },
+  MOYEN:   { color:'var(--muted)',   line:(good,bad)=> bad
+              ? "Tu as fait le taf, sans réussir à renverser quoi que ce soit."
+              : (good ? "Correct sans plus — mais le bilan est bon."
+                      : "Ni bon ni mauvais. Une fenêtre parfaitement quelconque.") },
+  PORTÉ:   { color:'var(--muted)',   line:()=>"Les résultats sont là. Pas grâce à toi." },
+  BAD:     { color:'var(--bad)',     line:()=>"Soyons honnêtes : le problème, c'était toi." },
+};
+
+function computeVerdict(matches, n) {
+  const gs = rankedOnly((matches||[]).filter(m => m && m.me)).slice(0, n);
+  if(!gs.length) return { tier:'?', avg:0, line:'Pas de parties classées trouvées.',
+                          pct:'Lance quelques ranked !', color:'var(--muted)' };
+
+  const st = sessionStats(gs);                       // pondéré par les rounds
+  const avg = Math.round(st.index || 0);
+  const idx = gs.map(g => g.me.score100);
+  const m0 = idx.reduce((a,v)=>a+v,0)/idx.length;
+  const sd = Math.sqrt(idx.reduce((a,v)=>a+(v-m0)*(v-m0),0)/idx.length);
+
+  // Sessions récentes reconstruites sur la fenêtre analysée : combien sont
+  // parties en vrille ? C'est la « régularité » à l'échelle d'une soirée.
+  const sessions = buildSessions(gs);
+  const tilted = sessions.filter(s => { const t = sessionTrend(s.matches); return t && t.delta <= ALERT_TILT; }).length;
+
+  const resGood = st.rrNet != null ? st.rrNet > 0 : (st.winrate != null && st.winrate >= 55);
+  const resBad  = st.rrNet != null ? st.rrNet < 0 : (st.winrate != null && st.winrate <= 45);
+  const perfHigh = avg >= TRIB_PERF_HIGH, perfLow = avg < TRIB_PERF_LOW;
+
+  // BAD est réservé à une perf réellement basse : au-dessus de TRIB_PERF_LOW,
+  // perdre ne suffit pas à faire de toi le problème.
   let tier;
-  if(avg >= 72) tier = 'CRACKED'; else if(avg < 48) tier = 'BAD'; else tier = 'UNLUCKY';
-  
-  let line, pct;
-  if(tier === 'CRACKED'){
-    line = "Tu es juste trop fort pour ce lobby.";
-    pct = `Indice moyen ${avg}/100 · top 3 du lobby dans ${top3}/${gs.length} parties`;
-  } else if(tier === 'UNLUCKY'){
-    const r = losses.length ? Math.round(unluckyL/losses.length*100) : 0;
-    line = "Tu as fait ta part. C'est ailleurs que ça a lâché.";
-    pct = `${r}% de tes défaites en étant dans la moitié haute · indice moyen ${avg}/100`;
-  } else {
-    line = "Soyons honnêtes : le problème, c'était toi.";
-    pct = `Indice moyen ${avg}/100 · ${losses.length} défaites sur ${gs.length}`;
-  }
-  const color = tier === 'CRACKED' ? 'var(--cracked)' : tier === 'UNLUCKY' ? 'var(--unlucky)' : 'var(--bad)';
-  return {tier, avg, line, pct, color};
+  if(perfHigh && resBad)      tier = 'UNLUCKY';
+  else if(perfHigh)           tier = 'CRACKED';
+  else if(perfLow && resGood) tier = 'PORTÉ';
+  else if(perfLow)            tier = 'BAD';
+  else                        tier = 'MOYEN';
+
+  // Détail : les chiffres qui JUSTIFIENT le verdict, pas une redite.
+  const bits = [`indice ${avg}/100`];
+  if(st.rrNet != null) bits.push(`${st.rrNet >= 0 ? '+' : ''}${st.rrNet} RR sur ${st.rrGames} partie${st.rrGames>1?'s':''}`);
+  else if(st.winrate != null) bits.push(`${Math.round(st.winrate)}% de victoires (${st.wins}V-${st.losses}D)`);
+  bits.push(sd <= TRIB_STEADY ? `régulier (σ ${sd.toFixed(0)})` : `en dents de scie (σ ${sd.toFixed(0)})`);
+  if(tilted) bits.push(`${tilted} session${tilted>1?'s':''} partie${tilted>1?'s':''} en vrille`);
+
+  const v = VERDICTS[tier];
+  return { tier, avg, line: v.line(resGood, resBad), pct: bits.join(' · '), color: v.color,
+           rrNet: st.rrNet, winrate: st.winrate, stdev: sd, tilted, sessions: sessions.length };
 }
 
 function animateVerdict(prefix, matches, n) {
@@ -2612,16 +2734,19 @@ async function loadSquadMatches(region) {
   return pooled(ROSTER, SQUAD_POOL, async (member) => {
     const pair = await Promise.allSettled([
       api(`/valorant/v4/matches/${region}/pc/${enc(member.name)}/${enc(member.tag)}?mode=competitive&size=15`),
-      fetchHistoriqueAll(member)
+      fetchHistoriqueAll(member),
+      fetchRRHistoryAll(member),          // blob : le verdict juge sur le RR réel, pas sur le winrate
     ]);
     const freshOk = pair[0].status === 'fulfilled';
     const fresh = freshOk ? (pair[0].value.data || []) : [];
     const blob  = pair[1].status === 'fulfilled' ? (pair[1].value || []) : [];
+    const rrIdx = rrIndexFromSeries(pair[2].status === 'fulfilled' ? (pair[2].value || []) : []);
     const data  = combineMatches(fresh, blob);
     // Ni le leaderboard ni le tribunal ne lisent le détail par round : on
     // économise ~3 Mo et ~100 ms sur une squad de 8.
     const norm  = data.map(m => normalizeAny(m, member, { facts:false }))
                       .filter(M => M && (M.mode || '').toLowerCase() === 'competitive');
+    norm.forEach(M => { if(M.id && rrIdx[M.id]){ M.rr = rrIdx[M.id]; M.season = rrIdx[M.id].season; } });
     return { member, data, norm, freshFailed: !freshOk };
   });
 }
@@ -3032,6 +3157,43 @@ function renderRoster(){
   wireRosterImgs();
 }
 
+/* ===================== ALERTES DE SESSION (ACCUEIL) ===================== */
+let ALERTS_LOADED = false;
+
+async function loadHomeAlerts(){
+  if(ALERTS_LOADED) return;
+  ALERTS_LOADED = true;
+  const host=$('alerts'); if(!host) return;
+  try{
+    await ensureSquadHistories();          // lecture de blobs, aucun appel HenrikDev
+    const per=ROSTER.map(m=>({ member:m, matches:(SQUAD_HIST||{})[memberKey(m)]||[] }));
+    renderAlerts(sessionAlerts(per));
+  }catch(e){ /* pas d'alertes : l'accueil reste parfaitement utilisable */ }
+}
+
+function renderAlerts(alerts){
+  const host=$('alerts'); if(!host) return;
+  if(!alerts || !alerts.length){ host.innerHTML=''; host.hidden=true; return; }
+  host.hidden=false;
+  host.innerHTML=alerts.map(a=>`
+    <button class="alert ${a.tone}" type="button"
+      data-alert-member="${esc(a.member.name+'#'+a.member.tag)}" data-alert-ts="${a.session.startMs}">
+      <span class="alert-ico">${a.icon}</span>
+      <span class="alert-body"><b style="color:${esc(a.member.color||'')}">${esc(a.member.name)}</b> ${esc(a.text)}</span>
+      <span class="alert-cta">voir la session →</span>
+    </button>`).join('');
+}
+
+// Un clic sur une alerte ouvre le rapport de la session concernée : c'est
+// exactement le mécanisme des liens partagés, réutilisé tel quel.
+function openAlert(idStr, ts){
+  const i=String(idStr).lastIndexOf('#');
+  if(i<1) return;
+  const name=String(idStr).slice(0,i), tag=String(idStr).slice(i+1);
+  SHARE_TARGET={ name, tag, ts:Number(ts)||0, gap:null };
+  if(!openProfileByKey(name, tag)) SHARE_TARGET=null;
+}
+
 /* ===================== ÉDITEUR DE ROSTER ===================== */
 // Une ligne de formulaire pour un membre.
 function rosterRowHTML(m){
@@ -3117,6 +3279,10 @@ function wireStatic(){
   $('btnLeaderboard')?.addEventListener('click',loadLeaderboard);
   
   $('roster').addEventListener('click',e=>{const c=e.target.closest('.agentcard');if(c)openProfile(+c.dataset.idx);});
+  $('alerts')?.addEventListener('click',e=>{
+    const b=e.target.closest('[data-alert-member]');
+    if(b) openAlert(b.dataset.alertMember, b.dataset.alertTs);
+  });
   $('ml').addEventListener('click',e=>{
     const b=e.target.closest('[data-sd]');
     if(b){ e.stopPropagation(); openMatchScore(+b.dataset.sd); return; }   // clic sur l'indice -> détail du calcul
@@ -3259,6 +3425,7 @@ async function init(){
     SHARE_TARGET=null;                              // joueur inconnu : accueil normal
   }
   fillRanks();
+  loadHomeAlerts();   // en tâche de fond : blobs seulement, l'accueil s'affiche déjà
 }
 if(typeof document!=='undefined'){
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init);
