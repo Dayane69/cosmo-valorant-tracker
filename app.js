@@ -1452,13 +1452,14 @@ function sessionRecords(sessions, ctx){
    Source : les blobs d'historique uniquement (aucun appel HenrikDev sur
    l'accueil). Conséquence assumée : une session jouée ce soir n'apparaît
    qu'une fois le blob rafraîchi (cron de 04:00 UTC, ou ouverture du profil). */
-const ALERT_DAYS = 3;          // on ne parle que des sessions récentes
+const ALERT_DAYS = 2;          // au-delà de 48 h, on ne montre rien
 const ALERT_MIN_GAMES = 6;     // « session qui dépasse 6 parties »
 const ALERT_TILT = -8;         // baisse d'indice entre les deux moitiés
 const ALERT_RR = 40;           // mouvement de RR jugé notable
 const ALERT_MAX = 3;           // au-delà, ce n'est plus un bandeau mais une liste
 
 const DAY_PART = h => h<5 ? 'nuit' : (h<12 ? 'matin' : (h<18 ? 'après-midi' : 'soir'));
+const dayKey = ms => { const d=new Date(ms); return d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate(); };
 // « hier soir », « ce matin », « il y a 3 jours » — jamais une date brute.
 function relDay(ms, nowMs){
   const d=new Date(ms), now=new Date(nowMs||Date.now());
@@ -1501,15 +1502,17 @@ function sessionAlerts(perMember, opts){
       }
     });
   });
-  // Une seule alerte par membre : la plus forte. Sinon un seul joueur en
-  // mauvaise passe monopolise le bandeau.
+  // Une seule alerte par JOUR — la plus marquante de la journée — et les jours
+  // récents d'abord. La récence prime TOUJOURS sur la gravité : une grosse
+  // session d'avant-hier ne doit pas masquer celle d'hier soir, sinon le
+  // bandeau se fige sur le même évènement pendant des jours.
   const best={};
   out.forEach(a=>{
-    const k=memberKey(a.member);
+    const k=dayKey(a.session.startMs);
     if(!best[k] || a.severity>best[k].severity) best[k]=a;
   });
   return Object.keys(best).map(k=>best[k])
-    .sort((a,b)=>b.severity-a.severity || b.session.startMs-a.session.startMs)
+    .sort((a,b)=>b.session.startMs-a.session.startMs)
     .slice(0, opts.max||ALERT_MAX);
 }
 

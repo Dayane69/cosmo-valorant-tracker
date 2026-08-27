@@ -10,7 +10,10 @@ import { blobKey } from "./lib/refresh-core.mjs";
 const json = (obj, status) =>
   new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json", "cache-control": "public, max-age=300" },
+    // Pas de cache navigateur : c'est la source des alertes et des sessions, et
+    // une partie qui vient de finir doit apparaître tout de suite. Ce sont des
+    // lectures de blob (aucun appel HenrikDev), donc c'est sans conséquence.
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
 
 export default async (req) => {

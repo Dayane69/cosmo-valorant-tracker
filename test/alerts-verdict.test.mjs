@@ -90,32 +90,66 @@ test("une grosse chute de RR alerte, une belle remontée aussi", () => {
   assert.equal(monte[0].tone, "good");
 });
 
-test("les sessions trop anciennes sont ignorées", () => {
+test("au-delà de 48 h, on ne montre rien", () => {
+  assert.equal(X.ALERT_DAYS, 2, "la fenêtre est bien de 48 h");
   const vieux = NOW - 10 * DAY;
-  const a = X.sessionAlerts([{ member: MEMBER, matches: run(vieux, [80, 78, 82, 50, 44, 48]) }], { now: NOW });
-  assert.equal(a.length, 0, `au-delà de ${X.ALERT_DAYS} jours, ce n'est plus une alerte`);
+  assert.equal(X.sessionAlerts([{ member: MEMBER, matches: run(vieux, [80, 78, 82, 50, 44, 48]) }], { now: NOW }).length, 0);
+  // Juste à l'intérieur de la fenêtre : conservé.
+  const hier = new Date(2026, 7, 25, 20, 0).getTime();
+  assert.equal(X.sessionAlerts([{ member: MEMBER, matches: run(hier, [80, 78, 82, 50, 44, 48]) }], { now: NOW }).length, 1);
+  // Trois jours en arrière : hors fenêtre, même si la session est spectaculaire.
+  const troisJours = new Date(2026, 7, 23, 20, 0).getTime();
+  assert.equal(X.sessionAlerts([{ member: MEMBER, matches: run(troisJours, [95, 92, 90, 20, 18, 15]) }], { now: NOW }).length, 0);
 });
 
-test("une seule alerte par membre : le pire ne monopolise pas le bandeau", () => {
+test("une seule alerte par jour : la plus marquante de la journée", () => {
   const hier = new Date(2026, 7, 25, 20, 0).getTime();
-  // Session à la fois longue-en-baisse ET très négative en RR.
-  const both = run(hier, [85, 82, 80, 40, 38, 35],
+  // Deux membres le MÊME soir : un effondrement, et une chute de RR plus douce.
+  const tilt = run(hier, [85, 82, 80, 40, 38, 35],
     { results: ["w", "w", "w", "l", "l", "l"], rr: [20, 18, 19, -20, -22, -25] });
-  const a = X.sessionAlerts([{ member: MEMBER, matches: both }], { now: NOW });
-  assert.equal(a.length, 1, "une seule alerte pour ce membre");
-  assert.equal(a[0].kind, "tilt", "la plus grave l'emporte");
+  const drop = run(hier, [62, 60, 58], { results: ["l", "l", "l"], rr: [-15, -14, -13] });
+  const a = X.sessionAlerts([
+    { member: MEMBER, matches: tilt },
+    { member: { name: "Autre", tag: "2", color: "#fff" }, matches: drop },
+  ], { now: NOW });
+  assert.equal(a.length, 1, "un seul évènement retenu pour ce soir-là");
+  assert.equal(a[0].kind, "tilt", "le plus marquant de la journée");
 });
 
-test("le bandeau est plafonné et trié par gravité", () => {
+test("la RÉCENCE prime sur la gravité : le bandeau ne se fige pas", () => {
+  // Avant-hier : effondrement spectaculaire. Hier : chute de RR plus modeste.
+  const avantHier = new Date(2026, 7, 24, 20, 0).getTime();
   const hier = new Date(2026, 7, 25, 20, 0).getTime();
-  const per = ["A", "B", "C", "D"].map((n, i) => ({
-    member: { name: n, tag: "1", color: "#fff" },
-    // Effondrements de plus en plus marqués.
-    matches: run(hier - i * 5 * MIN, [80, 80, 80, 60 - i * 10, 58 - i * 10, 55 - i * 10]),
-  }));
-  const a = X.sessionAlerts(per, { now: NOW, max: 3 });
-  assert.equal(a.length, 3, "plafonné à 3");
-  assert.equal(a[0].member.name, "D", "l'effondrement le plus net en tête");
+  const enorme = run(avantHier, [95, 92, 90, 20, 18, 15]);
+  const petit = run(hier, [62, 60, 58], { results: ["l", "l", "l"], rr: [-15, -14, -13] });
+  const a = X.sessionAlerts([
+    { member: MEMBER, matches: enorme.concat(petit) },
+  ], { now: NOW, days: 3 });
+  assert.equal(a.length, 2, "un jour, une alerte");
+  assert.equal(a[0].when, "hier soir", "le plus RÉCENT en tête, même s'il est moins grave");
+  assert.equal(a[1].when, "il y a 2 jours");
+});
+
+test("un jour, une alerte : trois soirs d'affilée donnent trois alertes", () => {
+  const soir = d => new Date(2026, 7, d, 20, 0).getTime();
+  const ms = [23, 24, 25].reduce((acc, d) => acc.concat(run(soir(d), [80, 80, 80, 45, 43, 40])), []);
+  const a = X.sessionAlerts([{ member: MEMBER, matches: ms }], { now: NOW, days: 4, max: 5 });
+  assert.equal(a.length, 3);
+  assert.equal(a.map(x => x.when).join(" | "), "hier soir | il y a 2 jours | il y a 3 jours");
+});
+
+test("une session dans le futur (horloge décalée) n'est pas annoncée", () => {
+  const plusTard = NOW + 6 * H;
+  assert.equal(X.sessionAlerts([{ member: MEMBER, matches: run(plusTard, [80, 80, 80, 45, 43, 40]) }],
+    { now: NOW }).length, 0);
+});
+
+test("le bandeau reste plafonné", () => {
+  const soir = d => new Date(2026, 7, d, 20, 0).getTime();
+  const ms = [20, 21, 22, 23, 24, 25].reduce((acc, d) => acc.concat(run(soir(d), [80, 80, 80, 45, 43, 40])), []);
+  const a = X.sessionAlerts([{ member: MEMBER, matches: ms }], { now: NOW, days: 30, max: 3 });
+  assert.equal(a.length, 3, "plafonné, et ce sont les 3 jours les plus récents");
+  assert.equal(a[0].when, "hier soir");
 });
 
 test("les modes non classés ne créent pas d'alertes", () => {
