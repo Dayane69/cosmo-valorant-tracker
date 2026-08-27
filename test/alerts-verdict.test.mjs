@@ -12,7 +12,8 @@ function load() {
   const ctx = vm.createContext({ console, URL, URLSearchParams });
   let code = readFileSync(join(root, "app.js"), "utf8");
   code += `\nglobalThis.__x = { sessionAlerts, relDay, computeVerdict, Z,
-    ALERT_MIN_GAMES, ALERT_TILT, ALERT_RR, ALERT_DAYS, TRIB_PERF_HIGH, TRIB_PERF_LOW };`;
+    ALERT_MIN_GAMES, ALERT_TILT, ALERT_RR, ALERT_DAYS, TRIB_PERF_HIGH, TRIB_PERF_LOW,
+    dayKey, gamingDayStart, DAY_CUTOFF_H };`;
   vm.runInContext(code, ctx);
   return ctx.__x;
 }
@@ -43,13 +44,48 @@ const run = (startMs, scores, opts = {}) => scores.map((sc, i) =>
 /* ------------------------------------------------------------- formulation */
 
 test("relDay dit « hier soir », « ce matin », jamais une date brute", () => {
-  const soirHier = new Date(2026, 7, 25, 22, 0).getTime();
-  assert.equal(X.relDay(soirHier, NOW), "hier soir");
+  // NOW = mercredi 26 août, 12 h. Les écarts sont comptés en JOURNÉES DE JEU
+  // (coupure à 5 h), pas en jours calendaires.
+  assert.equal(X.relDay(new Date(2026, 7, 25, 22, 0).getTime(), NOW), "hier soir");
   assert.equal(X.relDay(new Date(2026, 7, 26, 9, 0).getTime(), NOW), "ce matin");
   assert.equal(X.relDay(new Date(2026, 7, 26, 15, 0).getTime(), NOW), "cet après-midi");
-  assert.equal(X.relDay(new Date(2026, 7, 26, 2, 0).getTime(), NOW), "cette nuit");
-  assert.equal(X.relDay(new Date(2026, 7, 25, 1, 0).getTime(), NOW), "la nuit dernière");
+  // 2 h du matin appartient à la soirée de la veille : « la nuit dernière ».
+  assert.equal(X.relDay(new Date(2026, 7, 26, 2, 0).getTime(), NOW), "la nuit dernière");
+  // 1 h du matin le 25 = la soirée du 24, soit deux journées de jeu en arrière.
+  assert.equal(X.relDay(new Date(2026, 7, 25, 1, 0).getTime(), NOW), "il y a 2 jours");
   assert.equal(X.relDay(new Date(2026, 7, 23, 20, 0).getTime(), NOW), "il y a 3 jours");
+});
+
+/* ------------------------------------------------- journée de jeu (5 h) */
+
+test("la journée de jeu coupe à 5 h, pas à minuit", () => {
+  assert.equal(X.DAY_CUTOFF_H, 5);
+  const sam23 = new Date(2026, 7, 22, 23, 0).getTime();   // samedi 23 h
+  const dim02 = new Date(2026, 7, 23, 2, 0).getTime();    // dimanche 2 h
+  const dim06 = new Date(2026, 7, 23, 6, 0).getTime();    // dimanche 6 h
+  assert.equal(X.dayKey(sam23), X.dayKey(dim02), "2 h du matin appartient encore à la soirée du samedi");
+  assert.notEqual(X.dayKey(dim02), X.dayKey(dim06), "…mais 6 h démarre bien une nouvelle journée");
+});
+
+test("à 2 h du matin, la session de 23 h reste « ce soir »", () => {
+  const sam23 = new Date(2026, 7, 22, 23, 0).getTime();
+  const dim02 = new Date(2026, 7, 23, 2, 0).getTime();    // on est encore debout
+  assert.equal(X.relDay(sam23, dim02), "ce soir", "et surtout pas « hier soir »");
+});
+
+test("une fois la journée passée, la nuit devient bien « la nuit dernière »", () => {
+  const dim02 = new Date(2026, 7, 23, 2, 0).getTime();
+  const dim14 = new Date(2026, 7, 23, 14, 0).getTime();   // le lendemain après-midi
+  assert.equal(X.relDay(dim02, dim14), "la nuit dernière");
+});
+
+test("une session à cheval sur minuit ne compte que pour un seul jour", () => {
+  // 23 h -> 01 h : un seul évènement, donc une seule alerte.
+  const sam23 = new Date(2026, 7, 22, 23, 0).getTime();
+  const dimAprem = new Date(2026, 7, 23, 15, 0).getTime();
+  const a = X.sessionAlerts([{ member: MEMBER, matches: run(sam23, [85, 82, 80, 45, 42, 40]) }],
+    { now: dimAprem });
+  assert.equal(a.length, 1);
 });
 
 /* ---------------------------------------------------------------- alertes */

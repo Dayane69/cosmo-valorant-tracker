@@ -1459,12 +1459,22 @@ const ALERT_RR = 40;           // mouvement de RR jugé notable
 const ALERT_MAX = 3;           // au-delà, ce n'est plus un bandeau mais une liste
 
 const DAY_PART = h => h<5 ? 'nuit' : (h<12 ? 'matin' : (h<18 ? 'après-midi' : 'soir'));
-const dayKey = ms => { const d=new Date(ms); return d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate(); };
+
+// Une « journée de jeu » ne coupe pas à minuit mais à 5 h du matin : une partie
+// jouée dimanche à 2 h appartient à la soirée du SAMEDI, pas au dimanche. Sans
+// ça, une session à cheval sur minuit compte pour deux jours et le bandeau
+// annonce « hier soir » une partie finie il y a une heure.
+const DAY_CUTOFF_H = 5;
+function gamingDayStart(ms){
+  const d=new Date(ms - DAY_CUTOFF_H*3600000);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+const dayKey = ms => String(gamingDayStart(ms));
 // « hier soir », « ce matin », « il y a 3 jours » — jamais une date brute.
 function relDay(ms, nowMs){
-  const d=new Date(ms), now=new Date(nowMs||Date.now());
-  const day=x=>new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const diff=Math.round((day(now)-day(d))/86400000);
+  const d=new Date(ms);
+  // Écart en JOURNÉES DE JEU : à 2 h du matin, la session de 23 h reste « ce soir ».
+  const diff=Math.round((gamingDayStart(nowMs||Date.now())-gamingDayStart(ms))/86400000);
   const p=DAY_PART(d.getHours());
   if(diff<=0) return p==='nuit' ? 'cette nuit' : (p==='après-midi' ? 'cet après-midi' : 'ce '+p);
   if(diff===1) return p==='nuit' ? 'la nuit dernière' : 'hier '+p;
