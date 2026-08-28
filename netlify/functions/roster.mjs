@@ -34,7 +34,9 @@ export function cleanAlias(raw, selfKey) {
   return out;
 }
 
-function cleanRoster(r) {
+// Exporté pour être testable directement : hors Netlify, getStore échoue, donc
+// passer par le handler ne permet jamais d'observer ce qui serait enregistré.
+export function cleanRoster(r) {
   if (!r || typeof r !== "object" || !Array.isArray(r.members)) return null;
   const members = r.members
     .filter((m) => m && typeof m.name === "string" && m.name.trim() && typeof m.tag === "string" && m.tag.trim())
@@ -55,7 +57,35 @@ function cleanRoster(r) {
       return out;
     });
   if (!members.length) return null;
-  return { region: (typeof r.region === "string" && r.region.trim()) || "eu", members };
+
+  // Invités : des joueurs hors squad avec qui on joue parfois. Ils servent
+  // UNIQUEMENT aux rapports de session (composition + rapport commun) ; ils
+  // n'apparaissent ni sur l'accueil, ni au leaderboard, ni au tribunal.
+  // Ils n'ont donc besoin que d'un pseudo, d'un tag et d'une couleur.
+  const guests = (Array.isArray(r.guests) ? r.guests : [])
+    .filter((g) => g && typeof g.name === "string" && g.name.trim() && typeof g.tag === "string" && g.tag.trim())
+    .slice(0, 20)
+    .map((g) => {
+      const out = { name: String(g.name).trim(), tag: String(g.tag).trim(),
+                    color: g.color ? String(g.color).slice(0, 12) : "#8696a6" };
+      const alias = cleanAlias(g.alias, `${out.name}#${out.tag}`.toLowerCase());
+      if (alias.length) out.alias = alias;
+      return out;
+    });
+  // Un invité qui rejoint la squad ne doit pas exister en double.
+  const known = new Set(members.map((m) => `${m.name}#${m.tag}`.toLowerCase()));
+  const uniqueGuests = [];
+  const seen = new Set();
+  for (const g of guests) {
+    const k = `${g.name}#${g.tag}`.toLowerCase();
+    if (known.has(k) || seen.has(k)) continue;
+    seen.add(k);
+    uniqueGuests.push(g);
+  }
+
+  const out = { region: (typeof r.region === "string" && r.region.trim()) || "eu", members };
+  if (uniqueGuests.length) out.guests = uniqueGuests;
+  return out;
 }
 
 function authed(req) {

@@ -98,6 +98,9 @@
      distingue des champs d'identité courante. */
   .edrow .edalias{flex:1 0 100%;min-width:0;border-color:rgba(242,178,52,.35);color:var(--amber)}
   .edrow .edalias::placeholder{color:var(--dim)}
+  .edsec{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);
+    margin:18px 0 8px;border-top:1px solid var(--line);padding-top:12px}
+  .edsec em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--dim);margin-left:8px;font-size:11px}
   .edrow .edrm{flex:none;border:1px solid var(--line);border-radius:6px;color:var(--loss);width:30px;height:30px;font-size:12px}
   .edrow .edrm:hover{border-color:var(--loss);background:rgba(255,93,93,.1)}
 
@@ -781,6 +784,10 @@
         <div class="ed-head mono">pseudo · tag · agent · rôle · couleur · uuid agent · URL GIF</div>
         <div id="edMembers"></div>
         <button class="btn" id="edAdd" type="button" style="margin-top:8px;">+ Ajouter un membre</button>
+        <div class="edsec">Invités <em>hors squad · rapports de session uniquement</em></div>
+        <div id="edGuests"></div>
+        <button class="btn" id="edAddGuest" type="button" style="margin-top:8px;">+ Ajouter un invité</button>
+        <div class="secnote">Des gens avec qui vous jouez parfois sans qu'ils soient de la squad. Ils apparaissent dans la <b>composition</b> et le <b>rapport commun</b> des sessions, et nulle part ailleurs : ni carte d'accueil, ni leaderboard, ni tribunal, ni rafraîchissement automatique.</div>
         <div class="field" style="margin-top:14px;max-width:280px;"><label for="edToken">Clé REFRESH_TOKEN</label><input id="edToken" type="password" autocomplete="off" placeholder="secret serveur"></div>
         <div style="margin-top:10px;"><button class="btn" id="edSave" type="button">Enregistrer le roster</button></div>
         <div class="secnote" id="edStatus">Les modifs sont partagées (stockées côté serveur) et remplacent roster.json. Laisse « uuid agent » vide et mets une URL GIF pour un membre custom. <b>Anciens pseudos</b> : si quelqu'un a changé de nom Riot, mets son ancien <i>Pseudo#tag</i> ici — son historique et surtout sa <b>progression RR</b> d'avant le changement sont stockés sous cet ancien nom et seraient perdus sinon.</div>
@@ -1000,6 +1007,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260823c" defer></script>
+<script src="app.js?v=20260828a" defer></script>
 </body>
 </html>

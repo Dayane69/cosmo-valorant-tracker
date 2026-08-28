@@ -5,6 +5,12 @@ const MEDIA = "https://media.valorant-api.com/agents";
 // Roster chargé depuis roster.json (source de vérité unique, partagée avec la
 // fonction planifiée refresh-matches). Rempli au démarrage par loadRoster().
 let ROSTER = [];
+// Invités : joueurs hors squad avec qui on joue parfois. Ils comptent pour les
+// RAPPORTS DE SESSION (composition, rapport commun) et pour rien d'autre :
+// ni carte d'accueil, ni leaderboard, ni tribunal, ni cron.
+let GUESTS = [];
+// Roster + invités : la seule liste à consulter pour « qui a joué avec qui ».
+const sessionRoster = () => ROSTER.concat(GUESTS);
 let DEFAULT_REGION = "eu";
 
 const REACTIONS = {
@@ -1077,11 +1083,11 @@ function sessionComposition(list, squadIndex, selfKey){
     const others=matchSquadMates(M, squadIndex, selfKey);
     const size=others.length+1;
     bySize[size]=(bySize[size]||0)+1;
-    others.forEach(e=>{ mates[e.key]=mates[e.key]||{ key:e.key, name:e.name, tag:e.tag, color:e.color, n:0 }; mates[e.key].n++; });
+    others.forEach(e=>{ mates[e.key]=mates[e.key]||{ key:e.key, name:e.name, tag:e.tag, color:e.color, guest:!!e.guest, n:0 }; mates[e.key].n++; });
     if(M.party && M.party.size>0){
       partyKnown++;
       partyMax=Math.max(partyMax, M.party.size);
-      partyExtra=Math.max(partyExtra, M.party.size-size);   // joueurs hors squad dans la party
+      partyExtra=Math.max(partyExtra, M.party.size-size);   // joueurs ni squad ni invités
     }
   });
   const sizes=Object.keys(bySize).map(Number).sort((a,b)=>bySize[b]-bySize[a] || b-a);
@@ -1262,7 +1268,7 @@ function sessionSquadReport(session, squadIndex, selfKey, selfInfo){
     ((squadIndex||{})[M.id]||[]).forEach(e=>{
       if(e.team!==M.myTeamId) return;              // adversaire : pas la même session
       const mm=mateMatch(M, e); if(!mm) return;
-      const r=per[e.key]||(per[e.key]={ key:e.key, name:e.name, tag:e.tag, color:e.color, matches:[] });
+      const r=per[e.key]||(per[e.key]={ key:e.key, name:e.name, tag:e.tag, color:e.color, guest:!!e.guest, matches:[] });
       r.matches.push(mm);
     });
   });
@@ -1313,7 +1319,7 @@ function addSquadEntry(idx, id, e){
 // Table de correspondance roster : par pseudo#tag ET par puuid déjà connu.
 function rosterLookup(){
   const byName={}, byKey={};
-  ROSTER.forEach(m=>{ const k=memberKey(m); byName[k]=m; byKey[k]=m; });
+  sessionRoster().forEach(m=>{ const k=memberKey(m); byName[k]=m; byKey[k]=m; });
   return { byName, byKey };
 }
 
@@ -1329,7 +1335,7 @@ function indexSquadFromFullMatches(matches, idx){
       const m = key && byKey[key];
       if(!m) return;
       if(p.puuid) PUUID_MEMBER[p.puuid] = key;     // on apprend le puuid au passage
-      addSquadEntry(idx, M.id, { key, name:m.name, tag:m.tag, color:m.color||'', team:p.team_id });
+      addSquadEntry(idx, M.id, { key, name:m.name, tag:m.tag, color:m.color||'', team:p.team_id, guest:!!m.guest });
     });
   });
   return idx;
@@ -1342,11 +1348,15 @@ async function ensureSquadHistories(){
   SQUAD_LOADING=(async()=>{
     const idx = SQUAD_INDEX || (SQUAD_INDEX = {});
     const hist = SQUAD_HIST || (SQUAD_HIST = {});
+    // Les invités ont rarement un historique stocké (le cron ne les visite pas) :
+    // la lecture est tentée quand même, et leurs stats viennent sinon du
+    // scoreboard des parties (cf. mateMatch).
+    const people = sessionRoster();
     const [lists, rrLists] = await Promise.all([
-      Promise.all(ROSTER.map(m=>fetchHistoriqueAll(m).catch(()=>[]))),
-      Promise.all(ROSTER.map(m=>fetchRRHistoryAll(m).catch(()=>[]))),
+      Promise.all(people.map(m=>fetchHistoriqueAll(m).catch(()=>[]))),
+      Promise.all(people.map(m=>fetchRRHistoryAll(m).catch(()=>[]))),
     ]);
-    ROSTER.forEach((m,i)=>{
+    people.forEach((m,i)=>{
       const key=memberKey(m), target={ puuid:null, name:m.name, tag:m.tag };
       const rrIdx=rrIndexFromSeries(rrLists[i]||[]);
       hist[key]=[];
@@ -1358,7 +1368,7 @@ async function ensureSquadHistories(){
         hist[key].push(M);
         const pu=M.players && M.players[0] && M.players[0].puuid;
         if(pu) PUUID_MEMBER[pu]=key;
-        addSquadEntry(idx, M.id, { key, name:m.name, tag:m.tag, color:m.color||'', team:M.myTeamId, M });
+        addSquadEntry(idx, M.id, { key, name:m.name, tag:m.tag, color:m.color||'', team:M.myTeamId, guest:!!m.guest, M });
       });
     });
     // Un puuid appris tardivement peut rattacher des parties complètes vues avant.
@@ -1729,6 +1739,7 @@ function showHome(){
   // Rangs et alertes ne sont pas chargés quand on arrive par un lien partagé.
   if(!RANKS_FILLED) fillRanks();
   loadHomeAlerts();
+  refreshHomeAlerts();   // tient compte des parties fraîches vues sur un profil
 }
 function status(kind,html){ const s=$('status'); s.className='status show '+kind; s.innerHTML=html; }
 function clearStatus(){ $('status').className='status'; }
@@ -2138,7 +2149,9 @@ let SHARE_MISS=false;        // le lien pointait sur une session introuvable
 
 function compChip(comp){
   if(!comp) return '';
-  const names=comp.mates.slice(0,3).map(m=>esc(m.name)).join(', ');
+  // Un invité est nommé comme les autres, avec une astérisque discrète : il
+  // compte comme partenaire de jeu, mais il n'est pas de la squad.
+  const names=comp.mates.slice(0,3).map(m=>esc(m.name)+(m.guest?'*':'')).join(', ');
   const extra=comp.mates.length>3?` +${comp.mates.length-3}`:'';
   const label=comp.label+(comp.mixed?'*':'');
   return `<span class="sx-comp s${comp.dominant}">${esc(label)}${names?' · '+names+extra:''}</span>`;
@@ -2285,13 +2298,13 @@ function openSessionReport(key){
   const shareURL=sessionShareURL(s);
   const squad=sessionSquadReport(s, SQUAD_INDEX, selfKey);
   const common=squad.length>1 ? `
-    <div class="md-sec">Rapport commun · ${squad.length} membres COSMO</div>
+    <div class="md-sec">Rapport commun · ${squad.length} joueurs</div>
     <div class="sx-tablewrap"><table class="sb"><thead><tr>
       <th>Joueur</th><th>N</th><th>V-D</th><th>Indice</th><th>ACS</th><th>K/D</th><th>RR</th>
     </tr></thead><tbody>${squad.map(r=>{
       const rt=tierOf(Math.round(r.st.index||0));
       return `<tr${r.self?' class="sx-self"':''}>
-        <td><b>${esc(r.name)}</b>${r.self?' <em>(toi)</em>':''}</td>
+        <td><b>${esc(r.name)}</b>${r.self?' <em>(toi)</em>':(r.guest?' <em>(invité)</em>':'')}</td>
         <td>${r.n}</td>
         <td><b class="w">${r.st.wins}</b>-<b class="l">${r.st.losses}</b></td>
         <td class="scell" style="color:${rt.c}">${Math.round(r.st.index||0)}</td>
@@ -2300,9 +2313,9 @@ function openSessionReport(key){
         <td class="${(r.st.rrNet||0)>=0?'up':'dn'}">${r.st.rrNet!=null?signed(r.st.rrNet):'—'}</td>
       </tr>`;
     }).join('')}</tbody></table></div>
-    <div class="md-none">Les membres listés sont ceux qui étaient dans TON équipe sur au moins une partie de la session. Leurs chiffres viennent de leur propre historique.</div>`
+    <div class="md-none">Les joueurs listés sont ceux qui étaient dans TON équipe sur au moins une partie de la session. Leurs chiffres viennent de leur propre historique quand on l'a, sinon du scoreboard de la partie. Les <em>invités</em> ne font pas partie de la squad : ils n'apparaissent que dans les rapports de session.</div>`
     : `<div class="md-sec">Rapport commun</div>
-       <div class="md-empty">Session jouée sans autre membre de la squad — rien à comparer en commun.</div>`;
+       <div class="md-empty">Session jouée seul — rien à comparer en commun.</div>`;
 
   const partyNote = comp.partyKnown && comp.partyExtra>0
     ? `<div class="md-none">Party détectée jusqu'à ${comp.partyMax} joueurs, dont ${comp.partyExtra} hors squad COSMO (info disponible sur ${comp.partyKnown} partie${comp.partyKnown>1?'s':''} au format complet).</div>` : '';
@@ -2821,6 +2834,8 @@ async function loadProfile(){
     paintProfile(mmr);
     clearStatus(); $('app').hidden=false;
     setFresh('profile','ok',{ ts:Date.now() });
+    // Le bandeau d'accueil doit connaître la session qu'on vient de jouer.
+    feedSquadHist(key, STATE.allMatches);
 
     // Cache : de quoi repeindre cet écran instantanément la prochaine fois.
     try{
@@ -3436,6 +3451,7 @@ async function loadRoster(){
       const d=await r.json();
       if(d && d.roster && Array.isArray(d.roster.members) && d.roster.members.length){
         ROSTER=d.roster.members;
+        GUESTS=(Array.isArray(d.roster.guests)?d.roster.guests:[]).map(g=>Object.assign({},g,{guest:true}));
         if(d.roster.region) DEFAULT_REGION=d.roster.region;
         applyRegionDefault();
         return;
@@ -3448,6 +3464,7 @@ async function loadRoster(){
     if(r.ok){
       const d=await r.json();
       ROSTER=Array.isArray(d)?d:(d.members||[]);
+      GUESTS=((d && Array.isArray(d.guests))?d.guests:[]).map(g=>Object.assign({},g,{guest:true}));
       if(d && d.region) DEFAULT_REGION=d.region;
     }
   }catch(e){ /* roster indispo : la grille restera vide */ }
@@ -3478,15 +3495,33 @@ function renderRoster(){
 /* ===================== ALERTES DE SESSION (ACCUEIL) ===================== */
 let ALERTS_LOADED = false;
 
+// Recalcul pur, sans réseau : à appeler dès que SQUAD_HIST a bougé.
+function refreshHomeAlerts(){
+  if(!$('alerts') || !SQUAD_HIST) return;
+  const per=ROSTER.map(m=>({ member:m, matches:SQUAD_HIST[memberKey(m)]||[] }));
+  renderAlerts(sessionAlerts(per));
+}
+
 async function loadHomeAlerts(){
   if(ALERTS_LOADED) return;
   ALERTS_LOADED = true;
-  const host=$('alerts'); if(!host) return;
+  if(!$('alerts')) return;
   try{
     await ensureSquadHistories();          // lecture de blobs, aucun appel HenrikDev
-    const per=ROSTER.map(m=>({ member:m, matches:(SQUAD_HIST||{})[memberKey(m)]||[] }));
-    renderAlerts(sessionAlerts(per));
+    refreshHomeAlerts();
   }catch(e){ /* pas d'alertes : l'accueil reste parfaitement utilisable */ }
+}
+
+// Les parties fraîches (matches v4) ne sont PAS encore dans le blob : le cron ne
+// passe qu'à 04:00. Sans ça, une session jouée ce soir n'apparaîtrait dans le
+// bandeau que le lendemain. On les injecte donc dans l'index de squad dès qu'on
+// ouvre un profil, le frais l'emportant sur le stocké.
+function feedSquadHist(key, matches){
+  if(!SQUAD_HIST) SQUAD_HIST={};
+  const byId={};
+  (matches||[]).forEach(M=>{ if(M && M.id) byId[M.id]=M; });
+  (SQUAD_HIST[key]||[]).forEach(M=>{ if(M && M.id && !byId[M.id]) byId[M.id]=M; });
+  SQUAD_HIST[key]=Object.keys(byId).map(k=>byId[k]);
 }
 
 function renderAlerts(alerts){
@@ -3527,11 +3562,26 @@ function rosterRowHTML(m){
   </div>`;
 }
 function addRosterRow(m){ const host=$('edMembers'); if(host) host.insertAdjacentHTML('beforeend', rosterRowHTML(m)); }
+// Ligne d'invité : pas d'agent ni d'image, il n'a pas de carte sur l'accueil.
+function guestRowHTML(g){
+  g=g||{};
+  const f=(k,ph)=>`<input data-g="${k}" placeholder="${ph}" value="${esc(g[k]||'')}">`;
+  const aliasVal=memberAliases(g).map(a=>a.name+'#'+a.tag).join(', ');
+  return `<div class="edrow">
+    ${f('name','pseudo')}${f('tag','tag')}${f('color','#couleur')}
+    <input data-g="alias" class="edalias" placeholder="anciens pseudos : Ancien#tag" value="${esc(aliasVal)}">
+    <button class="edrm" type="button" title="Retirer cet invité">✕</button>
+  </div>`;
+}
+function addGuestRow(g){ const host=$('edGuests'); if(host) host.insertAdjacentHTML('beforeend', guestRowHTML(g)); }
+
 function renderRosterEditor(){
   const reg=$('edRegion'); if(reg) reg.value=DEFAULT_REGION||'eu';
   const host=$('edMembers'); if(!host) return;
   host.innerHTML='';
   (ROSTER.length?ROSTER:[{}]).forEach(m=>addRosterRow(m));
+  const gh=$('edGuests');
+  if(gh){ gh.innerHTML=''; GUESTS.forEach(g=>addGuestRow(g)); }
 }
 function collectRoster(){
   const members=[...document.querySelectorAll('#edMembers .edrow')].map(row=>{
@@ -3544,7 +3594,16 @@ function collectRoster(){
     m.mono=(m.agent||m.name).slice(0,2);
     return m;
   }).filter(m=>m.name && m.tag);
-  return { region:(($('edRegion')&&$('edRegion').value)||'eu').trim()||'eu', members };
+
+  const guests=[...document.querySelectorAll('#edGuests .edrow')].map(row=>{
+    const g=f=>{const el=row.querySelector(`[data-g="${f}"]`);return el?el.value.trim():'';};
+    const o={ name:g('name'), tag:g('tag'), color:g('color')||'#8696a6' };
+    const alias=memberAliases({ name:o.name, tag:o.tag, alias:g('alias') });
+    if(alias.length) o.alias=alias.map(a=>a.name+'#'+a.tag);
+    return o;
+  }).filter(g=>g.name && g.tag);
+
+  return { region:(($('edRegion')&&$('edRegion').value)||'eu').trim()||'eu', members, guests };
 }
 async function saveRoster(){
   const out=$('edStatus'), tokEl=$('edToken');
@@ -3587,6 +3646,8 @@ function wireStatic(){
     ed.hidden=!ed.hidden; if(!ed.hidden) renderRosterEditor();
   });
   $('edAdd')?.addEventListener('click', () => addRosterRow());
+  $('edAddGuest')?.addEventListener('click', () => addGuestRow());
+  $('edGuests')?.addEventListener('click', e => { const b=e.target.closest('.edrm'); if(b) b.closest('.edrow')?.remove(); });
   $('edMembers')?.addEventListener('click', e => { const b=e.target.closest('.edrm'); if(b) b.closest('.edrow')?.remove(); });
   $('edSave')?.addEventListener('click', saveRoster);
   $('btnBack').addEventListener('click',showHome);
