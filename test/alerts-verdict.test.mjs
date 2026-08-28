@@ -13,7 +13,7 @@ function load() {
   let code = readFileSync(join(root, "app.js"), "utf8");
   code += `\nglobalThis.__x = { sessionAlerts, relDay, computeVerdict, Z,
     ALERT_MIN_GAMES, ALERT_TILT, ALERT_RR, ALERT_DAYS, TRIB_PERF_HIGH, TRIB_PERF_LOW,
-    dayKey, gamingDayStart, DAY_CUTOFF_H };`;
+    gamingDayStart, DAY_CUTOFF_H };`;
   vm.runInContext(code, ctx);
   return ctx.__x;
 }
@@ -63,8 +63,8 @@ test("la journée de jeu coupe à 5 h, pas à minuit", () => {
   const sam23 = new Date(2026, 7, 22, 23, 0).getTime();   // samedi 23 h
   const dim02 = new Date(2026, 7, 23, 2, 0).getTime();    // dimanche 2 h
   const dim06 = new Date(2026, 7, 23, 6, 0).getTime();    // dimanche 6 h
-  assert.equal(X.dayKey(sam23), X.dayKey(dim02), "2 h du matin appartient encore à la soirée du samedi");
-  assert.notEqual(X.dayKey(dim02), X.dayKey(dim06), "…mais 6 h démarre bien une nouvelle journée");
+  assert.equal(X.gamingDayStart(sam23), X.gamingDayStart(dim02), "2 h du matin appartient encore à la soirée du samedi");
+  assert.notEqual(X.gamingDayStart(dim02), X.gamingDayStart(dim06), "…mais 6 h démarre bien une nouvelle journée");
 });
 
 test("à 2 h du matin, la session de 23 h reste « ce soir »", () => {
@@ -181,41 +181,8 @@ test("au-delà de 48 h, on ne montre rien", () => {
   assert.equal(X.sessionAlerts([{ member: MEMBER, matches: run(troisJours, [95, 92, 90, 20, 18, 15]) }], { now: NOW }).length, 0);
 });
 
-test("une seule alerte par jour : la plus marquante de la journée", () => {
-  const hier = new Date(2026, 7, 25, 20, 0).getTime();
-  // Deux membres le MÊME soir : un effondrement, et une chute de RR plus douce.
-  const tilt = run(hier, [85, 82, 80, 40, 38, 35],
-    { results: ["w", "w", "w", "l", "l", "l"], rr: [20, 18, 19, -20, -22, -25] });
-  const drop = run(hier, [62, 60, 58], { results: ["l", "l", "l"], rr: [-15, -14, -13] });
-  const a = X.sessionAlerts([
-    { member: MEMBER, matches: tilt },
-    { member: { name: "Autre", tag: "2", color: "#fff" }, matches: drop },
-  ], { now: NOW });
-  assert.equal(a.length, 1, "un seul évènement retenu pour ce soir-là");
-  assert.equal(a[0].kind, "tilt", "le plus marquant de la journée");
-});
 
-test("la RÉCENCE prime sur la gravité : le bandeau ne se fige pas", () => {
-  // Avant-hier : effondrement spectaculaire. Hier : chute de RR plus modeste.
-  const avantHier = new Date(2026, 7, 24, 20, 0).getTime();
-  const hier = new Date(2026, 7, 25, 20, 0).getTime();
-  const enorme = run(avantHier, [95, 92, 90, 20, 18, 15]);
-  const petit = run(hier, [62, 60, 58], { results: ["l", "l", "l"], rr: [-15, -14, -13] });
-  const a = X.sessionAlerts([
-    { member: MEMBER, matches: enorme.concat(petit) },
-  ], { now: NOW, days: 3 });
-  assert.equal(a.length, 2, "un jour, une alerte");
-  assert.equal(a[0].when, "hier soir", "le plus RÉCENT en tête, même s'il est moins grave");
-  assert.equal(a[1].when, "il y a 2 jours");
-});
 
-test("un jour, une alerte : trois soirs d'affilée donnent trois alertes", () => {
-  const soir = d => new Date(2026, 7, d, 20, 0).getTime();
-  const ms = [23, 24, 25].reduce((acc, d) => acc.concat(run(soir(d), [80, 80, 80, 45, 43, 40])), []);
-  const a = X.sessionAlerts([{ member: MEMBER, matches: ms }], { now: NOW, days: 4, max: 5 });
-  assert.equal(a.length, 3);
-  assert.equal(a.map(x => x.when).join(" | "), "hier soir | il y a 2 jours | il y a 3 jours");
-});
 
 test("une session dans le futur (horloge décalée) n'est pas annoncée", () => {
   const plusTard = NOW + 6 * H;
@@ -223,13 +190,6 @@ test("une session dans le futur (horloge décalée) n'est pas annoncée", () => 
     { now: NOW }).length, 0);
 });
 
-test("le bandeau reste plafonné", () => {
-  const soir = d => new Date(2026, 7, d, 20, 0).getTime();
-  const ms = [20, 21, 22, 23, 24, 25].reduce((acc, d) => acc.concat(run(soir(d), [80, 80, 80, 45, 43, 40])), []);
-  const a = X.sessionAlerts([{ member: MEMBER, matches: ms }], { now: NOW, days: 30, max: 3 });
-  assert.equal(a.length, 3, "plafonné, et ce sont les 3 jours les plus récents");
-  assert.equal(a[0].when, "hier soir");
-});
 
 test("les modes non classés ne créent pas d'alertes", () => {
   const hier = new Date(2026, 7, 25, 20, 0).getTime();
@@ -241,6 +201,40 @@ test("aucun historique : aucune alerte, aucune erreur", () => {
   assert.equal(X.sessionAlerts([], { now: NOW }).length, 0);
   assert.equal(X.sessionAlerts(null, { now: NOW }).length, 0);
   assert.equal(X.sessionAlerts([{ member: MEMBER, matches: [] }], { now: NOW }).length, 0);
+});
+
+test("le bandeau ne montre QUE la session la plus récente", () => {
+  const soir = d => new Date(2026, 7, d, 20, 0).getTime();
+  // Trois soirs d'affilée, dont un effondrement spectaculaire l'avant-veille.
+  const ms = [
+    ...run(soir(23), [95, 92, 90, 20, 18, 15], { results: ["w", "w", "w", "l", "l", "l"] }),
+    ...run(soir(24), [80, 80, 80, 45, 43, 40], { results: ["w", "w", "w", "l", "l", "l"] }),
+    ...run(soir(25), [66, 64, 68], { results: ["w", "l", "w"] }),
+  ];
+  const a = X.sessionAlerts([{ member: MEMBER, matches: ms }], { now: NOW, days: 10 });
+  assert.equal(a.length, 1, "une seule alerte, jamais une liste");
+  assert.equal(a[0].when, "hier soir", "et c'est la session la plus récente");
+  assert.equal(a[0].kind, "recap", "même si une session plus ancienne était plus spectaculaire");
+});
+
+test("entre deux membres, c'est la session qui s'est terminée en dernier", () => {
+  const tot = new Date(2026, 7, 25, 17, 0).getTime();
+  const tard = new Date(2026, 7, 25, 21, 0).getTime();
+  const a = X.sessionAlerts([
+    { member: MEMBER, matches: run(tot, [90, 88, 92], { results: ["w", "w", "w"], rr: [22, 21, 20] }) },
+    { member: { name: "Autre", tag: "2", color: "#fff" }, matches: run(tard, [60, 58, 62]) },
+  ], { now: NOW });
+  assert.equal(a.length, 1);
+  assert.equal(a[0].member.name, "Autre", "la plus récente, même si l'autre est plus remarquable");
+});
+
+test("sur une même session, c'est le constat le plus marquant qui sort", () => {
+  const hier = new Date(2026, 7, 25, 20, 0).getTime();
+  const a = X.sessionAlerts([{ member: MEMBER,
+    matches: run(hier, [85, 82, 80, 40, 38, 35],
+      { results: ["w", "w", "w", "l", "l", "l"], rr: [20, 18, 19, -20, -22, -25] }) }], { now: NOW });
+  assert.equal(a.length, 1);
+  assert.equal(a[0].kind, "tilt", "et pas le simple récapitulatif");
 });
 
 /* ------------------------------------------------------- verdict tribunal */

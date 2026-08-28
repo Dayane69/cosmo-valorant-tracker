@@ -1421,20 +1421,21 @@ function sessionRecords(sessions, ctx){
   };
   const when=r=>fmtDay(r.s.startMs);
   const wl=r=>`${r.st.wins}V-${r.st.losses}D`;
+  const games=r=>`${r.st.n} partie${r.st.n>1?'s':''}`;
 
   add('best','Meilleure session','🔥', top(big,(a,b)=>b.st.index-a.st.index),
-      r=>Math.round(r.st.index), r=>`${when(r)} · ${r.st.n} parties · ${wl(r)}`);
+      r=>Math.round(r.st.index), r=>`${when(r)} · ${games(r)} · ${wl(r)}`);
   add('worst','Pire session','💀', top(big,(a,b)=>a.st.index-b.st.index),
-      r=>Math.round(r.st.index), r=>`${when(r)} · ${r.st.n} parties · ${wl(r)}`);
+      r=>Math.round(r.st.index), r=>`${when(r)} · ${games(r)} · ${wl(r)}`);
 
   const rr=rows.filter(r=>r.st.rrNet!=null);
   const up=top(rr.filter(r=>r.st.rrNet>0),(a,b)=>b.st.rrNet-a.st.rrNet);
   const dn=top(rr.filter(r=>r.st.rrNet<0),(a,b)=>a.st.rrNet-b.st.rrNet);
-  add('rrup','Plus grosse remontée','📈', up, r=>'+'+r.st.rrNet+' RR', r=>`${when(r)} · ${r.st.n} parties · ${wl(r)}`);
-  add('rrdown','Plus grosse chute','📉', dn, r=>r.st.rrNet+' RR', r=>`${when(r)} · ${r.st.n} parties · ${wl(r)}`);
+  add('rrup','Plus grosse remontée','📈', up, r=>'+'+r.st.rrNet+' RR', r=>`${when(r)} · ${games(r)} · ${wl(r)}`);
+  add('rrdown','Plus grosse chute','📉', dn, r=>r.st.rrNet+' RR', r=>`${when(r)} · ${games(r)} · ${wl(r)}`);
 
   add('long','Session la plus longue','⏱', top(rows,(a,b)=>b.st.n-a.st.n || b.s.durationMs-a.s.durationMs),
-      r=>r.st.n+' parties', r=>`${when(r)} · ${fmtDur(r.s.durationMs)} · ${wl(r)}`);
+      r=>r.st.n+' partie'+(r.st.n>1?'s':''), r=>`${when(r)} · ${fmtDur(r.s.durationMs)} · ${wl(r)}`);
 
   const team=big.filter(r=>r.mates.length>0);
   add('team','Meilleure session commune','🤝', top(team,(a,b)=>b.st.index-a.st.index),
@@ -1447,8 +1448,7 @@ function sessionRecords(sessions, ctx){
     const host=rows.find(r=>r.s.matches.some(M=>M.id===streak.to.id));
     if(host) out.push({ key:'streak', label:'Plus longue série', icon:'⚡',
       value: streak.n+' victoires',
-      sub: `jusqu'au ${fmtDay(streak.to.startedMs)}`
-         + (fmtDay(streak.from.startedMs)!==fmtDay(streak.to.startedMs) ? ` (depuis le ${fmtDay(streak.from.startedMs)})` : ''),
+      sub: fmtSpan(streak.from.startedMs, streak.to.startedMs),
       session:host.s, st:host.st });
   }
   return out;
@@ -1469,7 +1469,6 @@ const ALERT_DAYS = 2;          // au-delà de 48 h, on ne montre rien
 const ALERT_MIN_GAMES = 5;     // en dessous, « session trop longue » n'a pas de sens
 const ALERT_TILT = -8;         // baisse d'indice entre les deux moitiés
 const ALERT_RR = 30;           // mouvement de RR jugé notable
-const ALERT_MAX = 3;           // au-delà, ce n'est plus un bandeau mais une liste
 
 const DAY_PART = h => h<5 ? 'nuit' : (h<12 ? 'matin' : (h<18 ? 'après-midi' : 'soir'));
 
@@ -1482,7 +1481,6 @@ function gamingDayStart(ms){
   const d=new Date(ms - DAY_CUTOFF_H*3600000);
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
-const dayKey = ms => String(gamingDayStart(ms));
 // « hier soir », « ce matin », « il y a 3 jours » — jamais une date brute.
 function relDay(ms, nowMs){
   const d=new Date(ms);
@@ -1543,18 +1541,18 @@ function sessionAlerts(perMember, opts){
         text:`${st.n} partie${st.n>1?'s':''} ${base.when} — ${st.wins}V-${st.losses}D${rrTxt}, indice ${Math.round(st.index||0)}.` });
     });
   });
-  // Une seule alerte par JOUR — la plus marquante de la journée — et les jours
-  // récents d'abord. La récence prime TOUJOURS sur la gravité : une grosse
-  // session d'avant-hier ne doit pas masquer celle d'hier soir, sinon le
-  // bandeau se fige sur le même évènement pendant des jours.
-  const best={};
+  // UNE SEULE alerte : celle de la session la plus récente, tous membres
+  // confondus. Rien d'autre — un bandeau qui empile plusieurs évènements de
+  // plusieurs jours devient un mur qu'on ne lit plus.
+  if(!out.length) return [];
+  let last=null;
   out.forEach(a=>{
-    const k=dayKey(a.session.startMs);
-    if(!best[k] || a.severity>best[k].severity) best[k]=a;
+    if(!last) { last=a; return; }
+    if(a.session.endMs > last.session.endMs) { last=a; return; }
+    // Même session : on garde le constat le plus marquant.
+    if(a.session.endMs === last.session.endMs && a.severity > last.severity) last=a;
   });
-  return Object.keys(best).map(k=>best[k])
-    .sort((a,b)=>b.session.startMs-a.session.startMs)
-    .slice(0, opts.max||ALERT_MAX);
+  return [last];
 }
 
 /* --- Lien de partage d'une session ------------------------------------------
@@ -2126,6 +2124,16 @@ const FR_DAYS=['dimanche','lundi','mardi','mercredi','jeudi','vendredi','samedi'
 const FR_MONTHS=['janv.','févr.','mars','avr.','mai','juin','juil.','août','sept.','oct.','nov.','déc.'];
 const pad2=n=>String(n).padStart(2,'0');
 function fmtDay(ms){ const d=new Date(ms); return `${FR_DAYS[d.getDay()]} ${d.getDate()} ${FR_MONTHS[d.getMonth()]}`; }
+// Intervalle compact : « du 24 au 26 août », « le 26 août ». La version longue
+// (« jusqu'au mercredi 26 août (depuis le lundi 24 août) ») ne tenait pas sur
+// une ligne de téléphone.
+function fmtSpan(fromMs, toMs){
+  const a=new Date(fromMs), b=new Date(toMs);
+  const day=x=>`${x.getDate()} ${FR_MONTHS[x.getMonth()]}`;
+  if(a.getDate()===b.getDate() && a.getMonth()===b.getMonth()) return `le ${day(b)}`;
+  if(a.getMonth()===b.getMonth()) return `du ${a.getDate()} au ${day(b)}`;
+  return `du ${day(a)} au ${day(b)}`;
+}
 function fmtHM(ms){ const d=new Date(ms); return pad2(d.getHours())+':'+pad2(d.getMinutes()); }
 function fmtDur(ms){
   const m=Math.max(1, Math.round(ms/60000)), h=Math.floor(m/60);
@@ -2227,13 +2235,15 @@ async function copyShareLink(url, btn){
       document.body.removeChild(ta);
     }catch(e){ ok=false; }
   }
+  if(!ok){ const f=$('sxShareUrl'); if(f){ f.hidden=false; f.select&&f.select(); } }
   if(btn){
     const old=btn.textContent;
     btn.textContent = ok ? '✓ Lien copié' : '⚠ Copie impossible';
     btn.classList.toggle('done', ok);
     setTimeout(()=>{ btn.textContent=old; btn.classList.remove('done'); }, 2200);
   }
-  // Si la copie échoue, le lien reste lisible et sélectionnable dans la modale.
+  // Si la copie échoue, le champ ci-dessus prend le relais : le lien reste
+  // sélectionnable à la main.
   return ok;
 }
 
@@ -2334,10 +2344,7 @@ function openSessionReport(key){
         <div><div class="sx-word">${esc(A.verdict.word)}</div><div class="sx-line">${esc(A.verdict.line)}</div></div>
       </div>
     </div>
-    <div class="sx-share">
-      <button class="btn" id="sxShareBtn" type="button" data-url="${esc(shareURL)}">🔗 Copier le lien de la session</button>
-      <input class="sx-url" id="sxShareUrl" readonly value="${esc(shareURL)}" aria-label="Lien de la session">
-    </div>
+
     ${mixNote}${partyNote}
 
     <div class="md-sec">Bilan de la session</div>
@@ -2381,7 +2388,13 @@ function openSessionReport(key){
         <td class="scell" style="color:${mt.c}">${M.me.score100}</td>
         <td class="${M.rr&&M.rr.change>=0?'up':'dn'}">${M.rr&&M.rr.change!=null?signed(M.rr.change):'—'}</td>
       </tr>`;
-    }).join('')}</tbody></table></div>`;
+    }).join('')}</tbody></table></div>
+
+    <div class="sx-share">
+      <button class="btn" id="sxShareBtn" type="button" data-url="${esc(shareURL)}">🔗 Copier le lien de la session</button>
+      <!-- Repli : révélé seulement si la copie échoue (permission refusée, http). -->
+      <input class="sx-url" id="sxShareUrl" readonly hidden value="${esc(shareURL)}" aria-label="Lien de la session">
+    </div>`;
 
   modal.hidden=false;
   document.body.style.overflow='hidden';

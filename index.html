@@ -598,7 +598,7 @@
 
   /* ============ RECORDS DE SESSION ============ */
   .rec-grid,#recList{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px}
-  .rec{display:flex;gap:11px;align-items:center;text-align:left;width:100%;
+  .rec{display:flex;gap:11px;align-items:center;text-align:left;width:100%;min-width:0;
     background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px 13px;
     color:var(--txt);font-family:var(--sans);cursor:pointer;transition:border-color .12s,transform .12s}
   .rec:hover{border-color:var(--amber);transform:translateY(-1px)}
@@ -612,7 +612,8 @@
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
   /* ============ PARTAGE D'UNE SESSION ============ */
-  .sx-share{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
+  .sx-share{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    margin:22px 0 0;border-top:1px solid var(--line);padding-top:16px}
   .sx-share .btn.done{border-color:var(--win);color:var(--win)}
   .sx-url{flex:1;min-width:180px;background:var(--bg);border:1px solid var(--line);color:var(--muted);
     border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:11px}
@@ -640,11 +641,24 @@
   .md-timeline{-webkit-overflow-scrolling:touch}
 
   @media(max-width:760px){
+    /* --- barre d'actions de l'accueil ---
+       En position:absolute avec 4 éléments (voyant + 3 boutons), elle dépassait
+       par la GAUCHE et passait par-dessus le titre. Sur mobile elle redevient un
+       bloc normal, centré et capable de passer à la ligne. */
+    .gear{position:static;justify-content:center;flex-wrap:wrap;gap:7px;
+      padding:14px 12px 0;margin:0 auto;max-width:100%}
+    .gear button{font-size:15px;padding:9px 13px;line-height:1}
+    .glbl{display:none}                    /* les émojis suffisent sur cette largeur */
+    .fresh{padding:7px 10px;font-size:10px}
+    #home{padding-top:0}
+    .hhead{padding-top:6px}
+
     /* --- en-têtes de cartes : le titre et les contrôles s'empilent --- */
     .tabs-header{align-items:flex-start}
     .tabs-header>span{width:100%}
-    .card h2{font-size:11px}
-    .card h2 em{display:block;margin-top:2px}
+    .card h2{font-size:11px;margin-bottom:10px;gap:8px}
+    .card h2 em{display:block;margin:3px 0 0;font-size:10px;letter-spacing:.02em;
+      text-transform:none;color:var(--dim)}
 
     /* --- profil : titre lisible sans pousser le bouton hors écran --- */
     #profile{padding:16px 12px 60px}
@@ -711,7 +725,7 @@
     .alert-cta{grid-column:2;margin-top:2px}
 
     /* --- records : une colonne, et le lien de partage sous le bouton --- */
-    #recList{grid-template-columns:1fr}
+    #recList{grid-template-columns:minmax(0,1fr)}
     .sx-share{flex-direction:column;align-items:stretch}
     .sx-url{width:100%}
   }
@@ -722,7 +736,9 @@
     .back{display:inline-block;padding:14px 6px;margin-bottom:4px;font-size:13px}
     .btn{min-height:44px;padding:11px 15px}
     .rrsel{min-height:44px;padding:10px;max-width:100%}
+    .field input,.field select,#edToken{min-height:44px}
     .seg button{min-height:44px;padding:11px 16px}
+    .gear button{min-height:44px}
     .modal-x{width:44px;height:44px}
     .edrow input{min-height:44px}
     .edrow .edrm{width:44px;height:44px}
@@ -753,9 +769,9 @@
 <section id="home">
   <div class="gear">
     <button class="fresh" id="freshHome" type="button" hidden></button>
-    <button id="btnLeaderboard">🏆 Leaderboard</button>
-    <button id="btnTribunal">⚖ Tribunal COSMO</button>
-    <button id="btnGear">⚙ Paramètres</button>
+    <button id="btnLeaderboard" aria-label="Leaderboard">🏆<span class="glbl"> Leaderboard</span></button>
+    <button id="btnTribunal" aria-label="Tribunal COSMO">⚖<span class="glbl"> Tribunal COSMO</span></button>
+    <button id="btnGear" aria-label="Paramètres">⚙<span class="glbl"> Paramètres</span></button>
   </div>
   <div class="hwrap">
     <div class="hhead">
@@ -1007,6 +1023,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260828a" defer></script>
+<script src="app.js?v=20260828b" defer></script>
 </body>
 </html>
