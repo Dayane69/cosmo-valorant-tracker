@@ -1453,9 +1453,12 @@ function sessionRecords(sessions, ctx){
    l'accueil). Conséquence assumée : une session jouée ce soir n'apparaît
    qu'une fois le blob rafraîchi (cron de 04:00 UTC, ou ouverture du profil). */
 const ALERT_DAYS = 2;          // au-delà de 48 h, on ne montre rien
-const ALERT_MIN_GAMES = 6;     // « session qui dépasse 6 parties »
+// Seuils recalibrés sur les sessions réelles de la squad (mesurées : 2 à 7
+// parties, RR net entre -46 et +68). À 6 parties et ±40 RR, des soirées à
+// +68 RR ne déclenchaient rien du tout.
+const ALERT_MIN_GAMES = 5;     // en dessous, « session trop longue » n'a pas de sens
 const ALERT_TILT = -8;         // baisse d'indice entre les deux moitiés
-const ALERT_RR = 40;           // mouvement de RR jugé notable
+const ALERT_RR = 30;           // mouvement de RR jugé notable
 const ALERT_MAX = 3;           // au-delà, ce n'est plus un bandeau mais une liste
 
 const DAY_PART = h => h<5 ? 'nuit' : (h<12 ? 'matin' : (h<18 ? 'après-midi' : 'soir'));
@@ -1494,7 +1497,12 @@ function sessionAlerts(perMember, opts){
       const st=sessionStats(s.matches), tr=sessionTrend(s.matches);
       const base={ member:entry.member, session:s, st, trend:tr, when:relDay(s.startMs, now) };
 
-      if(st.n>=ALERT_MIN_GAMES && tr && tr.delta<=ALERT_TILT){
+      // Une session qui rapporte du RR n'est pas « partie en vrille », même si
+      // les dernières parties étaient moins bonnes : on ne fait pas la leçon à
+      // quelqu'un qui vient de gagner 68 RR. Le tilt n'a de sens que si la
+      // soirée s'est mal terminée dans les faits.
+      const gagnee = st.rrNet!=null ? st.rrNet>=ALERT_RR : (st.winrate!=null && st.winrate>=60);
+      if(st.n>=ALERT_MIN_GAMES && tr && tr.delta<=ALERT_TILT && !gagnee){
         const tail=tr.n-Math.ceil(tr.n/2);
         out.push({ ...base, kind:'tilt', tone:'warn', icon:'📉',
           severity: 100 + Math.abs(tr.delta),
@@ -1505,11 +1513,24 @@ function sessionAlerts(perMember, opts){
           severity: 60 + Math.abs(st.rrNet),
           text:`${st.rrNet} RR ${base.when} en ${st.n} partie${st.n>1?'s':''} (${st.wins}V-${st.losses}D).` });
       }
-      if(st.rrNet!=null && st.rrNet>=ALERT_RR && (!tr || tr.delta>=0)){
+      // Pas de condition sur la tendance : une soirée à +68 RR est une bonne
+      // nouvelle, même si la dernière partie était moins bonne.
+      if(st.rrNet!=null && st.rrNet>=ALERT_RR){
         out.push({ ...base, kind:'hot', tone:'good', icon:'🚀',
           severity: 50 + st.rrNet,
           text:`+${st.rrNet} RR ${base.when} en ${st.n} partie${st.n>1?'s':''} (${st.wins}V-${st.losses}D).` });
       }
+
+      // Récapitulatif, toujours produit : même sans rien de spectaculaire, on
+      // montre ce qui a été joué. Un bandeau vide en permanence donne
+      // l'impression que la fonctionnalité est cassée, et « 5 parties hier,
+      // 2V-3D, -10 RR » reste une information. Sa gravité est volontairement
+      // sous celle de tous les autres cas : il ne prend la place que si rien
+      // de plus marquant n'a eu lieu ce jour-là.
+      const rrTxt = st.rrNet!=null ? `, ${signed(st.rrNet)} RR` : '';
+      out.push({ ...base, kind:'recap', tone:'info', icon:'🎮',
+        severity: Math.min(40, st.n),
+        text:`${st.n} partie${st.n>1?'s':''} ${base.when} — ${st.wins}V-${st.losses}D${rrTxt}, indice ${Math.round(st.index||0)}.` });
     });
   });
   // Une seule alerte par JOUR — la plus marquante de la journée — et les jours

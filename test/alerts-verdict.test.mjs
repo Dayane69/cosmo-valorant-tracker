@@ -92,7 +92,9 @@ test("une session à cheval sur minuit ne compte que pour un seul jour", () => {
 
 test("session longue qui s'effondre : c'est l'alerte demandée", () => {
   const hier = new Date(2026, 7, 25, 20, 0).getTime();
-  const a = X.sessionAlerts([{ member: MEMBER, matches: run(hier, [80, 78, 82, 50, 44, 48]) }], { now: NOW });
+  // Bilan à l'équilibre : la baisse est bien le sujet.
+  const a = X.sessionAlerts([{ member: MEMBER,
+    matches: run(hier, [80, 78, 82, 50, 44, 48], { results: ["w", "w", "w", "l", "l", "l"] }) }], { now: NOW });
   assert.equal(a.length, 1);
   assert.equal(a[0].kind, "tilt");
   assert.match(a[0].text, /6 parties d'affilée hier soir/);
@@ -107,10 +109,51 @@ test("une session courte, même en baisse, ne déclenche rien", () => {
     `il faut au moins ${X.ALERT_MIN_GAMES} parties pour parler de session trop longue`);
 });
 
-test("une session longue mais stable ne déclenche rien non plus", () => {
+test("une session longue mais stable ne sonne pas l'alarme", () => {
   const hier = new Date(2026, 7, 25, 20, 0).getTime();
   const a = X.sessionAlerts([{ member: MEMBER, matches: run(hier, [70, 68, 72, 69, 71, 70, 73]) }], { now: NOW });
-  assert.equal(a.length, 0, "jouer longtemps n'est pas un problème en soi");
+  assert.equal(a.length, 1);
+  assert.equal(a[0].kind, "recap", "jouer longtemps n'est pas un problème en soi");
+  assert.equal(a[0].tone, "info");
+});
+
+test("un récapitulatif est toujours produit : le bandeau n'est jamais vide après avoir joué", () => {
+  const hier = new Date(2026, 7, 25, 20, 0).getTime();
+  // Session parfaitement quelconque : 3 parties, bilan neutre, RR nul.
+  const a = X.sessionAlerts([{ member: MEMBER,
+    matches: run(hier, [66, 64, 68], { results: ["w", "l", "w"], rr: [18, -17, 0] }) }], { now: NOW });
+  assert.equal(a.length, 1);
+  assert.equal(a[0].kind, "recap");
+  assert.match(a[0].text, /3 parties hier soir/);
+  assert.match(a[0].text, /2V-1D/);
+  assert.match(a[0].text, /indice/);
+});
+
+test("le récapitulatif s'efface devant un évènement marquant du même jour", () => {
+  const hier = new Date(2026, 7, 25, 20, 0).getTime();
+  const a = X.sessionAlerts([{ member: MEMBER,
+    matches: run(hier, [62, 60, 58], { results: ["l", "l", "l"], rr: [-15, -14, -13] }) }], { now: NOW });
+  assert.equal(a.length, 1);
+  assert.equal(a[0].kind, "rrdrop", "la chute de RR passe devant le simple récapitulatif");
+});
+
+test("une soirée gagnante n'est jamais accusée d'être partie en vrille", () => {
+  const hier = new Date(2026, 7, 25, 20, 0).getTime();
+  // Indice en chute libre, mais 5 victoires sur 6 : ce n'est pas un tilt.
+  const a = X.sessionAlerts([{ member: MEMBER,
+    matches: run(hier, [90, 88, 86, 45, 42, 40],
+      { results: ["w", "w", "w", "w", "w", "l"], rr: [22, 21, 20, 19, 18, -14] }) }], { now: NOW });
+  assert.notEqual(a[0].kind, "tilt");
+  assert.equal(a[0].kind, "hot");
+});
+
+test("une grosse remontée alerte même si la fin de session est moins bonne", () => {
+  // Le cas réel qui ne déclenchait rien : +68 RR avec une tendance négative.
+  const hier = new Date(2026, 7, 25, 20, 0).getTime();
+  const a = X.sessionAlerts([{ member: MEMBER,
+    matches: run(hier, [85, 82, 80, 60, 58], { results: ["w", "w", "w", "w", "l"], rr: [22, 21, 20, 19, -14] }) }],
+    { now: NOW });
+  assert.equal(a[0].kind, "hot", "+68 RR reste une bonne nouvelle");
 });
 
 test("une grosse chute de RR alerte, une belle remontée aussi", () => {
