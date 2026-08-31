@@ -3762,7 +3762,9 @@ function spinAll(slots, ms){
       s.el.innerHTML = s.render(s.winner);
       s.el.classList.remove('spinning');
       s.el.classList.add('pop');
-      const st=$('rouStage'); if(st){ st.classList.remove('flash'); void st.offsetWidth; st.classList.add('flash'); }
+      // rou-flash, PAS flash : .flash est déjà l'overlay du tribunal
+      // (position:absolute;opacity:0) et faisait disparaître la scène.
+      const st=$('rouStage'); if(st){ st.classList.remove('rou-flash'); void st.offsetWidth; st.classList.add('rou-flash'); }
     };
     if(reduceMotion()){ live.forEach(lock); resolve(); return; }
 

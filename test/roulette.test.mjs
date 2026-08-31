@@ -213,3 +213,28 @@ test("les rôles traduits couvrent les quatre rôles du jeu", () => {
   // deepEqual échoue entre réalms vm : on compare les chaînes.
   assert.equal(Object.values(X.ROLE_FR).sort().join(","), X.ROLES.slice().sort().join(","));
 });
+
+/* --------------------------------------------------- collisions de classes */
+// La roulette a déjà été escamotée par une classe empruntée : spinAll posait
+// `flash` sur la scène, or `.flash` est l'overlay du tribunal
+// (position:absolute ; opacity:0). Résultat : la scène disparaissait au premier
+// verrouillage. On vérifie donc qu'aucune classe animée par spinAll n'a de
+// règle GLOBALE (`.nom{…}` non qualifiée) dans la feuille de style.
+test("les classes animées par la roulette ne sont pas déjà prises ailleurs", () => {
+  const app = readFileSync(join(root, "app.js"), "utf8");
+  const html = readFileSync(join(root, "index.html"), "utf8");
+
+  const from = app.indexOf("function spinAll(");
+  assert.ok(from > 0, "spinAll introuvable");
+  const body = app.slice(from, app.indexOf("\nfunction ", from + 10));
+  const used = new Set();
+  for (const m of body.matchAll(/classList\.(?:add|remove|toggle)\(\s*'([\w-]+)'/g)) used.add(m[1]);
+  assert.ok(used.size, "aucune classe détectée : le test ne vérifie plus rien");
+
+  for (const cls of used) {
+    // Une règle globale = le sélecteur est exactement `.cls`, sans rien devant
+    // (pas de `.rou-slot.pop`, pas de `#rouStage.pop`).
+    const bare = new RegExp(`(^|[,{}])\\s*\\.${cls}\\s*(,[^{]*)?\\{`, "m");
+    assert.ok(!bare.test(html), `.${cls} a une règle globale : la roulette hérite de styles qui ne sont pas les siens`);
+  }
+});

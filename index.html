@@ -611,9 +611,11 @@
   .rou-who-lbl{font-size:12px}
   .rou-slot.spinning{border-color:var(--amber);animation:roushake .35s linear infinite}
   @keyframes roushake{0%,100%{transform:translateY(0)}25%{transform:translateY(-2px)}75%{transform:translateY(2px)}}
-  .rou-stage.flash{animation:rouflash .4s ease-out}
+  /* rou-flash et pas flash : .flash est l'overlay du tribunal, en absolute
+     et opacity:0 — le réutiliser ici escamotait toute la scène. */
+  .rou-stage.rou-flash{animation:rouflash .4s ease-out}
   @keyframes rouflash{0%{filter:brightness(1.35)}100%{filter:brightness(1)}}
-  @media(prefers-reduced-motion:reduce){ .rou-slot.spinning,.rou-stage.flash{animation:none} }
+  @media(prefers-reduced-motion:reduce){ .rou-slot.spinning,.rou-stage.rou-flash{animation:none} }
   .rou-go{text-align:center;margin:18px 0}
   .rou-stage{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;min-height:10px}
   .rou-pair{display:flex;flex-direction:column;gap:8px;align-items:center}
@@ -1180,6 +1182,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260831a" defer></script>
+<script src="app.js?v=20260831b" defer></script>
 </body>
 </html>
