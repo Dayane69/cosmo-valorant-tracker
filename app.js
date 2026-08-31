@@ -1657,33 +1657,40 @@ function freshAgents(pool, counts){
   return pool.filter(a=>(c[a.name]||0)===min);
 }
 
-/* Compose une équipe : qui joue, et avec quel agent.
-   opts : { size, role, balanced, fresh, counts:{clé->comptes}, rnd }
-   - role     : restreint TOUS les agents à ce rôle ('all' = aucun filtre)
-   - balanced : un rôle différent par joueur tant qu'il en reste
-   - fresh    : privilégie les agents que la personne joue le moins */
+/* Répartit des rôles sur `total` places : autant de places que demandé par rôle,
+   le reste en « libre » (n'importe quel agent). */
+function compoSlots(counts, total){
+  const slots=[];
+  ROLES.forEach(r=>{ for(let i=0;i<((counts&&counts[r])||0);i++) slots.push(r); });
+  while(slots.length < total) slots.push(null);
+  return slots.slice(0, total);
+}
+
+/* Attribue un agent à CHAQUE personne fournie. Les joueurs ne sont plus tirés au
+   sort — le groupe est déjà formé, c'est l'appelant qui décide qui joue. Ce qui
+   est tiré, c'est la répartition des rôles sur les joueurs, puis l'agent.
+   opts : { slots:[role|null], fresh, counts:{clé->comptes}, list, rnd } */
 function rollComposition(people, opts){
   opts = opts || {};
   const rnd = opts.rnd || Math.random;
-  const size = Math.max(1, Math.min(opts.size||1, (people||[]).length || 1));
-  const chosen = pickMany(people, size, rnd);
+  const list = opts.list || AGENT_LIST;
+  const team = (people||[]).slice();
+  if(!team.length) return [];
+  // Les places sont mélangées : à compo identique, ce n'est pas toujours la même
+  // personne qui hérite du même rôle.
+  const base = opts.slots && opts.slots.length ? opts.slots.slice(0, team.length) : [];
+  while(base.length < team.length) base.push(null);
+  const slots = pickMany(base, base.length, rnd);
   const counts = opts.counts || {};
-  const usedAgents = {};              // deux joueurs ne prennent pas le même agent
-  const rolesLeft = opts.balanced ? ROLES.slice() : null;
+  const used = {};                    // deux joueurs ne prennent pas le même agent
 
-  return chosen.map(p=>{
-    let role = opts.role && opts.role!=='all' ? opts.role : null;
-    if(rolesLeft && rolesLeft.length){
-      // Un rôle par joueur, tiré au sort parmi ceux qui restent.
-      const r = pickOne(rolesLeft, rnd);
-      rolesLeft.splice(rolesLeft.indexOf(r), 1);
-      role = r;
-    }
-    let pool = agentsForRole(role, opts.list).filter(a=>!usedAgents[a.name]);
-    if(!pool.length) pool = agentsForRole(role, opts.list);     // plus assez d'agents : on autorise le doublon
+  return team.map((p,i)=>{
+    const role = slots[i] || null;
+    let pool = agentsForRole(role, list).filter(a=>!used[a.name]);
+    if(!pool.length) pool = agentsForRole(role, list);   // plus assez d'agents : doublon toléré
     if(opts.fresh) pool = freshAgents(pool, counts[memberKey(p)] || {});
     const agent = pickOne(pool, rnd);
-    if(agent) usedAgents[agent.name] = true;
+    if(agent) used[agent.name] = true;
     return { person:p, agent, role: agent ? agent.role : role };
   });
 }
@@ -3706,38 +3713,34 @@ function openAlert(idStr, ts){
 
 /* ===================== ROULETTE — MISE EN SCÈNE ===================== */
 let ROULETTE_BUSY = false;
-let ROU_MODE = 'compo';      // compo | agent | gens
-let ROU_SIZE = 5;
-let ROU_ROLE = 'all';
-let ROU_BALANCED = true;
+let ROU_MODE = 'compo';        // compo | agent
+let ROU_ROLE = 'all';          // mode agent uniquement
 let ROU_FRESH = false;
+let ROU_PICKED = null;         // Set de clés : qui joue (null = pas encore initialisé)
+let ROU_PRESET = 'balanced';   // balanced | free | custom
+let ROU_COUNTS = { 'Duelliste':0, 'Initiateur':0, 'Contrôleur':0, 'Sentinelle':0 };
 
 const reduceMotion = () => {
   try{ return window.matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(e){ return false; }
 };
-
-/* Fait défiler `items` dans `el` puis s'arrête PILE sur `winner`.
-   On calcule le nombre exact de crans à parcourir pour que la dernière image
-   affichée soit la bonne — sinon l'animation et le résultat se contredisent. */
-function spinReel(el, items, winner, render, ms){
-  return new Promise(resolve=>{
-    if(!el || !items.length){ resolve(); return; }
-    const target = Math.max(0, items.indexOf(winner));
-    if(reduceMotion()){ el.innerHTML = render(items[target]); resolve(); return; }
-    const dur = ms || 2200;
-    const turns = 4;                                  // tours complets avant l'arrêt
-    const steps = turns*items.length + target;        // atterrissage exact
-    const start = performance.now();
-    let shown = -1;
-    (function frame(now){
-      const t = Math.min(1, (now-start)/dur);
-      const eased = 1 - Math.pow(1-t, 3);             // très rapide, puis quasi arrêté
-      const idx = Math.round(eased*steps) % items.length;
-      if(idx !== shown){ shown = idx; el.innerHTML = render(items[idx]); }
-      if(t < 1) requestAnimationFrame(frame);
-      else { el.innerHTML = render(items[target]); el.classList.add('pop'); resolve(); }
-    })(start);
-  });
+const rouPeople = () => { const a=sessionRoster(); return a.length?a:ROSTER; };
+function rouSelected(){
+  if(!ROU_PICKED) return [];
+  return rouPeople().filter(p=>ROU_PICKED.has(memberKey(p)));
+}
+// Comptes d'agents par personne, pour le mode « à tester ».
+function rouCounts(){
+  const c={};
+  rouPeople().forEach(p=>{ c[memberKey(p)] = agentPlayCounts((SQUAD_HIST||{})[memberKey(p)] || []); });
+  return c;
+}
+// Répartition effective des rôles selon le préréglage choisi.
+function rouSlots(n){
+  if(ROU_PRESET==='free') return compoSlots({}, n);
+  if(ROU_PRESET==='custom') return compoSlots(ROU_COUNTS, n);
+  // Équilibrée : un rôle différent par joueur, puis des places libres.
+  const c={}; ROLES.slice(0, n).forEach(r=>{ c[r]=1; });
+  return compoSlots(c, n);
 }
 
 const rouAgentCard = a => a ? `
@@ -3745,23 +3748,46 @@ const rouAgentCard = a => a ? `
     ${a.icon?`<img src="${esc(a.icon)}" alt="${esc(a.name)}" loading="lazy">`:'<div class="rou-noimg"></div>'}
     <div class="rou-an">${esc(a.name)}</div>
     <div class="rou-ar mono">${esc(a.role||'')}</div>
-  </div>` : '<div class="rou-agent"></div>';
+  </div>` : '<div class="rou-agent"><div class="rou-noimg"></div><div class="rou-an">—</div></div>';
 
-const rouPersonCard = p => p ? `
-  <div class="rou-person" style="--c:${esc(p.color||'#8696a6')}">
-    <div class="rou-pn">${esc(p.name)}</div>
-    <div class="rou-pt mono">#${esc(p.tag)}${p.guest?' · invité':''}</div>
-  </div>` : '<div class="rou-person"></div>';
+/* Toutes les roues tournent EN MÊME TEMPS, puis se verrouillent une par une.
+   C'est nettement plus tendu que de les faire défiler chacune son tour : on voit
+   la compo se figer place par place, et il reste toujours quelque chose qui
+   tourne jusqu'au dernier. */
+function spinAll(slots, ms){
+  return new Promise(resolve=>{
+    const live = slots.filter(s=>s.el && s.pool && s.pool.length);
+    if(!live.length){ resolve(); return; }
+    const lock = s => {
+      s.el.innerHTML = s.render(s.winner);
+      s.el.classList.remove('spinning');
+      s.el.classList.add('pop');
+      const st=$('rouStage'); if(st){ st.classList.remove('flash'); void st.offsetWidth; st.classList.add('flash'); }
+    };
+    if(reduceMotion()){ live.forEach(lock); resolve(); return; }
 
-function rouPeople(){
-  const all = sessionRoster();
-  return all.length ? all : ROSTER;
-}
-// Comptes d'agents par personne, pour le mode « à tester ».
-function rouCounts(){
-  const c={};
-  rouPeople().forEach(p=>{ c[memberKey(p)] = agentPlayCounts((SQUAD_HIST||{})[memberKey(p)] || []); });
-  return c;
+    const hold = ms || 1500;                      // tout le monde tourne
+    const gap  = 620;                             // écart entre deux verrouillages
+    const start = performance.now();
+    live.forEach(s=>{ s.el.classList.add('spinning'); s.lockAt = start + hold + live.indexOf(s)*gap; s.done=false; });
+    const end = start + hold + (live.length-1)*gap + 450;
+    let tick = 0;
+    (function frame(now){
+      // Le défilement ralentit à l'approche du verrouillage de chaque roue.
+      if(now - tick > 70){
+        tick = now;
+        live.forEach(s=>{
+          if(s.done) return;
+          const left = s.lockAt - now;
+          if(left <= 0){ s.done = true; lock(s); return; }
+          if(left > 260 || Math.random() < 0.45)
+            s.el.innerHTML = s.render(s.pool[Math.floor(Math.random()*s.pool.length)]);
+        });
+      }
+      if(now < end) requestAnimationFrame(frame);
+      else { live.forEach(s=>{ if(!s.done){ s.done=true; lock(s); } }); resolve(); }
+    })(start);
+  });
 }
 
 function rouStatus(html){ const el=$('rouStatus'); if(el) el.innerHTML=html||''; }
@@ -3775,47 +3801,36 @@ async function runRoulette(){
     return;
   }
   ROULETTE_BUSY=true;
-  const btn=$('rouGo'); if(btn) btn.disabled=true;
+  const btn=$('rouGo'); if(btn){ btn.disabled=true; btn.textContent='🎲 Le destin réfléchit…'; }
   rouStatus('');
 
-  const people=rouPeople();
   try{
     if(ROU_MODE==='agent'){
       const pool=agentsForRole(ROU_ROLE);
-      stage.innerHTML=`<div class="rou-slot" id="rouSlot0"></div>`;
       const winner=pickOne(pool);
-      await spinReel($('rouSlot0'), pool, winner, rouAgentCard);
+      stage.innerHTML=`<div class="rou-slot" id="rouSlot0"></div>`;
+      await spinAll([{ el:$('rouSlot0'), pool, winner, render:rouAgentCard }], 2200);
       rouStatus(`Le destin a parlé : <b>${esc(winner.name)}</b> — ${esc(winner.role)}.`);
-    }
-    else if(ROU_MODE==='gens'){
-      const n=Math.min(ROU_SIZE, people.length);
-      const chosen=pickMany(people, n);
-      stage.innerHTML=chosen.map((_,i)=>`<div class="rou-slot" id="rouSlot${i}"></div>`).join('');
-      // Un par un : le suspense tient au fait de les découvrir en séquence.
-      for(let i=0;i<chosen.length;i++) await spinReel($('rouSlot'+i), people, chosen[i], rouPersonCard, 1500+i*250);
-      rouStatus(`${chosen.length===1?'Joueur tiré':'Équipe tirée'} : <b>${chosen.map(p=>esc(p.name)).join(', ')}</b>.`);
-    }
-    else {
-      const picks=rollComposition(people, { size:ROU_SIZE, role:ROU_ROLE,
-        balanced:ROU_BALANCED, fresh:ROU_FRESH, counts:ROU_FRESH?rouCounts():{} });
-      stage.innerHTML=picks.map((_,i)=>`<div class="rou-pair" id="rouPair${i}">
-        <div class="rou-slot person" id="rouP${i}"></div>
+    } else {
+      const team=rouSelected();
+      if(!team.length){ rouStatus('Choisis au moins un joueur.'); throw new Error('__vide');}
+      const picks=rollComposition(team, { slots:rouSlots(team.length), fresh:ROU_FRESH,
+        counts:ROU_FRESH?rouCounts():{} });
+      stage.innerHTML=picks.map((p,i)=>`<div class="rou-pair">
+        <div class="rou-who" style="--c:${esc(p.person.color||'#8696a6')}">${esc(p.person.name)}</div>
         <div class="rou-slot" id="rouA${i}"></div>
       </div>`).join('');
-      const pools=picks.map(p=>{
-        const pool=agentsForRole(ROU_BALANCED?p.role:ROU_ROLE);
-        return pool.length?pool:AGENT_LIST;
+      const slots=picks.map((p,i)=>{
+        const pool=agentsForRole(p.role);
+        return { el:$('rouA'+i), pool:pool.length?pool:AGENT_LIST, winner:p.agent, render:rouAgentCard };
       });
-      for(let i=0;i<picks.length;i++){
-        $('rouP'+i).innerHTML=rouPersonCard(picks[i].person);
-        await spinReel($('rouA'+i), pools[i], picks[i].agent, rouAgentCard, 1600+i*200);
-      }
+      await spinAll(slots);
       const missing=picks.filter(p=>!p.agent).length;
-      rouStatus(missing ? 'Pas assez d\'agents disponibles pour tout le monde.'
-        : `Compo tirée pour <b>${picks.length}</b> joueur${picks.length>1?'s':''}${ROU_FRESH?' · agents les moins joués':''}.`);
+      rouStatus(missing ? "Pas assez d'agents disponibles pour tout le monde."
+        : `Compo tirée${ROU_FRESH?' · agents les moins joués':''}. Bonne chance.`);
     }
-  }catch(e){ rouStatus('Le tirage a échoué : '+esc((e&&e.message)||'erreur')); }
-  if(btn) btn.disabled=false;
+  }catch(e){ if(e && e.message!=='__vide') rouStatus('Le tirage a échoué : '+esc((e&&e.message)||'erreur')); }
+  if(btn){ btn.disabled=false; btn.textContent='🎲 Lancer la roulette'; }
   ROULETTE_BUSY=false;
 }
 
@@ -3823,31 +3838,75 @@ function showRoulette(){
   $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
   $('leaderboard').hidden=true; $('roulette').hidden=false;
   window.scrollTo(0,0);
+  // Par défaut : toute la squad est sélectionnée, on retire ceux qui ne jouent pas.
+  if(!ROU_PICKED) ROU_PICKED=new Set(ROSTER.map(memberKey));
   renderRouletteControls();
   ensureAgents().then(()=>{ if(!$('roulette').hidden) renderRouletteControls(); });
 }
 
-function renderRouletteControls(){
-  const n=rouPeople().length;
-  document.querySelectorAll('#rouMode button').forEach(b=>b.classList.toggle('on', b.dataset.mode===ROU_MODE));
-  document.querySelectorAll('#rouSize button').forEach(b=>{
-    b.classList.toggle('on', +b.dataset.size===ROU_SIZE);
-    b.disabled = +b.dataset.size > n;      // pas de 5-stack à 3 personnes
+// Les compteurs de rôles sont bâtis UNE fois : les re-générer à chaque clic
+// faisait disparaître le bouton sous le doigt (et clignoter la liste).
+function buildCompoCounters(){
+  const cust=$('rouCustom');
+  if(!cust || cust.dataset.built) return;
+  cust.dataset.built='1';
+  cust.innerHTML=ROLES.map(r=>`<div class="rou-cnt">
+    <span class="rou-cn">${esc(r)}</span>
+    <button class="rou-pm" type="button" data-role-dec="${esc(r)}" aria-label="Moins de ${esc(r)}">−</button>
+    <b data-role-val="${esc(r)}">0</b>
+    <button class="rou-pm" type="button" data-role-inc="${esc(r)}" aria-label="Plus de ${esc(r)}">+</button>
+  </div>`).join('');
+}
+
+// Met à jour les seuls chiffres et le résumé, sans toucher à la structure.
+function syncCompo(){
+  const n=rouSelected().length;
+  ROLES.forEach(r=>{
+    const b=document.querySelector(`[data-role-val="${r}"]`);
+    if(b) b.textContent=ROU_COUNTS[r]||0;
   });
+  const asked=ROLES.reduce((a,r)=>a+(ROU_COUNTS[r]||0),0);
+  const free=Math.max(0, n-asked), over=asked>n;
+  const sum=$('rouSum');
+  if(sum){
+    sum.className='rou-sum'+(over?' over':'');
+    sum.textContent = over
+      ? `${asked} rôles demandés pour ${n} joueur${n>1?'s':''} — les places en trop sont ignorées.`
+      : `${asked} imposé${asked>1?'s':''} · ${free} libre${free>1?'s':''} sur ${n}`;
+  }
+}
+
+function renderRouletteControls(){
+  const people=rouPeople(), sel=rouSelected();
+  const who=$('rouWho');
+  if(who) who.innerHTML=people.map(p=>{
+    const on=ROU_PICKED && ROU_PICKED.has(memberKey(p));
+    return `<button class="rou-who-chip${on?' on':''}" type="button" data-who="${esc(memberKey(p))}"
+      style="--c:${esc(p.color||'#8696a6')}">${esc(p.name)}${p.guest?'<i>*</i>':''}</button>`;
+  }).join('');
+  const cnt=$('rouCount');
+  if(cnt) cnt.textContent = sel.length
+    ? `${sel.length} joueur${sel.length>1?'s':''} · ${STACK_LABEL[sel.length]||sel.length+' joueurs'}`
+    : 'personne pour l\'instant';
+
+  document.querySelectorAll('#rouMode button').forEach(b=>b.classList.toggle('on', b.dataset.mode===ROU_MODE));
+  document.querySelectorAll('#rouPreset button').forEach(b=>b.classList.toggle('on', b.dataset.preset===ROU_PRESET));
   document.querySelectorAll('#rouRole button').forEach(b=>b.classList.toggle('on', b.dataset.role===ROU_ROLE));
-  const bal=$('rouBalanced'), fr=$('rouFreshOpt');
-  if(bal) bal.classList.toggle('on', ROU_BALANCED);
-  if(fr) fr.classList.toggle('on', ROU_FRESH);
-  // Ce qui n'a pas de sens dans le mode courant disparaît.
+  const fr=$('rouFreshOpt'); if(fr) fr.classList.toggle('on', ROU_FRESH);
+
+  buildCompoCounters();
+  syncCompo();
+
   const show=(id,yes)=>{ const el=$(id); if(el) el.hidden=!yes; };
-  show('rouSizeRow', ROU_MODE!=='agent');
-  show('rouRoleRow', ROU_MODE!=='gens' && !(ROU_MODE==='compo' && ROU_BALANCED));
-  show('rouOptRow', ROU_MODE==='compo');
+  show('rouWhoRow',   ROU_MODE==='compo');
+  show('rouPresetRow',ROU_MODE==='compo');
+  show('rouCustomRow',ROU_MODE==='compo' && ROU_PRESET==='custom');
+  show('rouOptRow',   ROU_MODE==='compo');
+  show('rouRoleRow',  ROU_MODE==='agent');
   const hint=$('rouHint');
   if(hint) hint.textContent = ROU_MODE==='agent'
     ? "Un agent au hasard, dans le rôle de ton choix."
-    : (ROU_MODE==='gens' ? "Qui joue ? Le destin tranche."
-      : "Qui joue ET avec quel agent — la compo complète d'un coup.");
+    : "Choisis qui joue, dis quelle compo tu veux, et laisse le destin distribuer.";
 }
 
 /* ===================== ÉDITEUR DE ROSTER ===================== */
@@ -3963,11 +4022,26 @@ function wireStatic(){
   $('rouGo')?.addEventListener('click',runRoulette);
   $('rouMode')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-mode]');
     if(b){ ROU_MODE=b.dataset.mode; renderRouletteControls(); } });
-  $('rouSize')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-size]');
-    if(b && !b.disabled){ ROU_SIZE=+b.dataset.size; renderRouletteControls(); } });
+  $('rouWho')?.addEventListener('click',e=>{
+    const b=e.target.closest('[data-who]'); if(!b) return;
+    const k=b.dataset.who;
+    if(ROU_PICKED.has(k)) ROU_PICKED.delete(k); else ROU_PICKED.add(k);
+    b.classList.toggle('on');          // bascule locale, sans redessiner la liste
+    const cnt=$('rouCount'), n=rouSelected().length;
+    if(cnt) cnt.textContent = n ? `${n} joueur${n>1?'s':''} · ${STACK_LABEL[n]||n+' joueurs'}` : "personne pour l'instant";
+    syncCompo();
+  });
+  $('rouPreset')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-preset]');
+    if(b){ ROU_PRESET=b.dataset.preset; renderRouletteControls(); } });
+  $('rouCustom')?.addEventListener('click',e=>{
+    const inc=e.target.closest('[data-role-inc]'), dec=e.target.closest('[data-role-dec]');
+    if(inc){ const r=inc.dataset.roleInc; ROU_COUNTS[r]=Math.min(5,(ROU_COUNTS[r]||0)+1); }
+    else if(dec){ const r=dec.dataset.roleDec; ROU_COUNTS[r]=Math.max(0,(ROU_COUNTS[r]||0)-1); }
+    else return;
+    syncCompo();   // pas de reconstruction : le bouton reste sous le doigt
+  });
   $('rouRole')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-role]');
     if(b){ ROU_ROLE=b.dataset.role; renderRouletteControls(); } });
-  $('rouBalanced')?.addEventListener('click',()=>{ ROU_BALANCED=!ROU_BALANCED; renderRouletteControls(); });
   $('rouFreshOpt')?.addEventListener('click',()=>{ ROU_FRESH=!ROU_FRESH; renderRouletteControls(); });
   $('btnLeaderboard')?.addEventListener('click',loadLeaderboard);
   

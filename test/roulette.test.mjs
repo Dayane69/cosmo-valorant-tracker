@@ -12,7 +12,7 @@ function load() {
   const ctx = vm.createContext({ console, URL, URLSearchParams, setTimeout, clearTimeout });
   let code = readFileSync(join(root, "app.js"), "utf8");
   code += `\nglobalThis.__x = { pickMany, pickOne, agentsForRole, agentPlayCounts, freshAgents,
-    rollComposition, memberKey, ROLES, ROLE_FR,
+    rollComposition, compoSlots, memberKey, ROLES, ROLE_FR,
     setAgents: l => { AGENT_LIST = l; }, setPeople: (r, g) => { ROSTER = r; GUESTS = g || []; } };`;
   vm.runInContext(code, ctx);
   return ctx.__x;
@@ -98,71 +98,92 @@ test("quand TOUT a été joué, on garde les moins joués au lieu de ne rien ren
 
 /* ------------------------------------------------------------- composition */
 
-test("la compo tire le bon nombre de joueurs, chacun avec un agent", () => {
+test("compoSlots répartit les rôles demandés, le reste en libre", () => {
+  const slots = X.compoSlots({ "Initiateur": 2, "Contrôleur": 1 }, 5);
+  assert.equal(slots.length, 5);
+  assert.equal(slots.filter(r => r === "Initiateur").length, 2);
+  assert.equal(slots.filter(r => r === "Contrôleur").length, 1);
+  assert.equal(slots.filter(r => r === null).length, 2, "les places restantes sont libres");
+});
+
+test("compoSlots ne dépasse jamais le nombre de joueurs", () => {
+  // Plus de rôles demandés que de places : on tronque.
+  const slots = X.compoSlots({ "Duelliste": 3, "Initiateur": 3 }, 4);
+  assert.equal(slots.length, 4);
+});
+
+test("compoSlots sans contrainte : tout est libre", () => {
+  assert.equal(X.compoSlots({}, 3).filter(r => r === null).length, 3);
+  assert.equal(X.compoSlots(null, 2).length, 2);
+});
+
+test("TOUTES les personnes fournies jouent : aucune n'est tirée au sort", () => {
   X.setAgents(AGENTS);
-  const out = X.rollComposition(TEAM, { size: 5, list: AGENTS });
+  const team = TEAM.slice(0, 5);
+  const out = X.rollComposition(team, { slots: X.compoSlots({}, 5), list: AGENTS });
   assert.equal(out.length, 5);
-  assert.ok(out.every(p => p.person && p.agent), "chacun a un agent");
-  assert.equal(new Set(out.map(p => p.person.name)).size, 5, "pas deux fois la même personne");
+  assert.equal(out.map(p => p.person.name).sort().join(","),
+    team.map(p => p.name).sort().join(","), "exactement le groupe fourni, ni plus ni moins");
+});
+
+test("la compo demandée est respectée : 2 initiateurs + 1 contrôleur + 2 duellistes", () => {
+  X.setAgents(AGENTS);
+  const slots = X.compoSlots({ "Initiateur": 2, "Contrôleur": 1, "Duelliste": 2 }, 5);
+  for (let i = 0; i < 30; i++) {
+    const out = X.rollComposition(TEAM.slice(0, 5), { slots, list: AGENTS });
+    const byRole = {};
+    out.forEach(p => { byRole[p.agent.role] = (byRole[p.agent.role] || 0) + 1; });
+    assert.equal(byRole["Initiateur"], 2, "2 initiateurs");
+    assert.equal(byRole["Contrôleur"], 1, "1 contrôleur");
+    assert.equal(byRole["Duelliste"], 2, "2 duellistes");
+  }
+});
+
+test("les places libres acceptent n'importe quel rôle", () => {
+  X.setAgents(AGENTS);
+  const slots = X.compoSlots({ "Sentinelle": 1 }, 3);
+  const out = X.rollComposition(TEAM.slice(0, 3), { slots, list: AGENTS });
+  assert.equal(out.filter(p => p.agent.role === "Sentinelle").length >= 1, true);
+  assert.equal(out.length, 3);
+});
+
+test("à compo identique, ce n'est pas toujours la même personne qui hérite du rôle", () => {
+  X.setAgents(AGENTS);
+  const slots = X.compoSlots({ "Duelliste": 1 }, 4);
+  const seen = new Set();
+  for (let i = 0; i < 60; i++) {
+    const out = X.rollComposition(TEAM.slice(0, 4), { slots, list: AGENTS });
+    seen.add(out.find(p => p.agent.role === "Duelliste").person.name);
+  }
+  assert.ok(seen.size > 1, `les places sont mélangées (vu : ${[...seen].join(",")})`);
 });
 
 test("deux joueurs n'ont jamais le même agent", () => {
   X.setAgents(AGENTS);
   for (let i = 0; i < 40; i++) {
-    const out = X.rollComposition(TEAM, { size: 5, list: AGENTS });
-    assert.equal(new Set(out.map(p => p.agent.name)).size, 5, "agents tous différents");
+    const out = X.rollComposition(TEAM.slice(0, 5), { slots: X.compoSlots({}, 5), list: AGENTS });
+    assert.equal(new Set(out.map(p => p.agent.name)).size, 5);
   }
 });
 
-test("compo équilibrée : un rôle différent par joueur", () => {
+test("plus de joueurs que d'agents du rôle : doublon toléré plutôt qu'un joueur sans agent", () => {
   X.setAgents(AGENTS);
-  for (let i = 0; i < 30; i++) {
-    const out = X.rollComposition(TEAM, { size: 4, balanced: true, list: AGENTS });
-    const roles = out.map(p => p.agent.role);
-    assert.equal(new Set(roles).size, 4, `4 rôles distincts (obtenu ${roles.join(",")})`);
-  }
-});
-
-test("compo équilibrée à 5 : le 5e n'a plus de rôle imposé, mais garde un agent", () => {
-  X.setAgents(AGENTS);
-  const out = X.rollComposition(TEAM, { size: 5, balanced: true, list: AGENTS });
-  assert.equal(out.length, 5);
-  assert.ok(out.every(p => p.agent), "personne ne repart sans agent");
-  assert.equal(new Set(out.map(p => p.agent.name)).size, 5);
-});
-
-test("un rôle imposé s'applique à toute la compo", () => {
-  X.setAgents(AGENTS);
-  const out = X.rollComposition(TEAM, { size: 2, role: "Duelliste", list: AGENTS });
-  assert.ok(out.every(p => p.agent.role === "Duelliste"));
-});
-
-test("plus de joueurs que d'agents du rôle : on autorise le doublon plutôt que de laisser un joueur sans agent", () => {
-  X.setAgents(AGENTS);
-  // 3 joueurs pour 2 duellistes.
-  const out = X.rollComposition(TEAM, { size: 3, role: "Duelliste", list: AGENTS });
+  // 3 places de duelliste pour 2 duellistes existants.
+  const out = X.rollComposition(TEAM.slice(0, 3), { slots: ["Duelliste", "Duelliste", "Duelliste"], list: AGENTS });
   assert.equal(out.length, 3);
-  assert.ok(out.every(p => p.agent && p.agent.role === "Duelliste"),
-    "chacun a bien un duelliste, quitte à répéter");
-});
-
-test("la taille est bornée par le nombre de personnes disponibles", () => {
-  X.setAgents(AGENTS);
-  const out = X.rollComposition(TEAM.slice(0, 2), { size: 5, list: AGENTS });
-  assert.equal(out.length, 2, "on ne tire pas 5 joueurs quand il n'y en a que 2");
+  assert.ok(out.every(p => p.agent && p.agent.role === "Duelliste"));
 });
 
 test("« à tester » privilégie les agents que CHAQUE personne joue le moins", () => {
   X.setAgents(AGENTS);
   const alice = TEAM[0], bob = TEAM[1];
-  // Alice a tout joué sauf Cypher ; Bob tout sauf Jett.
   const counts = {};
   counts[X.memberKey(alice)] = {}; counts[X.memberKey(bob)] = {};
   AGENTS.forEach(a => {
     if (a.name !== "Cypher") counts[X.memberKey(alice)][a.name] = 3;
     if (a.name !== "Jett") counts[X.memberKey(bob)][a.name] = 3;
   });
-  const out = X.rollComposition([alice, bob], { size: 2, fresh: true, counts, list: AGENTS });
+  const out = X.rollComposition([alice, bob], { slots: [null, null], fresh: true, counts, list: AGENTS });
   const byName = Object.fromEntries(out.map(p => [p.person.name, p.agent.name]));
   assert.equal(byName["Alice"], "Cypher", "le seul agent qu'Alice n'a jamais joué");
   assert.equal(byName["Bob"], "Jett", "…et celui de Bob");
@@ -170,12 +191,19 @@ test("« à tester » privilégie les agents que CHAQUE personne joue le moins",
 
 test("un tirage sans personne ne plante pas", () => {
   X.setAgents(AGENTS);
-  assert.equal(X.rollComposition([], { size: 3, list: AGENTS }).length, 0);
-  assert.equal(X.rollComposition(null, { size: 3, list: AGENTS }).length, 0);
+  assert.equal(X.rollComposition([], { slots: [], list: AGENTS }).length, 0);
+  assert.equal(X.rollComposition(null, { slots: [], list: AGENTS }).length, 0);
+});
+
+test("moins de places que de joueurs : tout le monde joue quand même", () => {
+  X.setAgents(AGENTS);
+  const out = X.rollComposition(TEAM.slice(0, 4), { slots: ["Duelliste"], list: AGENTS });
+  assert.equal(out.length, 4, "les places manquantes deviennent libres");
+  assert.ok(out.every(p => p.agent));
 });
 
 test("sans aucun agent chargé, on ne fabrique pas de faux agents", () => {
-  const out = X.rollComposition(TEAM, { size: 2, list: [] });
+  const out = X.rollComposition(TEAM.slice(0, 2), { slots: [null, null], list: [] });
   assert.equal(out.length, 2);
   assert.ok(out.every(p => p.agent === null), "agent null plutôt qu'inventé");
 });

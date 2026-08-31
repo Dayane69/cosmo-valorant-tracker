@@ -578,10 +578,42 @@
   .rou-opt.on{border-color:var(--amber);color:var(--amber);background:rgba(242,178,52,.1)}
   /* Cinq options : le défilement horizontal rendrait la dernière difficile à
      atteindre. On préfère un retour à la ligne, avec des bords qui restent nets. */
-  #rouRole,#rouSize{flex-wrap:wrap;overflow:visible;border:0;background:none;gap:6px}
-  #rouRole button,#rouSize button{border:1px solid var(--line);border-radius:9px;background:var(--panel2)}
-  #rouRole button.on,#rouSize button.on{border-color:var(--unlucky)}
-  #rouSize button:disabled{opacity:.35;cursor:not-allowed}
+  /* Cinq options : le défilement horizontal rendrait la dernière difficile à
+     atteindre. On préfère un retour à la ligne, avec des bords qui restent nets. */
+  #rouRole,#rouMode,#rouPreset{flex-wrap:wrap;overflow:visible;border:0;background:none;gap:6px}
+  #rouRole button,#rouMode button,#rouPreset button{border:1px solid var(--line);border-radius:9px;background:var(--panel2)}
+  #rouRole button.on,#rouMode button.on,#rouPreset button.on{border-color:var(--unlucky)}
+  .rou-row.col{align-items:flex-start;flex-direction:column;gap:8px}
+  /* qui joue */
+  .rou-who{display:flex;flex-wrap:wrap;gap:7px;width:100%}
+  .rou-who-chip{font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-radius:999px;
+    padding:9px 14px;background:var(--panel2);color:var(--dim);cursor:pointer;transition:all .12s;
+    opacity:.55}
+  .rou-who-chip i{font-style:normal;color:var(--amber)}
+  .rou-who-chip:hover{opacity:.85}
+  .rou-who-chip.on{opacity:1;color:var(--c);border-color:var(--c);background:color-mix(in srgb,var(--c) 12%,var(--panel2))}
+  .rou-count{font-size:10.5px;color:var(--dim);letter-spacing:.06em}
+  /* compo sur mesure */
+  .rou-counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;width:100%}
+  .rou-cnt{display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:8px 10px}
+  .rou-cn{flex:1;min-width:0;font-family:var(--mono);font-size:11.5px;color:var(--muted);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rou-cnt b{min-width:20px;text-align:center;font-size:15px;font-weight:800}
+  .rou-pm{width:32px;height:32px;border:1px solid var(--line);border-radius:8px;background:var(--panel);
+    color:var(--txt);font-size:16px;line-height:1;cursor:pointer;flex:none}
+  .rou-pm:hover{border-color:var(--amber);color:var(--amber)}
+  .rou-sum{font-family:var(--mono);font-size:10.5px;color:var(--dim);letter-spacing:.05em}
+  .rou-sum.over{color:var(--loss)}
+  /* scène */
+  .rou-who-name,.rou-who{--c:var(--muted)}
+  .rou-pair{display:flex;flex-direction:column;gap:8px;align-items:center}
+  .rou-who-lbl{font-size:12px}
+  .rou-slot.spinning{border-color:var(--amber);animation:roushake .35s linear infinite}
+  @keyframes roushake{0%,100%{transform:translateY(0)}25%{transform:translateY(-2px)}75%{transform:translateY(2px)}}
+  .rou-stage.flash{animation:rouflash .4s ease-out}
+  @keyframes rouflash{0%{filter:brightness(1.35)}100%{filter:brightness(1)}}
+  @media(prefers-reduced-motion:reduce){ .rou-slot.spinning,.rou-stage.flash{animation:none} }
   .rou-go{text-align:center;margin:18px 0}
   .rou-stage{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;min-height:10px}
   .rou-pair{display:flex;flex-direction:column;gap:8px;align-items:center}
@@ -596,9 +628,9 @@
   .rou-noimg{width:96px;height:96px;border-radius:12px;background:var(--panel);margin:0 auto 6px}
   .rou-an{font-size:14px;font-weight:800}
   .rou-ar{font-size:9.5px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;margin-top:2px}
-  .rou-person{text-align:center;border-left:3px solid var(--c);padding-left:9px}
-  .rou-pn{font-size:14px;font-weight:800;color:var(--c)}
-  .rou-pt{font-size:9.5px;color:var(--dim);margin-top:2px}
+  .rou-who{}
+  .rou-pair .rou-who{display:block;width:auto;font-family:var(--mono);font-size:12px;font-weight:800;
+    color:var(--c);border-left:3px solid var(--c);padding-left:8px;text-align:left;align-self:stretch}
 
   /* ============ VOYANT DE FRAÎCHEUR ============ */
   .fresh{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);
@@ -770,7 +802,13 @@
     .alert-cta{grid-column:2;margin-top:2px}
 
     /* --- roulette : slots plus petits pour en voir plusieurs de front --- */
-    .rou-slot{width:104px;min-height:132px}
+    .rou-slot{width:100px;min-height:126px}
+    .rou-who-chip{font-size:11.5px;padding:9px 12px}
+    /* Une colonne pleine largeur : à deux colonnes, le bouton « + » du second
+       rang sortait de l'écran (1fr garde min-width:auto et refuse de rétrécir). */
+    .rou-counts{grid-template-columns:minmax(0,1fr);gap:6px}
+    .rou-cnt{padding:7px 8px;gap:6px}
+    .rou-cn{font-size:10px}
     .rou-agent img,.rou-noimg{width:74px;height:74px}
     .rou-an{font-size:12.5px}
     .rou-lab{min-width:auto}
@@ -800,6 +838,8 @@
     .rec{min-height:56px}
     .alert{min-height:56px}
     .rou-opt{min-height:44px}
+    .rou-who-chip{min-height:44px}
+    .rou-pm{width:40px;height:40px}
     .sx-url{min-height:44px}
   }
 
@@ -1062,19 +1102,32 @@
         <div class="rou-row">
           <span class="rou-lab">Roulette</span>
           <div class="seg" id="rouMode" style="margin:0;">
-            <button data-mode="compo" class="on">Compo</button>
-            <button data-mode="agent">Agent</button>
-            <button data-mode="gens">Personnes</button>
+            <button data-mode="compo" class="on">Compo d'équipe</button>
+            <button data-mode="agent">Un agent</button>
           </div>
         </div>
-        <div class="rou-row" id="rouSizeRow">
-          <span class="rou-lab">Combien</span>
-          <div class="seg" id="rouSize" style="margin:0;">
-            <button data-size="1">Solo</button><button data-size="2">Duo</button>
-            <button data-size="3">Trio</button><button data-size="4">Quatuor</button>
-            <button data-size="5" class="on">5-stack</button>
+
+        <div class="rou-row col" id="rouWhoRow">
+          <span class="rou-lab">Qui joue</span>
+          <div class="rou-who" id="rouWho"></div>
+          <div class="rou-count mono" id="rouCount"></div>
+        </div>
+
+        <div class="rou-row" id="rouPresetRow">
+          <span class="rou-lab">Compo</span>
+          <div class="seg" id="rouPreset" style="margin:0;">
+            <button data-preset="balanced" class="on">Équilibrée</button>
+            <button data-preset="free">Libre</button>
+            <button data-preset="custom">Sur mesure</button>
           </div>
         </div>
+
+        <div class="rou-row col" id="rouCustomRow">
+          <span class="rou-lab">Rôles</span>
+          <div class="rou-counts" id="rouCustom"></div>
+          <div class="rou-sum" id="rouSum"></div>
+        </div>
+
         <div class="rou-row" id="rouRoleRow">
           <span class="rou-lab">Rôle</span>
           <div class="seg" id="rouRole" style="margin:0;">
@@ -1085,9 +1138,9 @@
             <button data-role="Sentinelle">Sentinelle</button>
           </div>
         </div>
+
         <div class="rou-row" id="rouOptRow">
           <span class="rou-lab">Options</span>
-          <button class="rou-opt on" id="rouBalanced" type="button" title="Un rôle différent par joueur">⚖ Compo équilibrée</button>
           <button class="rou-opt" id="rouFreshOpt" type="button" title="Privilégie les agents que la personne joue le moins">🆕 Persos à tester</button>
         </div>
       </div>
@@ -1095,7 +1148,7 @@
       <div class="rou-go"><button class="reveal" id="rouGo" type="button">🎲 Lancer la roulette</button></div>
       <div class="rou-stage" id="rouStage"></div>
       <div class="secnote" id="rouStatus"></div>
-      <div class="secnote">Pensé pour les modes non classés : le destin choisit qui joue et avec quoi, pour sortir des mêmes agents à chaque partie. « Persos à tester » s'appuie sur l'historique déjà chargé pour proposer en priorité ce que la personne joue le moins.</div>
+      <div class="secnote">Pensé pour les modes non classés. Tu choisis qui est là et la compo voulue (par exemple 2 initiateurs + 1 contrôleur + 2 duellistes) ; le destin distribue les agents. Les places non attribuées sont <b>libres</b> : n'importe quel rôle. « Persos à tester » s'appuie sur l'historique déjà chargé pour proposer en priorité ce que chaque personne joue le moins.</div>
     </div>
   </div>
 </section>
@@ -1127,6 +1180,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260829b" defer></script>
+<script src="app.js?v=20260831a" defer></script>
 </body>
 </html>
