@@ -44,6 +44,7 @@ let PROFILE_SHOWN = FRESH_SIZE;                         // nb de parties affich�
 const PROFILE_SIZE_STEP = 15;                          // pas du bouton "charger plus"
 let MAPS = null;                                        // cache nom de map -> image splash
 let AGENTS = null;                                      // cache nom d'agent -> icône (tête)
+let AGENT_LIST = [];                                    // liste complète {name, role, icon, portrait}
 let TIERS = null;                                       // cache nom de palier -> icône de rang
 let TIER_BY_NUM = null;                                 // cache numéro de palier -> {name,color,icon} (lignes de rang du graphe)
 let ELO_TIER_OFFSET = 3;                                // numéro de palier = floor(elo/100) + offset (Iron 1 = palier 3, elo 0)
@@ -580,14 +581,27 @@ async function ensureMaps(){
   return MAPS || {};
 }
 // Agents : nom -> icône (tête). Repli quand la partie ne fournit pas l'UUID de l'agent.
+// Les rôles arrivent en anglais : on les traduit nous-mêmes plutôt que de
+// dépendre du paramètre de langue de valorant-api (qui peut changer de libellé).
+const ROLE_FR = { Duelist:'Duelliste', Initiator:'Initiateur', Controller:'Contrôleur', Sentinel:'Sentinelle' };
+const ROLES = ['Duelliste','Initiateur','Contrôleur','Sentinelle'];
+
 async function ensureAgents(){
   if(AGENTS) return AGENTS;
   try{
     const r = await fetch('https://valorant-api.com/v1/agents?isPlayableCharacter=true');
     if(r.ok){
-      const d = await r.json(), map = {};
-      (d.data||[]).forEach(ag=>{ if(ag.displayName && ag.displayIcon) map[ag.displayName.toLowerCase()] = ag.displayIcon; });
+      const d = await r.json(), map = {}, list = [];
+      (d.data||[]).forEach(ag=>{
+        if(!ag.displayName) return;
+        if(ag.displayIcon) map[ag.displayName.toLowerCase()] = ag.displayIcon;
+        const en = ag.role && ag.role.displayName;
+        list.push({ name:ag.displayName, uuid:ag.uuid,
+                    role: ROLE_FR[en] || en || '', icon: ag.displayIcon || '',
+                    portrait: ag.fullPortrait || '' });
+      });
       AGENTS = map;
+      if(list.length) AGENT_LIST = list.sort((a,b)=>a.name.localeCompare(b.name));
     }
   }catch(e){ /* pas d'icônes d'agent, on garde les initiales */ }
   return AGENTS || {};
@@ -1603,6 +1617,77 @@ function resetSquadIndex(){
   SQUAD_INDEX=null; SQUAD_HIST=null; SQUAD_LOADING=null; SQUAD_BLOBS_DONE=false; PUUID_MEMBER={};
 }
 
+/* ===================== ROULETTE =====================
+   Le destin choisit qui joue et avec quel agent, pour les modes autres que la
+   ranked. Toute la logique de tirage est ici, séparée de l'animation : elle est
+   ainsi testable, et l'animation ne fait que la mettre en scène. */
+
+// Tirage sans remise. `rnd` est injectable pour rendre les tests déterministes.
+function pickMany(pool, n, rnd){
+  const r = rnd || Math.random;
+  const left = (pool||[]).slice();
+  const out = [];
+  while(out.length < n && left.length) out.push(left.splice(Math.floor(r()*left.length), 1)[0]);
+  return out;
+}
+const pickOne = (pool, rnd) => pickMany(pool, 1, rnd)[0] || null;
+
+// Agents disponibles, éventuellement restreints à un rôle.
+function agentsForRole(role, list){
+  const all = list || AGENT_LIST;
+  if(!role || role==='all') return all.slice();
+  return all.filter(a=>a.role===role);
+}
+
+// Combien de fois chaque agent a été joué, d'après l'historique déjà chargé.
+// Sert au mode « à tester » : le but est de sortir de ses habitudes.
+function agentPlayCounts(matches){
+  const c={};
+  (matches||[]).forEach(M=>{ const a=M && M.me && M.me.agent; if(a) c[a]=(c[a]||0)+1; });
+  return c;
+}
+
+/* Restreint un vivier aux agents les MOINS joués. On ne se contente pas de
+   filtrer les inconnus : quand tout a déjà été joué, on garde ceux qui le sont
+   le moins, sinon le mode « à tester » ne renverrait plus rien. */
+function freshAgents(pool, counts){
+  if(!pool || !pool.length) return [];
+  const c = counts || {};
+  const min = Math.min(...pool.map(a=>c[a.name]||0));
+  return pool.filter(a=>(c[a.name]||0)===min);
+}
+
+/* Compose une équipe : qui joue, et avec quel agent.
+   opts : { size, role, balanced, fresh, counts:{clé->comptes}, rnd }
+   - role     : restreint TOUS les agents à ce rôle ('all' = aucun filtre)
+   - balanced : un rôle différent par joueur tant qu'il en reste
+   - fresh    : privilégie les agents que la personne joue le moins */
+function rollComposition(people, opts){
+  opts = opts || {};
+  const rnd = opts.rnd || Math.random;
+  const size = Math.max(1, Math.min(opts.size||1, (people||[]).length || 1));
+  const chosen = pickMany(people, size, rnd);
+  const counts = opts.counts || {};
+  const usedAgents = {};              // deux joueurs ne prennent pas le même agent
+  const rolesLeft = opts.balanced ? ROLES.slice() : null;
+
+  return chosen.map(p=>{
+    let role = opts.role && opts.role!=='all' ? opts.role : null;
+    if(rolesLeft && rolesLeft.length){
+      // Un rôle par joueur, tiré au sort parmi ceux qui restent.
+      const r = pickOne(rolesLeft, rnd);
+      rolesLeft.splice(rolesLeft.indexOf(r), 1);
+      role = r;
+    }
+    let pool = agentsForRole(role, opts.list).filter(a=>!usedAgents[a.name]);
+    if(!pool.length) pool = agentsForRole(role, opts.list);     // plus assez d'agents : on autorise le doublon
+    if(opts.fresh) pool = freshAgents(pool, counts[memberKey(p)] || {});
+    const agent = pickOne(pool, rnd);
+    if(agent) usedAgents[agent.name] = true;
+    return { person:p, agent, role: agent ? agent.role : role };
+  });
+}
+
 /* ===================== VOYANT DE FRAÎCHEUR =====================
    Quatre états, dont un seul est ACTIONNABLE (le rouge). Une donnée vieille de
    3 minutes n'est pas fausse : elle mérite de l'orange, pas une alarme. */
@@ -1725,6 +1810,7 @@ function showHome(){
   $('profile').hidden = true;
   $('tribunal').hidden = true;
   $('leaderboard').hidden = true;
+  const rou=$('roulette'); if(rou) rou.hidden = true;
   $('home').hidden = false;
   window.scrollTo(0,0);
   // On nettoie les paramètres de partage : un rafraîchissement depuis l'accueil
@@ -2794,7 +2880,7 @@ function openProfile(idx){
 
   const bust=$('phead').querySelector('.pbust img');
   if(bust){const pb=bust.closest('.pbust');const f=()=>{bust.style.display='none';if(pb)pb.classList.add('noimg');};bust.addEventListener('error',f);if(bust.complete&&bust.naturalWidth===0)f();}
-  $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; $('profile').hidden=false; window.scrollTo(0,0);
+  $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; $('profile').hidden=false; window.scrollTo(0,0);
 
   CURRENT_MODE = 'all';
   document.querySelectorAll('#modeTabs button').forEach(x => x.classList.toggle('on', x.dataset.mode === 'all'));
@@ -3170,6 +3256,7 @@ async function loadTribunal() {
   $('home').hidden = true;
   $('profile').hidden = true;
   $('leaderboard').hidden = true;
+  if($('roulette')) $('roulette').hidden = true;
   $('tribunal').hidden = false;
   $('appTrib').hidden = true;
 
@@ -3210,6 +3297,7 @@ async function loadLeaderboard() {
   $('home').hidden = true;
   $('profile').hidden = true;
   $('tribunal').hidden = true;
+  if($('roulette')) $('roulette').hidden = true;
   $('leaderboard').hidden = false;
   $('appLb').hidden = true;
   window.scrollTo(0,0);
@@ -3616,6 +3704,152 @@ function openAlert(idStr, ts){
   if(!openProfileByKey(name, tag)) SHARE_TARGET=null;
 }
 
+/* ===================== ROULETTE — MISE EN SCÈNE ===================== */
+let ROULETTE_BUSY = false;
+let ROU_MODE = 'compo';      // compo | agent | gens
+let ROU_SIZE = 5;
+let ROU_ROLE = 'all';
+let ROU_BALANCED = true;
+let ROU_FRESH = false;
+
+const reduceMotion = () => {
+  try{ return window.matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(e){ return false; }
+};
+
+/* Fait défiler `items` dans `el` puis s'arrête PILE sur `winner`.
+   On calcule le nombre exact de crans à parcourir pour que la dernière image
+   affichée soit la bonne — sinon l'animation et le résultat se contredisent. */
+function spinReel(el, items, winner, render, ms){
+  return new Promise(resolve=>{
+    if(!el || !items.length){ resolve(); return; }
+    const target = Math.max(0, items.indexOf(winner));
+    if(reduceMotion()){ el.innerHTML = render(items[target]); resolve(); return; }
+    const dur = ms || 2200;
+    const turns = 4;                                  // tours complets avant l'arrêt
+    const steps = turns*items.length + target;        // atterrissage exact
+    const start = performance.now();
+    let shown = -1;
+    (function frame(now){
+      const t = Math.min(1, (now-start)/dur);
+      const eased = 1 - Math.pow(1-t, 3);             // très rapide, puis quasi arrêté
+      const idx = Math.round(eased*steps) % items.length;
+      if(idx !== shown){ shown = idx; el.innerHTML = render(items[idx]); }
+      if(t < 1) requestAnimationFrame(frame);
+      else { el.innerHTML = render(items[target]); el.classList.add('pop'); resolve(); }
+    })(start);
+  });
+}
+
+const rouAgentCard = a => a ? `
+  <div class="rou-agent">
+    ${a.icon?`<img src="${esc(a.icon)}" alt="${esc(a.name)}" loading="lazy">`:'<div class="rou-noimg"></div>'}
+    <div class="rou-an">${esc(a.name)}</div>
+    <div class="rou-ar mono">${esc(a.role||'')}</div>
+  </div>` : '<div class="rou-agent"></div>';
+
+const rouPersonCard = p => p ? `
+  <div class="rou-person" style="--c:${esc(p.color||'#8696a6')}">
+    <div class="rou-pn">${esc(p.name)}</div>
+    <div class="rou-pt mono">#${esc(p.tag)}${p.guest?' · invité':''}</div>
+  </div>` : '<div class="rou-person"></div>';
+
+function rouPeople(){
+  const all = sessionRoster();
+  return all.length ? all : ROSTER;
+}
+// Comptes d'agents par personne, pour le mode « à tester ».
+function rouCounts(){
+  const c={};
+  rouPeople().forEach(p=>{ c[memberKey(p)] = agentPlayCounts((SQUAD_HIST||{})[memberKey(p)] || []); });
+  return c;
+}
+
+function rouStatus(html){ const el=$('rouStatus'); if(el) el.innerHTML=html||''; }
+
+async function runRoulette(){
+  if(ROULETTE_BUSY) return;
+  const stage=$('rouStage'); if(!stage) return;
+  await ensureAgents();
+  if(!AGENT_LIST.length){
+    rouStatus("Liste des agents indisponible (valorant-api injoignable). Réessaie dans un moment.");
+    return;
+  }
+  ROULETTE_BUSY=true;
+  const btn=$('rouGo'); if(btn) btn.disabled=true;
+  rouStatus('');
+
+  const people=rouPeople();
+  try{
+    if(ROU_MODE==='agent'){
+      const pool=agentsForRole(ROU_ROLE);
+      stage.innerHTML=`<div class="rou-slot" id="rouSlot0"></div>`;
+      const winner=pickOne(pool);
+      await spinReel($('rouSlot0'), pool, winner, rouAgentCard);
+      rouStatus(`Le destin a parlé : <b>${esc(winner.name)}</b> — ${esc(winner.role)}.`);
+    }
+    else if(ROU_MODE==='gens'){
+      const n=Math.min(ROU_SIZE, people.length);
+      const chosen=pickMany(people, n);
+      stage.innerHTML=chosen.map((_,i)=>`<div class="rou-slot" id="rouSlot${i}"></div>`).join('');
+      // Un par un : le suspense tient au fait de les découvrir en séquence.
+      for(let i=0;i<chosen.length;i++) await spinReel($('rouSlot'+i), people, chosen[i], rouPersonCard, 1500+i*250);
+      rouStatus(`${chosen.length===1?'Joueur tiré':'Équipe tirée'} : <b>${chosen.map(p=>esc(p.name)).join(', ')}</b>.`);
+    }
+    else {
+      const picks=rollComposition(people, { size:ROU_SIZE, role:ROU_ROLE,
+        balanced:ROU_BALANCED, fresh:ROU_FRESH, counts:ROU_FRESH?rouCounts():{} });
+      stage.innerHTML=picks.map((_,i)=>`<div class="rou-pair" id="rouPair${i}">
+        <div class="rou-slot person" id="rouP${i}"></div>
+        <div class="rou-slot" id="rouA${i}"></div>
+      </div>`).join('');
+      const pools=picks.map(p=>{
+        const pool=agentsForRole(ROU_BALANCED?p.role:ROU_ROLE);
+        return pool.length?pool:AGENT_LIST;
+      });
+      for(let i=0;i<picks.length;i++){
+        $('rouP'+i).innerHTML=rouPersonCard(picks[i].person);
+        await spinReel($('rouA'+i), pools[i], picks[i].agent, rouAgentCard, 1600+i*200);
+      }
+      const missing=picks.filter(p=>!p.agent).length;
+      rouStatus(missing ? 'Pas assez d\'agents disponibles pour tout le monde.'
+        : `Compo tirée pour <b>${picks.length}</b> joueur${picks.length>1?'s':''}${ROU_FRESH?' · agents les moins joués':''}.`);
+    }
+  }catch(e){ rouStatus('Le tirage a échoué : '+esc((e&&e.message)||'erreur')); }
+  if(btn) btn.disabled=false;
+  ROULETTE_BUSY=false;
+}
+
+function showRoulette(){
+  $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
+  $('leaderboard').hidden=true; $('roulette').hidden=false;
+  window.scrollTo(0,0);
+  renderRouletteControls();
+  ensureAgents().then(()=>{ if(!$('roulette').hidden) renderRouletteControls(); });
+}
+
+function renderRouletteControls(){
+  const n=rouPeople().length;
+  document.querySelectorAll('#rouMode button').forEach(b=>b.classList.toggle('on', b.dataset.mode===ROU_MODE));
+  document.querySelectorAll('#rouSize button').forEach(b=>{
+    b.classList.toggle('on', +b.dataset.size===ROU_SIZE);
+    b.disabled = +b.dataset.size > n;      // pas de 5-stack à 3 personnes
+  });
+  document.querySelectorAll('#rouRole button').forEach(b=>b.classList.toggle('on', b.dataset.role===ROU_ROLE));
+  const bal=$('rouBalanced'), fr=$('rouFreshOpt');
+  if(bal) bal.classList.toggle('on', ROU_BALANCED);
+  if(fr) fr.classList.toggle('on', ROU_FRESH);
+  // Ce qui n'a pas de sens dans le mode courant disparaît.
+  const show=(id,yes)=>{ const el=$(id); if(el) el.hidden=!yes; };
+  show('rouSizeRow', ROU_MODE!=='agent');
+  show('rouRoleRow', ROU_MODE!=='gens' && !(ROU_MODE==='compo' && ROU_BALANCED));
+  show('rouOptRow', ROU_MODE==='compo');
+  const hint=$('rouHint');
+  if(hint) hint.textContent = ROU_MODE==='agent'
+    ? "Un agent au hasard, dans le rôle de ton choix."
+    : (ROU_MODE==='gens' ? "Qui joue ? Le destin tranche."
+      : "Qui joue ET avec quel agent — la compo complète d'un coup.");
+}
+
 /* ===================== ÉDITEUR DE ROSTER ===================== */
 // Une ligne de formulaire pour un membre.
 function rosterRowHTML(m){
@@ -3724,6 +3958,17 @@ function wireStatic(){
   $('btnBackLb').addEventListener('click',showHome);
   // On tolère l'absence de ces boutons (page allégée / variante d'UI).
   $('btnTribunal')?.addEventListener('click',loadTribunal);
+  $('btnRoulette')?.addEventListener('click',showRoulette);
+  $('btnBackRou')?.addEventListener('click',showHome);
+  $('rouGo')?.addEventListener('click',runRoulette);
+  $('rouMode')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-mode]');
+    if(b){ ROU_MODE=b.dataset.mode; renderRouletteControls(); } });
+  $('rouSize')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-size]');
+    if(b && !b.disabled){ ROU_SIZE=+b.dataset.size; renderRouletteControls(); } });
+  $('rouRole')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-role]');
+    if(b){ ROU_ROLE=b.dataset.role; renderRouletteControls(); } });
+  $('rouBalanced')?.addEventListener('click',()=>{ ROU_BALANCED=!ROU_BALANCED; renderRouletteControls(); });
+  $('rouFreshOpt')?.addEventListener('click',()=>{ ROU_FRESH=!ROU_FRESH; renderRouletteControls(); });
   $('btnLeaderboard')?.addEventListener('click',loadLeaderboard);
   
   $('roster').addEventListener('click',e=>{const c=e.target.closest('.agentcard');if(c)openProfile(+c.dataset.idx);});

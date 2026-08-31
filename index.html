@@ -566,6 +566,40 @@
   .sx-tablewrap td em{font-style:normal;color:var(--dim);font-size:10px}
   .sx-mode{font-family:var(--mono);font-size:9.5px}
 
+  /* ============ ROULETTE ============ */
+  #roulette{padding:20px 16px 70px;background:radial-gradient(900px 480px at 50% -5%,rgba(242,178,52,.06),transparent 60%),var(--bg)}
+  .rou-ctl{display:grid;gap:12px;margin-bottom:16px}
+  .rou-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .rou-lab{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--dim);min-width:64px}
+  .rou-opt{font-family:var(--mono);font-size:11px;color:var(--muted);border:1px solid var(--line);
+    border-radius:999px;padding:9px 13px;background:var(--panel2);cursor:pointer;transition:all .12s}
+  .rou-opt:hover{border-color:var(--muted);color:var(--txt)}
+  .rou-opt.on{border-color:var(--amber);color:var(--amber);background:rgba(242,178,52,.1)}
+  /* Cinq options : le défilement horizontal rendrait la dernière difficile à
+     atteindre. On préfère un retour à la ligne, avec des bords qui restent nets. */
+  #rouRole,#rouSize{flex-wrap:wrap;overflow:visible;border:0;background:none;gap:6px}
+  #rouRole button,#rouSize button{border:1px solid var(--line);border-radius:9px;background:var(--panel2)}
+  #rouRole button.on,#rouSize button.on{border-color:var(--unlucky)}
+  #rouSize button:disabled{opacity:.35;cursor:not-allowed}
+  .rou-go{text-align:center;margin:18px 0}
+  .rou-stage{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;min-height:10px}
+  .rou-pair{display:flex;flex-direction:column;gap:8px;align-items:center}
+  .rou-slot{background:var(--panel2);border:1px solid var(--line);border-radius:14px;
+    width:132px;min-height:158px;display:grid;place-items:center;overflow:hidden;padding:10px}
+  .rou-slot.person{min-height:auto;padding:8px}
+  .rou-slot.pop{animation:roupop .45s cubic-bezier(.2,1.5,.4,1);border-color:var(--amber)}
+  @keyframes roupop{0%{transform:scale(.86)}60%{transform:scale(1.06)}100%{transform:scale(1)}}
+  @media(prefers-reduced-motion:reduce){ .rou-slot.pop{animation:none} }
+  .rou-agent{text-align:center}
+  .rou-agent img{width:96px;height:96px;border-radius:12px;object-fit:cover;display:block;margin:0 auto 6px}
+  .rou-noimg{width:96px;height:96px;border-radius:12px;background:var(--panel);margin:0 auto 6px}
+  .rou-an{font-size:14px;font-weight:800}
+  .rou-ar{font-size:9.5px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;margin-top:2px}
+  .rou-person{text-align:center;border-left:3px solid var(--c);padding-left:9px}
+  .rou-pn{font-size:14px;font-weight:800;color:var(--c)}
+  .rou-pt{font-size:9.5px;color:var(--dim);margin-top:2px}
+
   /* ============ VOYANT DE FRAÎCHEUR ============ */
   .fresh{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);
     background:var(--panel2);color:var(--muted);border-radius:999px;padding:7px 12px;
@@ -735,6 +769,13 @@
     .alert{grid-template-columns:auto 1fr;gap:9px;padding:11px 12px;font-size:12.5px}
     .alert-cta{grid-column:2;margin-top:2px}
 
+    /* --- roulette : slots plus petits pour en voir plusieurs de front --- */
+    .rou-slot{width:104px;min-height:132px}
+    .rou-agent img,.rou-noimg{width:74px;height:74px}
+    .rou-an{font-size:12.5px}
+    .rou-lab{min-width:auto}
+    #roulette{padding:16px 12px 60px}
+
     /* --- records : une colonne, et le lien de partage sous le bouton --- */
     #recList{grid-template-columns:minmax(0,1fr)}
     .sx-share{flex-direction:column;align-items:stretch}
@@ -758,6 +799,7 @@
     .sx-row{min-height:56px}
     .rec{min-height:56px}
     .alert{min-height:56px}
+    .rou-opt{min-height:44px}
     .sx-url{min-height:44px}
   }
 
@@ -780,6 +822,7 @@
 <section id="home">
   <div class="gear">
     <button class="fresh" id="freshHome" type="button" hidden></button>
+    <button id="btnRoulette" aria-label="Roulette">🎲<span class="glbl"> Roulette</span></button>
     <button id="btnLeaderboard" aria-label="Leaderboard">🏆<span class="glbl"> Leaderboard</span></button>
     <button id="btnTribunal" aria-label="Tribunal COSMO">⚖<span class="glbl"> Tribunal COSMO</span></button>
     <button id="btnGear" aria-label="Paramètres">⚙<span class="glbl"> Paramètres</span></button>
@@ -1002,6 +1045,61 @@
   </div>
 </section>
 
+<!-- ===================== ROULETTE ===================== -->
+<section id="roulette" hidden>
+  <div class="pwrap">
+    <button class="back" id="btnBackRou">← Retour à l'accueil</button>
+    <div class="phead" style="margin-bottom:12px;border-bottom:0;justify-content:center;text-align:center;">
+      <div>
+        <div class="eyebrow" style="color:var(--amber)">Que le destin décide</div>
+        <h1 style="margin:8px 0 2px;font-size:30px;font-weight:900;letter-spacing:-.02em;text-transform:uppercase">Roulette</h1>
+        <div class="tag mono" id="rouHint" style="font-size:12.5px;color:var(--muted)"></div>
+      </div>
+    </div>
+
+    <div class="card full">
+      <div class="rou-ctl">
+        <div class="rou-row">
+          <span class="rou-lab">Roulette</span>
+          <div class="seg" id="rouMode" style="margin:0;">
+            <button data-mode="compo" class="on">Compo</button>
+            <button data-mode="agent">Agent</button>
+            <button data-mode="gens">Personnes</button>
+          </div>
+        </div>
+        <div class="rou-row" id="rouSizeRow">
+          <span class="rou-lab">Combien</span>
+          <div class="seg" id="rouSize" style="margin:0;">
+            <button data-size="1">Solo</button><button data-size="2">Duo</button>
+            <button data-size="3">Trio</button><button data-size="4">Quatuor</button>
+            <button data-size="5" class="on">5-stack</button>
+          </div>
+        </div>
+        <div class="rou-row" id="rouRoleRow">
+          <span class="rou-lab">Rôle</span>
+          <div class="seg" id="rouRole" style="margin:0;">
+            <button data-role="all" class="on">Tous</button>
+            <button data-role="Duelliste">Duelliste</button>
+            <button data-role="Initiateur">Initiateur</button>
+            <button data-role="Contrôleur">Contrôleur</button>
+            <button data-role="Sentinelle">Sentinelle</button>
+          </div>
+        </div>
+        <div class="rou-row" id="rouOptRow">
+          <span class="rou-lab">Options</span>
+          <button class="rou-opt on" id="rouBalanced" type="button" title="Un rôle différent par joueur">⚖ Compo équilibrée</button>
+          <button class="rou-opt" id="rouFreshOpt" type="button" title="Privilégie les agents que la personne joue le moins">🆕 Persos à tester</button>
+        </div>
+      </div>
+
+      <div class="rou-go"><button class="reveal" id="rouGo" type="button">🎲 Lancer la roulette</button></div>
+      <div class="rou-stage" id="rouStage"></div>
+      <div class="secnote" id="rouStatus"></div>
+      <div class="secnote">Pensé pour les modes non classés : le destin choisit qui joue et avec quoi, pour sortir des mêmes agents à chaque partie. « Persos à tester » s'appuie sur l'historique déjà chargé pour proposer en priorité ce que la personne joue le moins.</div>
+    </div>
+  </div>
+</section>
+
 <!-- ===================== DÉTAIL COMPLET D'UNE PARTIE ===================== -->
 <div id="matchModal" class="modal" hidden>
   <div class="modal-back"></div>
@@ -1029,6 +1127,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260829a" defer></script>
+<script src="app.js?v=20260829b" defer></script>
 </body>
 </html>
