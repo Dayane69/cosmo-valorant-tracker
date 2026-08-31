@@ -2099,19 +2099,23 @@ function renderList(){
     </div>`;
   }).join('');
   
-  // On garde la partie ouverte si elle est toujours là : pendant un
-  // rafraîchissement en arrière-plan, le scoreboard ne doit pas sauter.
-  if(filtered.length > 0){
-    const keep = SELECTED_ID ? filtered.find(M=>M.id===SELECTED_ID) : null;
-    showMatch(STATE.matches.indexOf(keep || filtered[0]));
+  // La partie ouverte reste surlignée après un rafraîchissement en arrière-plan.
+  if(SELECTED_ID){
+    const keep = filtered.find(M=>M.id===SELECTED_ID);
+    if(keep){
+      SELECTED_IDX = STATE.matches.indexOf(keep);
+      document.querySelectorAll('.mrow').forEach(el=>el.classList.toggle('sel', +el.dataset.idx === SELECTED_IDX));
+    }
   }
 }
 
 // Ajoute un dégradé sur les conteneurs qui débordent vraiment horizontalement,
 // pour signaler qu'on peut les faire défiler (surtout au doigt sur mobile).
 function markScrollable(){
-  ['sb','agentStats','mapStats'].forEach(id=>{
-    const el=$(id); if(!el) return;
+  const els=['agentStats','mapStats'].map(id=>$(id))
+    .concat([...document.querySelectorAll('.sx-tablewrap')]);
+  els.forEach(el=>{
+    if(!el) return;
     el.classList.toggle('scrollx', el.scrollWidth > el.clientWidth + 2);
   });
 }
@@ -2396,13 +2400,9 @@ function openSessionReport(key){
       <input class="sx-url" id="sxShareUrl" readonly hidden value="${esc(shareURL)}" aria-label="Lien de la session">
     </div>`;
 
-  modal.hidden=false;
-  document.body.style.overflow='hidden';
+  modalOpen('sessionModal');
 }
-function closeSessionReport(){
-  const m=$('sessionModal'); if(m) m.hidden=true;
-  document.body.style.overflow='';
-}
+function closeSessionReport(){ modalClose('sessionModal'); }
 
 // Recalcule les sessions du profil courant. Les historiques de la squad sont
 // chargés en tâche de fond (blobs uniquement) puis le rendu est rafraîchi :
@@ -2420,6 +2420,24 @@ function refreshSessions(){
   const after=()=>{ renderSessions(); renderRecords(); consumeShareTarget(); };
   if(!SQUAD_BLOBS_DONE) ensureSquadHistories().then(after).catch(after);
   else after();
+}
+
+/* ============ MODALES ============
+   Verrou de défilement partagé : une modale ouverte au-dessus d'une autre ne
+   doit pas déverrouiller la page en se fermant. */
+function modalOpen(id){
+  const m=$(id); if(!m) return;
+  m.hidden=false;
+  document.body.classList.add('modal-open');
+}
+function modalClose(id){
+  const m=$(id); if(m) m.hidden=true;
+  if(!document.querySelector('.modal:not([hidden])')) document.body.classList.remove('modal-open');
+}
+// La plus haute modale ouverte, pour qu'Échap ne ferme qu'elle.
+function topModal(){
+  const order=['scoreModal','matchModal','sessionModal'];
+  return order.find(id=>{ const m=$(id); return m && !m.hidden; }) || null;
 }
 
 /* ============ DÉTAIL DU CALCUL DE L'INDICE (modale) ============ */
@@ -2464,9 +2482,9 @@ function openScoreDetail(line, head){
     <div class="sd-note mono">Chaque critère est noté sur une échelle interne où une valeur <b>moyenne en ranked vaut 50</b>.
     La note finale est ensuite <b>mise à l'échelle</b> pour être comparable aux autres trackers — l'ordre des parties reste identique.${
       d.forfeit?'<br>⚠️ Partie écourtée par forfait : la note est rapprochée de la moyenne (trop peu de rounds pour juger).':''}</div>`;
-  modal.hidden=false;
+  modalOpen('scoreModal');
 }
-function closeScoreDetail(){ const m=$('scoreModal'); if(m) m.hidden=true; }
+function closeScoreDetail(){ modalClose('scoreModal'); }
 
 /* ============ MODALE : DÉTAIL COMPLET D'UNE PARTIE ============ */
 const RES_ICON = { Elimination:'⚔', Detonate:'💥', Defuse:'✂', 'Round timer expired':'⏱', Surrendered:'🏳' };
@@ -2514,36 +2532,97 @@ function renderRoundDetail(n){
     <div class="md-kills">${kills}</div>`;
 }
 
-function openMatchFacts(i){
-  const M=STATE.matches[i]; if(!M) return;
-  const modal=$('matchModal'), body=$('matchModalBody'); if(!modal||!body) return;
-  const f=M.facts;
-  if(!f){
-    body.innerHTML=`<div class="md-empty mono">Détail round par round indisponible pour cette partie.<br>
-      Ouvre-la dans la liste (le détail complet se charge automatiquement), puis réessaie.</div>`;
-    modal.hidden=false; return;
+/* ============ MODALE UNIQUE D'UNE PARTIE ============
+   Scoreboard + détail complet au même endroit : cliquer une partie de la liste
+   ouvre tout d'un coup, au lieu d'un scoreboard en bas de page et d'un second
+   bouton pour les détails. */
+
+// Scoreboard d'une partie. Renvoie aussi la version « détaillée » utilisée, car
+// une partie compacte du blob peut avoir son détail complet chargé entre-temps.
+function scoreboardHTML(M){
+  const rawDetail=(M.partial && M.id && MATCH_DETAILS[M.id]) ? MATCH_DETAILS[M.id] : null;
+  const detail = rawDetail ? normMatch(rawDetail) : M;
+  const partialNow = !!M.partial && !rawDetail;
+  // On réutilise les lignes déjà notées (même indice que dans la liste des matchs).
+  const all=detail.lines || applyScores(detail.players.map(p=>rawLine(p,detail.rounds)),
+    {rounds:detail.rounds, forfeit:detail.forfeit});   // detail.lines porte déjà le KAST
+  // Classement par ACS décroissant sur TOUS les joueurs de la partie (1er, 2e, …).
+  [...all].sort((a,b)=>b.acs-a.acs).forEach((s,idx)=>{ s.acsRank=idx+1; });
+  SB_LINES=all;   // pour ouvrir le détail du calcul au clic sur un indice
+  const blue=all.filter(s=>s.team===detail.myTeamId), red=all.filter(s=>s.team!==detail.myTeamId);
+  const sbRows = rows => rows.map(s=>{
+    const me=s.name.toLowerCase()===STATE.name.toLowerCase()&&s.tag.toLowerCase()===STATE.tag.toLowerCase();
+    const t=tierOf(s.score100);
+    const initials=esc((s.agent||'?').slice(0,2));
+    // Tête de l'agent avec repli en cascade : UUID de la partie -> table nom->icône
+    // -> initiales. L'onerror passe au repli suivant au lieu d'abandonner direct.
+    const idIcon=s.agentId ? `${MEDIA}/${s.agentId}/displayicon.png` : '';
+    const nameIcon=(AGENTS && AGENTS[(s.agent||'').toLowerCase()]) || '';
+    const primary=idIcon||nameIcon;
+    const fallback=(idIcon && nameIcon && nameIcon!==idIcon) ? nameIcon : '';
+    const agCell=primary
+      ? `<div class="ag" title="${esc(s.agent)}"><img src="${esc(primary)}" data-fb="${esc(fallback)}" alt="${esc(s.agent)}" loading="lazy" onerror="var f=this.dataset.fb; if(f){this.dataset.fb='';this.src=f;} else {this.closest('.ag').classList.add('noimg');this.remove();}"><span>${initials}</span></div>`
+      : `<div class="ag noimg" title="${esc(s.agent)}"><span>${initials}</span></div>`;
+    const posCell = partialNow
+      ? `<td class="pos">—</td>`
+      : `<td class="pos${s.acsRank===1?' top':''}">${ordinalFr(s.acsRank)}</td>`;
+    return `<tr class="${me?'me':''}">
+      ${posCell}
+      <td class="pcol"><div class="agent">${agCell}
+        <div class="pn"><b>${esc(s.name)}</b> <span>#${esc(s.tag)}</span></div></div></td>
+      <td class="scell sd" style="color:${t.c}" data-sb="${all.indexOf(s)}" title="Voir le détail du calcul">${s.score100}</td>
+      <td style="color:${sc((s.acs-130)/2)}"><b>${s.acs}</b></td>
+      <td><b style="color:${sc((s.kd-0.6)*100)}">${s.k}</b>/${s.d}/${s.a}</td>
+      <td style="color:${s.k-s.d>=0?'var(--win)':'var(--loss)'}">${(s.k-s.d>0?'+':'')}${s.k-s.d}</td>
+      <td style="color:${sc((s.hs-10)*4)}">${s.hs}%</td>
+      <td style="color:${sc(s.adr-90)}">${s.adr}</td></tr>`;
+  }).join('');
+
+  // Note pour les parties du blob : détail en cours de chargement ou indisponible.
+  let note='';
+  if(partialNow){
+    note = (M.id in MATCH_DETAILS && MATCH_DETAILS[M.id]===null && !DETAIL_PENDING[M.id])
+      ? `<div class="sbnote">Scoreboard complet indisponible pour cette partie (trop ancienne ou hors API).</div>`
+      : `<div class="sbnote">Chargement du scoreboard complet…</div>`;
   }
-  FACTS_CUR=f;
-  const t=tierOf(M.me?M.me.score100:0);
+  const html=`<div class="sx-tablewrap"><table class="sb"><thead><tr><th>#</th><th class="pcol">Joueur</th><th>Indice</th><th>ACS</th><th>K/D/A</th><th>+/–</th><th>HS%</th><th>ADR</th></tr></thead>
+    <tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
+    <tr><td colspan="8" class="teamlabel red">Adverse — ${detail.oppScore} rounds</td></tr>${sbRows(red)}</tbody></table></div>${note}`;
+  return { html, detail, partialNow };
+}
+
+// Déroulé chiffré : mi-temps et meilleure série. Déductible de la timeline sans
+// hypothèse sur les côtés (l'API ne dit pas qui attaque en premier).
+function matchFlowHTML(f){
+  const t=f.timeline; if(!t.length) return '';
+  const seg=(a,b)=>{ const r=t.slice(a,b); return r.length?{w:r.filter(x=>x.won).length,l:r.filter(x=>!x.won).length}:null; };
+  const h1=seg(0,12), h2=seg(12,24), ot=seg(24,t.length);
+  let best=0,cur=0; t.forEach(r=>{ if(r.won){ cur++; if(cur>best) best=cur; } else cur=0; });
+  const sh=x=>x?`<b><span class="wv">${x.w}</span>–<span class="lv">${x.l}</span></b>`:'<b>—</b>';
+  return `<div class="md-sec">Déroulé</div>
+    <div class="md-tiles">
+      <div class="md-tile">${sh(h1)}<span>1<sup>re</sup> mi-temps</span></div>
+      <div class="md-tile">${sh(h2)}<span>2<sup>de</sup> mi-temps</span></div>
+      ${ot?`<div class="md-tile">${sh(ot)}<span>prolongations</span></div>`:''}
+      <div class="md-tile"><b>${best}</b><span>meilleure série</span></div>
+      <div class="md-tile"><b>${t.length}</b><span>rounds joués</span></div>
+    </div>`;
+}
+
+// Sections détaillées (nécessitent les données de round).
+function factsHTML(f){
   const mk=Object.keys(f.multi).sort();
   const tile=(v,l,cls='')=>`<div class="md-tile ${cls}"><b>${v}</b><span>${esc(l)}</span></div>`;
   const maxD=Math.max(1,...f.duels.map(d=>Math.max(d.dealt,d.received)));
-
-  body.innerHTML=`
-    <div class="sd-head">
-      <div class="scorebadge score-hero" style="--sc:${t.c}">${M.me?M.me.score100:'—'}<span class="out">/100</span></div>
-      <div>
-        <div class="sd-tier" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${M.result==='w'?'VICTOIRE':'DÉFAITE'} ${M.myScore}–${M.oppScore}</div>
-        <h3>${esc(M.map)}</h3>
-        <div class="sd-sub mono">${esc(M.mode)}${M.me?' · '+esc(M.me.agent):''} · ${esc(relTime(M.started))}</div>
-      </div>
-    </div>
-
+  const aces=mk.filter(k=>+k>=5).reduce((a,k)=>a+f.multi[k],0);
+  return `
     <div class="md-sec">Timeline <em>clique un round pour son détail</em></div>
     <div class="md-timeline" id="mdTimeline">${f.timeline.map(r=>roundChip(r,r.n===1)).join('')}</div>
     <div class="md-round" id="mdRound"></div>
 
-    <div class="md-sec">Faits d'armes</div>
+    ${matchFlowHTML(f)}
+
+    <div class="md-sec">Faits d'armes${aces?` <em>${aces} ace${aces>1?'s':''} !</em>`:''}</div>
     <div class="md-tiles">
       ${tile(f.firstBloods,'first bloods','good')}
       ${tile(f.firstDeaths,'first deaths','bad')}
@@ -2615,10 +2694,63 @@ function openMatchFacts(i){
           </div>`).join('')}</div>`;
       }).join('')}
     </div>`;
-  renderRoundDetail(1);
-  modal.hidden=false;
 }
-function closeMatchFacts(){ const m=$('matchModal'); if(m) m.hidden=true; }
+
+function renderMatchModal(i){
+  const M=STATE.matches[i], body=$('matchModalBody');
+  if(!M||!body) return;
+  const sb=scoreboardHTML(M);
+  const f=M.facts;
+  FACTS_CUR=f||null;
+  const t=tierOf(M.me?M.me.score100:0);
+  const dur=M.durMs?fmtDur(M.durMs):'';
+  const rr=(M.rr && M.rr.change!=null) ? ` · <span class="${M.rr.change>=0?'up':'dn'}">${M.rr.change>=0?'+':''}${M.rr.change} RR</span>` : '';
+
+  body.innerHTML=`
+    <div class="sd-head">
+      <div class="scorebadge score-hero sd" id="mdHeroScore" title="Voir le détail du calcul" style="--sc:${t.c}">${M.me?M.me.score100:'—'}<span class="out">/100</span></div>
+      <div>
+        <div class="sd-tier" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${M.result==='w'?'VICTOIRE':'DÉFAITE'} ${M.myScore}–${M.oppScore}</div>
+        <h3>${esc(M.map)}</h3>
+        <div class="sd-sub mono">${esc(M.mode)}${M.me?' · '+esc(M.me.agent):''} · ${esc(relTime(M.started))}${dur?' · '+dur:''}${rr}</div>
+      </div>
+    </div>
+
+    <div class="md-sec">Scoreboard <em>clique un indice pour le détail du calcul</em></div>
+    ${sb.html}
+
+    ${f ? factsHTML(f) : `<div class="md-empty mono">Détail round par round indisponible pour cette partie —
+      il n'est fourni que par l'API sur les parties récentes.</div>`}`;
+  if(f) renderRoundDetail(1);
+  markScrollable();
+}
+
+// Ouvre la partie i : scoreboard + détail, dans une seule modale.
+function openMatch(i){
+  const M=STATE.matches[i]; if(!M) return;
+  SELECTED_IDX=i; SELECTED_ID=M.id||null;
+  document.querySelectorAll('.mrow').forEach(el=>el.classList.toggle('sel', +el.dataset.idx === i));
+  renderMatchModal(i);
+  modalOpen('matchModal');
+
+  // Partie compacte : on va chercher le détail complet, puis on ré-affiche.
+  if(M.partial && M.id && !(M.id in MATCH_DETAILS)){
+    DETAIL_PENDING[M.id]=true;
+    fetchMatchDetail(M.id).finally(()=>{
+      delete DETAIL_PENDING[M.id];
+      // Le détail complet apporte le KAST : on met à jour l'indice de cette partie
+      // pour que la liste et le scoreboard affichent la même note.
+      const raw=MATCH_DETAILS[M.id];
+      if(raw){
+        const full=normMatch(raw);
+        if(full && full.me){ M.me=Object.assign(full.me,{placement:M.me&&M.me.placement}); M.lines=full.lines; M.facts=full.facts; M.partial=false; }
+      }
+      renderList();
+      if(SELECTED_IDX===i && !$('matchModal').hidden) renderMatchModal(i);
+    });
+  }
+}
+function closeMatchFacts(){ modalClose('matchModal'); }
 
 // Ouvre le détail pour une partie de la liste (le joueur du profil).
 function openMatchScore(i){
@@ -2641,82 +2773,6 @@ async function fetchMatchDetail(id){
     MATCH_DETAILS[id]=(raw && Array.isArray(raw.players) && raw.players.length>1) ? raw : null;
   }catch(e){ MATCH_DETAILS[id]=null; }
   return MATCH_DETAILS[id];
-}
-
-function showMatch(i){
-  document.querySelectorAll('.mrow').forEach(el=>el.classList.toggle('sel', +el.dataset.idx === i));
-  const M=STATE.matches[i];
-  if(!M) return;
-  SELECTED_IDX=i; SELECTED_ID=M.id||null;
-  // Pour une partie du blob (compacte), on normalise le détail complet (s'il est
-  // chargé) selon le profil courant, sinon on garde la version compacte.
-  const rawDetail=(M.partial && M.id && MATCH_DETAILS[M.id]) ? MATCH_DETAILS[M.id] : null;
-  const detail = rawDetail ? normMatch(rawDetail) : M;
-  const partialNow = !!M.partial && !rawDetail;
-  $('sbsub').textContent=`${detail.map} · ${detail.result==='w'?'victoire':'défaite'} ${detail.myScore}–${detail.oppScore}`;
-  // On réutilise les lignes déjà notées (même indice que dans la liste des matchs).
-  const all=detail.lines || applyScores(detail.players.map(p=>rawLine(p,detail.rounds)),
-    {rounds:detail.rounds, forfeit:detail.forfeit});   // detail.lines porte déjà le KAST
-  // Classement par ACS décroissant sur TOUS les joueurs de la partie (1er, 2e, …).
-  [...all].sort((a,b)=>b.acs-a.acs).forEach((s,idx)=>{ s.acsRank=idx+1; });
-  SB_LINES=all;   // pour ouvrir le détail du calcul au clic sur un indice
-  const blue=all.filter(s=>s.team===detail.myTeamId), red=all.filter(s=>s.team!==detail.myTeamId);
-  const sbRows = rows => rows.map(s=>{
-    const me=s.name.toLowerCase()===STATE.name.toLowerCase()&&s.tag.toLowerCase()===STATE.tag.toLowerCase();
-    const t=tierOf(s.score100);
-    const initials=esc((s.agent||'?').slice(0,2));
-    // Tête de l'agent avec repli en cascade : UUID de la partie -> table nom->icône
-    // -> initiales. L'onerror passe au repli suivant au lieu d'abandonner direct.
-    const idIcon=s.agentId ? `${MEDIA}/${s.agentId}/displayicon.png` : '';
-    const nameIcon=(AGENTS && AGENTS[(s.agent||'').toLowerCase()]) || '';
-    const primary=idIcon||nameIcon;
-    const fallback=(idIcon && nameIcon && nameIcon!==idIcon) ? nameIcon : '';
-    const agCell=primary
-      ? `<div class="ag" title="${esc(s.agent)}"><img src="${esc(primary)}" data-fb="${esc(fallback)}" alt="${esc(s.agent)}" loading="lazy" onerror="var f=this.dataset.fb; if(f){this.dataset.fb='';this.src=f;} else {this.closest('.ag').classList.add('noimg');this.remove();}"><span>${initials}</span></div>`
-      : `<div class="ag noimg" title="${esc(s.agent)}"><span>${initials}</span></div>`;
-    const posCell = partialNow
-      ? `<td class="pos">—</td>`
-      : `<td class="pos${s.acsRank===1?' top':''}">${ordinalFr(s.acsRank)}</td>`;
-    return `<tr class="${me?'me':''}">
-      ${posCell}
-      <td class="pcol"><div class="agent">${agCell}
-        <div class="pn"><b>${esc(s.name)}</b> <span>#${esc(s.tag)}</span></div></div></td>
-      <td class="scell sd" style="color:${t.c}" data-sb="${all.indexOf(s)}" title="Voir le détail du calcul">${s.score100}</td>
-      <td style="color:${sc((s.acs-130)/2)}"><b>${s.acs}</b></td>
-      <td><b style="color:${sc((s.kd-0.6)*100)}">${s.k}</b>/${s.d}/${s.a}</td>
-      <td style="color:${s.k-s.d>=0?'var(--win)':'var(--loss)'}">${(s.k-s.d>0?'+':'')}${s.k-s.d}</td>
-      <td style="color:${sc((s.hs-10)*4)}">${s.hs}%</td>
-      <td style="color:${sc(s.adr-90)}">${s.adr}</td></tr>`;
-  }).join('');
-  
-  // Note pour les parties du blob : détail en cours de chargement ou indisponible.
-  let note='';
-  if(partialNow){
-    note = (M.id in MATCH_DETAILS && MATCH_DETAILS[M.id]===null && !DETAIL_PENDING[M.id])
-      ? `<div class="sbnote">Détail complet indisponible pour cette partie (trop ancienne ou hors API).</div>`
-      : `<div class="sbnote">Chargement du scoreboard complet…</div>`;
-  }
-
-  $('sb').innerHTML=`<table class="sb"><thead><tr><th>#</th><th class="pcol">Joueur</th><th>Indice</th><th>ACS</th><th>K/D/A</th><th>+/–</th><th>HS%</th><th>ADR</th></tr></thead>
-    <tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
-    <tr><td colspan="8" class="teamlabel red">Adverse — ${detail.oppScore} rounds</td></tr>${sbRows(red)}</tbody></table>${note}`;
-  markScrollable();
-
-  // Charge le détail complet à la demande, puis ré-affiche si cette partie est toujours ouverte.
-  if(M.partial && M.id && !(M.id in MATCH_DETAILS)){
-    DETAIL_PENDING[M.id]=true;
-    fetchMatchDetail(M.id).finally(()=>{
-      delete DETAIL_PENDING[M.id];
-      // Le détail complet apporte le KAST : on met à jour l'indice de cette partie
-      // pour que la liste et le scoreboard affichent la même note.
-      const raw=MATCH_DETAILS[M.id];
-      if(raw){
-        const full=normMatch(raw);
-        if(full && full.me){ M.me=Object.assign(full.me,{placement:M.me&&M.me.placement}); M.lines=full.lines; M.partial=false; }
-      }
-      if(SELECTED_IDX===i){ renderList(); showMatch(i); }
-    });
-  }
 }
 
 function openProfile(idx){
@@ -3679,23 +3735,28 @@ function wireStatic(){
   $('ml').addEventListener('click',e=>{
     const b=e.target.closest('[data-sd]');
     if(b){ e.stopPropagation(); openMatchScore(+b.dataset.sd); return; }   // clic sur l'indice -> détail du calcul
-    const r=e.target.closest('.mrow'); if(r) showMatch(+r.dataset.idx);
+    const r=e.target.closest('.mrow'); if(r) openMatch(+r.dataset.idx);
   });
   // Détail du calcul : badge du dernier match + indices du scoreboard
   $('verdict')?.addEventListener('click',e=>{ if(e.target.closest('#heroScore')) openMatchScore(0); });
-  $('sb')?.addEventListener('click',e=>{
-    const c=e.target.closest('[data-sb]'); if(!c) return;
-    const line=SB_LINES[+c.dataset.sb]; if(!line) return;
-    openScoreDetail(line, { title:`${line.name}#${line.tag} · ${line.agent}`, sub:($('sbsub')&&$('sbsub').textContent)||'' });
-  });
+
   $('scoreModal')?.addEventListener('click',e=>{
     if(e.target.closest('#scoreModalX')||e.target.classList.contains('modal-back')) closeScoreDetail();
   });
-  // Détail complet de la partie (timeline, faits d'armes, duels, lobby)
-  $('btnMatchDetail')?.addEventListener('click',()=>openMatchFacts(SELECTED_IDX>=0?SELECTED_IDX:0));
+  // Modale d'une partie : scoreboard + détail complet au même endroit.
   $('matchModal')?.addEventListener('click',e=>{
     if(e.target.closest('#matchModalX')||e.target.classList.contains('modal-back')){ closeMatchFacts(); return; }
-    const rc=e.target.closest('.rchip'); if(rc) renderRoundDetail(+rc.dataset.round);
+    const rc=e.target.closest('.rchip'); if(rc){ renderRoundDetail(+rc.dataset.round); return; }
+    // Indice d'un joueur du scoreboard, ou badge du bandeau : détail du calcul.
+    const c=e.target.closest('[data-sb]');
+    if(c){
+      const line=SB_LINES[+c.dataset.sb]; if(!line) return;
+      const M=STATE.matches[SELECTED_IDX];
+      openScoreDetail(line, { title:`${line.name}#${line.tag} · ${line.agent}`,
+        sub:M?`${M.map} · ${M.result==='w'?'victoire':'défaite'} ${M.myScore}–${M.oppScore}`:'' });
+      return;
+    }
+    if(e.target.closest('#mdHeroScore') && SELECTED_IDX>=0) openMatchScore(SELECTED_IDX);
   });
   // Rapports de session
   $('sxList')?.addEventListener('click',e=>{
@@ -3730,7 +3791,13 @@ function wireStatic(){
     if(SESSIONS_ONLY_COMMON && !SQUAD_INDEX) ensureSquadHistories().then(renderSessions).catch(()=>renderSessions());
     else renderSessions();
   });
-  document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeScoreDetail(); closeMatchFacts(); closeSessionReport(); } });
+  document.addEventListener('keydown',e=>{
+    if(e.key!=='Escape') return;
+    const top=topModal();
+    if(top==='scoreModal') closeScoreDetail();
+    else if(top==='matchModal') closeMatchFacts();
+    else if(top==='sessionModal') closeSessionReport();
+  });
   $('phead').addEventListener('click',e=>{
     if(e.target.closest('.refresh')){ loadProfile(); return; }
     if(e.target.closest('#freshProfile') && FRESH.profile.state!=='loading') loadProfile();

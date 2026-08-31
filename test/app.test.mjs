@@ -133,7 +133,7 @@ async function boot() {
 
   let code = readFileSync(join(root, "app.js"), "utf8");
   // Épilogue de test : expose les fonctions + un accès à l'état interne.
-  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, showMatch, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, perfDetail, perfParts, IDX_W, openMatchScore, init, getState: () => STATE, getRoster: () => ROSTER };";
+  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, openMatch, closeMatchFacts, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, perfDetail, perfParts, IDX_W, openMatchScore, init, getState: () => STATE, getRoster: () => ROSTER };";
   vm.runInContext(code, ctx);
   const T = ctx.__t;
   await T.init(); // garantit roster chargé + grille construite
@@ -166,10 +166,17 @@ test("le profil s'ouvre et fusionne frais + blob sans doublon (m1, m2, m3)", asy
   // fresh [m1,m2] + blob [m2,m3] => 3 matchs uniques
   assert.equal(T.getState().allMatches.length, 3, "historique combiné dédoublonné = 3");
   assert.equal(doc.querySelectorAll("#ml .mrow").length, 3, "3 lignes de match rendues");
-  // la tête de l'agent (via l'UUID de la partie) est rendue dans le scoreboard
-  const agImg = doc.querySelector("#sb .ag img");
+  // Rien n'est ouvert tant qu'on n'a pas cliqué une partie.
+  assert.equal(doc.getElementById("matchModal").hidden, true, "la modale reste fermée au chargement");
+  // La tête de l'agent est rendue dans le scoreboard, désormais dans la modale.
+  T.openMatch(0);
+  assert.equal(doc.getElementById("matchModal").hidden, false, "cliquer une partie ouvre la modale");
+  const agImg = doc.querySelector("#matchModalBody .ag img");
   assert.ok(agImg, "une image d'agent est présente dans le scoreboard");
   assert.match(agImg.getAttribute("src"), /uuid-(cypher|jett)\/displayicon\.png/);
+  assert.ok(doc.body.classList.contains("modal-open"), "le défilement de la page est verrouillé");
+  T.closeMatchFacts();
+  assert.equal(doc.body.classList.contains("modal-open"), false, "…et déverrouillé à la fermeture");
 });
 
 test("le scoreboard affiche le classement par ACS (1er, 2e, …)", async () => {
@@ -177,11 +184,12 @@ test("le scoreboard affiche le classement par ACS (1er, 2e, …)", async () => {
   T.openProfile(0);
   await T.loadProfile();
   const doc = dom.window.document;
+  T.openMatch(0);
   // m1 : le joueur (score 5000) > Foe (score 3500) -> 1er, Foe 2e
-  const positions = [...doc.querySelectorAll("#sb td.pos")].map((e) => e.textContent.trim());
+  const positions = [...doc.querySelectorAll("#matchModalBody td.pos")].map((e) => e.textContent.trim());
   assert.ok(positions.includes("1er"), "le meilleur ACS est marqué 1er");
   assert.ok(positions.includes("2e"), "le second ACS est marqué 2e");
-  const top = doc.querySelector("#sb td.pos.top");
+  const top = doc.querySelector("#matchModalBody td.pos.top");
   assert.ok(top && top.textContent.trim() === "1er", "le 1er a la classe de mise en avant");
 });
 
@@ -239,16 +247,138 @@ test("partie du blob : le détail complet (tous les joueurs + rang ACS) se charg
   assert.ok(idx >= 0, "m3 vient bien du blob (format compact, partial)");
 
   // Rendu synchrone : tant que le détail n'est pas chargé, positions inconnues ('—').
-  T.showMatch(idx);
-  assert.ok([...doc.querySelectorAll("#sb td.pos")].some((e) => e.textContent.trim() === "—"),
+  T.openMatch(idx);
+  assert.ok([...doc.querySelectorAll("#matchModalBody td.pos")].some((e) => e.textContent.trim() === "—"),
     "positions inconnues avant chargement du détail");
 
   // Laisse le chargement à la demande + le ré-affichage automatique se faire.
   await new Promise((r) => setTimeout(r, 50));
-  const positions = [...doc.querySelectorAll("#sb td.pos")].map((e) => e.textContent.trim());
+  const positions = [...doc.querySelectorAll("#matchModalBody td.pos")].map((e) => e.textContent.trim());
   assert.ok(positions.includes("1er") && positions.includes("3e"),
     "après chargement : scoreboard complet avec classement ACS");
   assert.ok(!positions.includes("—"), "plus de position inconnue une fois le détail chargé");
+});
+
+// Faits d'armes synthétiques, à la forme exacte de ce que matchFacts produit.
+function fakeFacts(nRounds = 21) {
+  const timeline = Array.from({ length: nRounds }, (_, i) => ({
+    n: i + 1, won: i % 3 !== 0, result: "Elimination", ceremony: i === 4 ? "Ace" : "",
+    myKills: 2, myDmg: 300, myScore: 240, weapon: "Vandal", armor: "Heavy",
+    loadout: 3900, afk: false, plant: null, defuse: null,
+    kills: [{ killer: "Moi", victim: "Foe", weapon: "Vandal", t: 12000, mine: true, onMe: false, assists: [] }],
+  }));
+  return { timeline, firstBloods: 4, firstDeaths: 2, multi: { 3: 2, 5: 1 }, clutches: 1,
+    clutchKinds: ["1v2"], plants: 3, defuses: 1,
+    weapons: [{ name: "Vandal", kills: 14 }, { name: "Sheriff", kills: 3 }],
+    precision: { head: 25, body: 60, leg: 5, total: 90, hsPct: 28 },
+    economy: { avgLoadout: 3800, avgSpent: 3500,
+      buckets: { eco: { n: 4, won: 1, label: "Eco (<2000)" }, half: { n: 5, won: 2, label: "Demi-achat" },
+                 full: { n: 12, won: 8, label: "Full buy (≥3900)" } } },
+    abilities: { grenade: 4, a1: 10, a2: 8, ult: 2, total: 24, perRound: 1.1 },
+    duels: [{ name: "Foe", tag: "9999", dealt: 900, received: 700 }],
+    lobby: [{ name: "Moi", tag: "1", team: "Blue", mine: true, isMe: true, tier: "Gold 2", party: "A", agent: "Cypher", group: 1 },
+            { name: "Foe", tag: "9999", team: "Red", mine: false, isMe: false, tier: "Gold 1", party: "B", agent: "Jett", group: 0 }] };
+}
+
+test("la modale réunit le scoreboard ET tout le détail de la partie", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  T.getState().matches[0].facts = fakeFacts();
+  T.openMatch(0);
+  const body = doc.getElementById("matchModalBody").textContent;
+  // Tout au même endroit : plus de scoreboard en bas de page.
+  assert.match(body, /Scoreboard/, "le scoreboard est dans la modale");
+  assert.match(body, /Timeline/, "…avec la timeline");
+  assert.match(body, /Faits d'armes/, "…les faits d'armes");
+  assert.match(body, /Armes/, "…les armes");
+  assert.match(body, /Économie/, "…l'économie");
+  assert.match(body, /Duels/, "…les duels");
+  assert.match(body, /Lobby/, "…et le lobby");
+  assert.equal(doc.getElementById("sb"), null, "l'ancienne carte scoreboard n'existe plus");
+});
+
+test("un ace est annoncé dans les faits d'armes", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  T.getState().matches[0].facts = fakeFacts();
+  T.openMatch(0);
+  const body = dom.window.document.getElementById("matchModalBody").textContent;
+  assert.match(body, /1 ace/, "le 5k est mis en avant");
+  assert.match(body, /2×3k/, "les multikills sont détaillés");
+});
+
+test("le déroulé sépare les mi-temps et donne la meilleure série", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  // 21 rounds : 12 en première mi-temps, 9 en seconde, pas de prolongation.
+  T.getState().matches[0].facts = fakeFacts(21);
+  T.openMatch(0);
+  const body = dom.window.document.getElementById("matchModalBody").textContent;
+  assert.match(body, /Déroulé/);
+  assert.match(body, /mi-temps/);
+  assert.match(body, /meilleure série/);
+  assert.match(body, /21/, "le nombre de rounds joués est affiché");
+  assert.equal(/prolongations/.test(body), false, "pas de prolongation annoncée à 21 rounds");
+});
+
+test("au-delà de 24 rounds, les prolongations apparaissent", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  T.getState().matches[0].facts = fakeFacts(27);
+  T.openMatch(0);
+  assert.match(dom.window.document.getElementById("matchModalBody").textContent, /prolongations/);
+});
+
+test("sans données de round, la modale le dit au lieu de faire semblant", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  T.getState().matches[0].facts = null;
+  T.openMatch(0);
+  const body = doc.getElementById("matchModalBody").textContent;
+  assert.match(body, /Scoreboard/, "le scoreboard reste affiché");
+  assert.match(body, /indisponible/, "et l'absence de détail est annoncée");
+  assert.equal(/Timeline/.test(body), false);
+});
+
+test("le détail de l'indice s'ouvre PAR-DESSUS la modale de la partie", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  T.openMatch(0);
+  const cell = doc.querySelector("#matchModalBody [data-sb]");
+  assert.ok(cell, "un indice cliquable dans le scoreboard");
+  cell.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  assert.equal(doc.getElementById("scoreModal").hidden, false, "le détail du calcul s'ouvre");
+  assert.equal(doc.getElementById("matchModal").hidden, false, "…sans fermer la partie derrière");
+
+  // Échap ne ferme que celle du dessus.
+  doc.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(doc.getElementById("scoreModal").hidden, true, "Échap ferme le détail du calcul");
+  assert.equal(doc.getElementById("matchModal").hidden, false, "et laisse la partie ouverte");
+  assert.ok(doc.body.classList.contains("modal-open"), "le verrou tient tant qu'une modale reste ouverte");
+
+  doc.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(doc.getElementById("matchModal").hidden, true);
+  assert.equal(doc.body.classList.contains("modal-open"), false);
+});
+
+test("cliquer une ligne de match ouvre la modale de cette partie", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const rows = [...doc.querySelectorAll("#ml .mrow")];
+  rows[1].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  assert.equal(doc.getElementById("matchModal").hidden, false);
+  assert.ok(rows[1].classList.contains("sel"), "la ligne ouverte reste surlignée");
 });
 
 test("le graphique RR est long terme (blob + live) et trace les lignes de paliers", async () => {

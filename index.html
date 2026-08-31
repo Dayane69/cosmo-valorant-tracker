@@ -340,6 +340,9 @@
   td.scell.sd:hover{text-decoration:underline}
   .sd-cta{font-size:9px;color:var(--dim);letter-spacing:.06em;text-align:center;margin-top:5px}
   .modal{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:18px}
+  /* Le détail de l'indice s'ouvre PAR-DESSUS la modale d'une partie. */
+  #scoreModal{z-index:60}
+  body.modal-open{overflow:hidden}
   .modal-back{position:absolute;inset:0;background:rgba(4,7,11,.78);backdrop-filter:blur(3px)}
   .modal-panel{position:relative;max-width:640px;width:100%;max-height:88vh;overflow:auto;
     background:linear-gradient(180deg,#141f2a,#101822);border:1px solid var(--line);border-radius:16px;padding:20px;
@@ -633,6 +636,7 @@
   .scrollx{position:relative}
   .scrollx::after{content:'';position:absolute;top:0;right:0;bottom:0;width:26px;pointer-events:none;
     background:linear-gradient(90deg,transparent,var(--panel) 85%);opacity:.9}
+  .modal-panel .scrollx::after{background:linear-gradient(90deg,transparent,var(--panel2) 85%)}
   #sb{overflow-x:auto;-webkit-overflow-scrolling:touch}
   #agentStats,#mapStats{overflow-x:auto;-webkit-overflow-scrolling:touch}
   .seg{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%;scrollbar-width:none}
@@ -684,6 +688,13 @@
     /* --- cartes de stats --- */
     .md-tiles{grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:7px}
     .md-tile b{font-size:17px}
+
+    /* --- en-tête de modale : compact, sinon il mange un demi-écran --- */
+    .sd-head{gap:10px;align-items:flex-start}
+    .sd-head h3{font-size:16px;margin:2px 0 0}
+    .sd-sub{font-size:10.5px;line-height:1.5}
+    .md-sec{margin:18px 0 8px;padding-top:12px}
+    .md-sec em{display:block;margin:3px 0 0;font-size:10px}
 
     /* --- modales : quasi plein écran, contenu qui respire --- */
     .modal{padding:8px}
@@ -848,7 +859,7 @@
       <!-- LISTE DES MATCHS AVEC ONGLETS -->
       <div class="card full">
         <h2 class="tabs-header">
-          <span>Matchs récents <em>indice /100 · clique pour le détail</em></span>
+          <span>Matchs récents <em>clique une partie pour tout voir</em></span>
           <div class="seg" id="modeTabs" style="margin:0;">
             <button data-mode="all" class="on">Tous</button>
             <button data-mode="competitive">Classé</button>
@@ -908,11 +919,6 @@
         <div class="card"><h2>Stats par map <em>selon le filtre (agent + acte)</em></h2><div id="mapStats"></div></div>
       </div>
 
-      <div class="card full">
-        <h2 class="tabs-header"><span>Scoreboard <em id="sbsub">sélectionné</em></span>
-          <button class="btn" id="btnMatchDetail" type="button">🔍 Détail de la partie</button></h2>
-        <div id="sb"></div>
-      </div>
       <div class="foot">Base v1 · vannes et seuils en exemples, on les réglera ensemble. Tu peux mettre tes propres GIF dans REACTIONS.</div>
     </div>
   </div>
@@ -1023,6 +1029,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260828b" defer></script>
+<script src="app.js?v=20260829a" defer></script>
 </body>
 </html>
