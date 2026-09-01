@@ -634,6 +634,42 @@
   .rou-pair .rou-who{display:block;width:auto;font-family:var(--mono);font-size:12px;font-weight:800;
     color:var(--c);border-left:3px solid var(--c);padding-left:8px;text-align:left;align-self:stretch}
 
+  /* ============ EN CE MOMENT (direct) ============ */
+  .live{margin:0 auto 14px;max-width:1180px;display:flex;flex-direction:column;gap:8px}
+  .live-head{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;
+    color:var(--dim);letter-spacing:.1em;text-transform:uppercase}
+  .live-dot{width:8px;height:8px;border-radius:50%;background:var(--loss);flex:none;
+    animation:lvpulse 1.6s ease-in-out infinite}
+  @keyframes lvpulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(255,93,93,.55)}
+    70%{opacity:.75;box-shadow:0 0 0 7px rgba(255,93,93,0)}}
+  @media(prefers-reduced-motion:reduce){ .live-dot{animation:none} }
+  .live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(260px,100%),1fr));gap:8px}
+  .live-card{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;
+    border:1px solid var(--line);background:var(--panel2);border-left:3px solid var(--c,var(--muted));
+    text-align:left;min-width:0}
+  .live-card.ingame{border-left-color:var(--loss)}
+  .live-card.pregame{border-left-color:var(--amber)}
+  .live-face{width:40px;height:40px;border-radius:9px;background:var(--panel);flex:none;
+    object-fit:cover;display:block}
+  .live-noface{width:40px;height:40px;border-radius:9px;background:var(--panel);flex:none;
+    display:grid;place-items:center;font-family:var(--mono);font-size:12px;color:var(--dim)}
+  .live-main{flex:1;min-width:0}
+  .live-who{font-size:13.5px;font-weight:800;color:var(--c,var(--txt));overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .live-what{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .live-score{font-family:var(--mono);font-weight:800;font-size:17px;flex:none;letter-spacing:-.02em}
+  .live-score .a{color:var(--win)} .live-score .b{color:var(--loss)} .live-score i{color:var(--dim);font-style:normal}
+  .live-note{font-family:var(--mono);font-size:10.5px;color:var(--dim);line-height:1.6}
+  .live-shop{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+  .live-shop img{width:64px;height:26px;object-fit:contain;background:var(--panel);
+    border:1px solid var(--line);border-radius:6px;padding:2px}
+  @media(max-width:520px){
+    .live-grid{grid-template-columns:minmax(0,1fr)}
+    .live-face,.live-noface{width:34px;height:34px}
+    .live-score{font-size:15px}
+  }
+
   /* ============ COMPOS PAR MAP ============ */
   .cmp-ctl{display:flex;flex-direction:column;gap:12px;margin-bottom:14px}
   .cmp-row-ctl{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap}
@@ -953,6 +989,9 @@
         <div class="secnote" id="edStatus">Les modifs sont partagées (stockées côté serveur) et remplacent roster.json. Laisse « uuid agent » vide et mets une URL GIF pour un membre custom. <b>Anciens pseudos</b> : si quelqu'un a changé de nom Riot, mets son ancien <i>Pseudo#tag</i> ici — son historique et surtout sa <b>progression RR</b> d'avant le changement sont stockés sous cet ancien nom et seraient perdus sinon.</div>
       </div>
     </div>
+    <!-- En ce moment : rempli par loadLive() (app.js) depuis la fonction live,
+         elle-même alimentée par le compagnon PC. Vide si personne ne le lance. -->
+    <div class="live" id="live" hidden></div>
     <!-- Alertes de session : remplies par loadHomeAlerts() (app.js), depuis les blobs. -->
     <div class="alerts" id="alerts" hidden></div>
     <!-- Cartes générées dynamiquement depuis roster.json par renderRoster() (app.js) -->
@@ -1279,6 +1318,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260901a" defer></script>
+<script src="app.js?v=20260901b" defer></script>
 </body>
 </html>

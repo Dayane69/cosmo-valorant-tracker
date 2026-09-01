@@ -46,6 +46,18 @@ afin de garder la clé API **hors du navigateur**.
   Déclencheurs et seuils sont **calibrés sur les sessions réelles de la squad** (mesurées : 2 à 7 parties, RR net de −46 à +68) : à ≥ 6 parties et ±40 RR, des soirées à +68 RR ne déclenchaient rien. Un **récapitulatif** est par ailleurs toujours produit pour la session du jour (« 5 parties hier après-midi — 2V-3D, −10 RR, indice 73 ») : sa gravité est sous celle de tous les autres cas, il ne prend donc la place que si rien de plus marquant n'a eu lieu. Et une soirée qui **rapporte du RR** n'est jamais accusée d'être « partie en vrille ».
 
   > Source : les **blobs d'historique**, donc aucun appel HenrikDev sur l'accueil et aucun risque de rate limit. Le cron ne passant qu'à 04:00, les parties fraîches d'un profil qu'on vient d'ouvrir sont **injectées dans l'index** : la session jouée ce soir apparaît dans le bandeau dès qu'on est passé par le profil, sans attendre le lendemain.
+- **En ce moment** — le direct, sur l'accueil : qui joue là maintenant, en quel mode, sur quelle map, avec quel agent, et **le score en cours**. Plus la **boutique du jour** de chacun.
+
+  **Pourquoi ça demande un programme sur le PC.** Aucune API publique n'expose une partie en cours : les 58 routes de la spec OpenAPI HenrikDev sont toutes post-partie, et les seuls webhooks premium disponibles sont `MATCH` et `MMR` — c'est-à-dire *partie terminée* et *RR modifié*. Riot ne publie rien non plus, vraisemblablement pour ne pas ouvrir la porte au stream-sniping. Le « Competitive — Ascent 7-5 » qu'on voit sur Discord vient d'un programme lancé sur la machine du joueur, qui lit l'**API locale** que le client VALORANT ouvre sur `127.0.0.1` pendant qu'il tourne. C'est la seule source qui existe.
+
+  D'où le **compagnon** (`companion/`) : il lit cette API locale et pousse l'état vers la fonction `live`. Il **ne demande jamais de mot de passe Riot** — il s'authentifie auprès du client déjà ouvert via le *lockfile*, et les jetons Riot ne quittent pas le PC. Ce qui part, c'est ce que le jeu affiche déjà. Ces endpoints restent **non officiels** : largement tolérés, jamais garantis.
+
+  Sans compagnon lancé, **le panneau reste vide** — il ne devine rien, ne déduit rien d'une partie finie il y a dix minutes. Un état de plus de **90 secondes** cesse d'être « en direct » (trois envois manqués), et son score disparaît plutôt que de rester figé à l'écran. La **boutique**, elle, survit à la fermeture du jeu : elle ne tourne qu'une fois par jour.
+
+  Le sondage tourne **uniquement sur l'accueil et onglet visible**, en `setTimeout` chaîné (jamais `setInterval`, qui empilerait les requêtes si le réseau traîne). Changer de rubrique le coupe, revenir le relance avec un rattrapage immédiat.
+
+  > Le serveur ne fait confiance à personne : l'envoi est protégé par `LIVE_TOKEN`, les uuid de boutique sont validés au format avant d'atterrir dans une URL, les scores sont bornés, et un demi-score n'est jamais affiché — `Number(null)` valant `0`, un score manquant serait sinon devenu « 7 - 0 ».
+
 - **Compos par map** — 🗺 quelles compositions gagnent, map par map, avec **deux échelles**.
 
   **Le problème de départ.** Les blobs d'historique viennent de `stored-matches`, qui ne renvoie **qu'un seul joueur par partie** : on y connaît l'agent d'un membre COSMO, jamais celui des neuf autres. Aucune compo n'en sort. Les compos viennent donc d'une **seconde source** : `/valorant/v4/match/{region}/{id}`, rejoué partie par partie, qui donne les 10 joueurs. Chaque partie fournit ainsi **deux compos réelles avec leur résultat** — la nôtre et celle d'en face.
@@ -87,6 +99,7 @@ afin de garder la clé API **hors du navigateur**.
 ├── app.js                           # logique front : fetch, calcul des stats, rendu
 ├── roster.json                      # SOURCE DE VÉRITÉ unique de la squad (membres + région)
 ├── comps.json                       # amorce des compos par map (versionnée ; le cron prend la suite)
+├── companion/                       # compagnon PC (« En ce moment ») + son mode d'emploi
 ├── netlify.toml                     # config de build / fonctions Netlify
 ├── package.json                     # deps (@netlify/blobs) + tests
 ├── test/                            # tests (node --test + jsdom)
@@ -97,8 +110,10 @@ afin de garder la clé API **hors du navigateur**.
         ├── refresh-now.mjs          # déclenchement manuel (protégé par REFRESH_TOKEN)
         ├── historique.mjs           # lecture de l'historique accumulé (blob)
         ├── comps.mjs                # lecture des compos par map (blob)
+        ├── live.mjs                 # état en direct : POST (compagnon) / GET (site)
         ├── lib/refresh-core.mjs     # logique de fusion/refresh (testable, sans dépendance)
-        └── lib/comps-core.mjs       # projection d'une partie en compos + backfill (testable)
+        ├── lib/comps-core.mjs       # projection d'une partie en compos + backfill (testable)
+        └── lib/live-core.mjs        # nettoyage/fusion/péremption de l'état en direct (testable)
 ```
 
 > **Roster = une seule source de vérité.** `roster.json` est lu à la fois par le
@@ -165,6 +180,7 @@ premier déploiement.)
    | --------------- | ---------------------------------------- | ------------- |
    | `HENRIK_KEY`    | ta clé API HenrikDev                     | oui           |
    | `REFRESH_TOKEN` | un secret au choix (pour le bouton ⟳)    | optionnel     |
+   | `LIVE_TOKEN`    | secret que le compagnon PC présente pour envoyer l'état en direct — à défaut, `REFRESH_TOKEN` fait l'affaire | optionnel |
 
    > Ces clés sont lues **uniquement** côté serveur (fonctions Netlify).
    > Elles n'apparaissent jamais dans le code envoyé au navigateur.

@@ -1995,6 +1995,7 @@ function showHome(){
   const rou=$('roulette'); if(rou) rou.hidden = true;
   const cmp=$('comps'); if(cmp) cmp.hidden = true;
   $('home').hidden = false;
+  loadLive().catch(()=>{}); startLiveTicker();
   window.scrollTo(0,0);
   // On nettoie les paramètres de partage : un rafraîchissement depuis l'accueil
   // ne doit pas rouvrir le rapport qu'on vient de quitter.
@@ -3063,7 +3064,7 @@ function openProfile(idx){
 
   const bust=$('phead').querySelector('.pbust img');
   if(bust){const pb=bust.closest('.pbust');const f=()=>{bust.style.display='none';if(pb)pb.classList.add('noimg');};bust.addEventListener('error',f);if(bust.complete&&bust.naturalWidth===0)f();}
-  $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; if($('comps')) $('comps').hidden=true; $('profile').hidden=false; window.scrollTo(0,0);
+  $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; if($('comps')) $('comps').hidden=true; $('profile').hidden=false; stopLiveTicker(); window.scrollTo(0,0);
 
   CURRENT_MODE = 'all';
   document.querySelectorAll('#modeTabs button').forEach(x => x.classList.toggle('on', x.dataset.mode === 'all'));
@@ -3441,6 +3442,7 @@ async function loadTribunal() {
   $('leaderboard').hidden = true;
   if($('roulette')) $('roulette').hidden = true;
   if($('comps')) $('comps').hidden = true;
+  stopLiveTicker();
   $('tribunal').hidden = false;
   $('appTrib').hidden = true;
 
@@ -3483,6 +3485,7 @@ async function loadLeaderboard() {
   $('tribunal').hidden = true;
   if($('roulette')) $('roulette').hidden = true;
   if($('comps')) $('comps').hidden = true;
+  stopLiveTicker();
   $('leaderboard').hidden = false;
   $('appLb').hidden = true;
   window.scrollTo(0,0);
@@ -3782,6 +3785,137 @@ function pickVs(e) {
   renderVs();
 }
 
+/* ===================== EN CE MOMENT (direct) =====================
+   Qui joue là, maintenant. La donnée vient du compagnon PC : aucune API
+   publique n'expose une partie en cours, donc sans compagnon lancé ce panneau
+   reste vide — et c'est normal, il ne devine rien.
+
+   Le sondage n'a lieu QUE sur l'accueil et QUE si l'onglet est visible : ça ne
+   sert à rien de suivre un score qu'on ne regarde pas, et ça viderait la
+   batterie sur mobile. */
+
+let LIVE = [];
+let LIVE_TIMER = null;
+let LIVE_SKINS = null;                 // uuid d'offre -> {name, icon}
+const LIVE_POLL_MS = 20000;
+
+const LIVE_LABEL = { ingame:'en partie', pregame:'sélection des agents', menus:'dans le menu' };
+
+async function fetchLive(){
+  try{
+    const r = await fetch('/.netlify/functions/live');
+    if(!r.ok) return [];
+    const d = await r.json();
+    return Array.isArray(d.players) ? d.players : [];
+  }catch(e){ return []; }
+}
+
+/* Les uuid d'offres de la boutique se traduisent en skins via valorant-api.
+   On charge la table une seule fois : elle pèse, mais elle ne change qu'aux
+   patchs, et sans elle on n'aurait que des uuid illisibles. */
+async function ensureSkins(){
+  if(LIVE_SKINS) return LIVE_SKINS;
+  try{
+    const r = await fetch('https://valorant-api.com/v1/weapons/skinlevels');
+    if(!r.ok) return (LIVE_SKINS = {});
+    const d = await r.json();
+    const map = {};
+    (d.data||[]).forEach(s=>{ if(s && s.uuid) map[s.uuid] = { name:s.displayName||'', icon:s.displayIcon||'' }; });
+    LIVE_SKINS = map;
+  }catch(e){ LIVE_SKINS = {}; }
+  return LIVE_SKINS;
+}
+
+// Rattache une entrée en direct à un membre du roster (couleur, casse du
+// pseudo). Un joueur inconnu du roster est ignoré : l'accueil ne parle que de
+// la squad.
+function liveMember(p){
+  return sessionRoster().find(m => memberKey(m) === p.key) || null;
+}
+
+function liveCardHTML(p, m){
+  const st = p.state==='ingame' ? 'ingame' : (p.state==='pregame' ? 'pregame' : '');
+  const icon = AGENTS && p.agent ? AGENTS[String(p.agent).toLowerCase()] : '';
+  const face = icon
+    ? `<img class="live-face" src="${esc(icon)}" alt="${esc(p.agent)}" loading="lazy">`
+    : `<div class="live-noface">${esc((p.agent||p.name||'?').slice(0,2))}</div>`;
+  const bits = [];
+  if(p.mode) bits.push(esc(p.mode));
+  if(p.map) bits.push(esc(p.map));
+  if(p.agent) bits.push(esc(p.agent));
+  if(p.party && p.party.size>1) bits.push(`${p.party.size} en groupe`);
+  const what = bits.length ? bits.join(' · ') : (LIVE_LABEL[p.state]||'');
+  const score = p.score
+    ? `<div class="live-score"><span class="a">${p.score[0]}</span><i> - </i><span class="b">${p.score[1]}</span></div>`
+    : '';
+  return `<div class="live-card ${st}" style="--c:${esc((m&&m.color)||'#8696a6')}">
+    ${face}
+    <div class="live-main">
+      <div class="live-who">${esc((m&&m.name)||p.name)}</div>
+      <div class="live-what">${what}</div>
+    </div>
+    ${score}
+  </div>`;
+}
+
+/* La boutique du jour, quand un compagnon l'a relevée. Elle est personnelle :
+   on affiche donc à qui elle appartient. */
+function liveShopHTML(p, m){
+  const s = p.store; if(!s || !s.offers || !s.offers.length) return '';
+  const imgs = s.offers.map(u=>{
+    const sk = LIVE_SKINS && LIVE_SKINS[u];
+    if(sk && sk.icon) return `<img src="${esc(sk.icon)}" alt="${esc(sk.name)}" title="${esc(sk.name)}" loading="lazy">`;
+    return sk && sk.name ? `<span class="live-note">${esc(sk.name)}</span>` : '';
+  }).filter(Boolean).join('');
+  if(!imgs) return '';
+  const h = s.secondsLeft ? Math.floor(s.secondsLeft/3600) : null;
+  return `<div class="live-note">Boutique de <b style="color:${esc((m&&m.color)||'')}">${esc((m&&m.name)||p.name)}</b>${
+    h!=null ? ` · encore ${h} h` : ''}<div class="live-shop">${imgs}</div></div>`;
+}
+
+function renderLive(){
+  const host=$('live'); if(!host) return;
+  const known = LIVE.map(p=>({ p, m:liveMember(p) })).filter(x=>x.m);
+  const on = known.filter(x=>x.p.live);
+  const shops = known.filter(x=>x.p.store && x.p.store.offers && x.p.store.offers.length);
+
+  if(!on.length && !shops.length){ host.hidden=true; host.innerHTML=''; return; }
+  host.hidden=false;
+
+  const parts=[];
+  if(on.length){
+    parts.push(`<div class="live-head"><span class="live-dot"></span>En ce moment · ${on.length} joueur${on.length>1?'s':''}</div>`);
+    parts.push(`<div class="live-grid">${on.map(x=>liveCardHTML(x.p, x.m)).join('')}</div>`);
+  }
+  if(shops.length){
+    parts.push(shops.map(x=>liveShopHTML(x.p, x.m)).filter(Boolean).join(''));
+  }
+  host.innerHTML = parts.join('');
+}
+
+async function loadLive(){
+  LIVE = await fetchLive();
+  if(LIVE.some(p=>p.store && p.store.offers && p.store.offers.length)) await ensureSkins();
+  if(LIVE.some(p=>p.agent)) await ensureAgents();
+  renderLive();
+}
+
+/* Sondage borné : uniquement sur l'accueil, uniquement onglet visible.
+   setTimeout et non setInterval, pour ne jamais empiler deux requêtes si le
+   réseau traîne. */
+function stopLiveTicker(){ if(LIVE_TIMER){ clearTimeout(LIVE_TIMER); LIVE_TIMER=null; } }
+function startLiveTicker(){
+  stopLiveTicker();
+  const tick = async () => {
+    LIVE_TIMER = null;
+    const home = $('home');
+    if(!home || home.hidden || document.hidden) return;   // on s'arrête, le retour relancera
+    await loadLive();
+    if(!$('home').hidden && !document.hidden) LIVE_TIMER = setTimeout(tick, LIVE_POLL_MS);
+  };
+  LIVE_TIMER = setTimeout(tick, LIVE_POLL_MS);
+}
+
 /* ===================== COMPOS — CHARGEMENT & AFFICHAGE ===================== */
 
 let COMPO_MAP = null;          // map affichée (null = pas encore choisie)
@@ -3936,6 +4070,7 @@ async function showComps(){
   const rou=$('roulette'); if(rou) rou.hidden=true;
   const sec=$('comps'); if(!sec) return;
   sec.hidden=false;
+  stopLiveTicker();
   window.scrollTo(0,0);
 
   if(COMPS_LOADED && AGENT_LIST.length){ renderComps(); return; }
@@ -4016,6 +4151,9 @@ function refreshHomeAlerts(){
 }
 
 async function loadHomeAlerts(){
+  // Le direct est indépendant des alertes : il ne lit aucun blob d'historique
+  // et doit démarrer même si la squad n'a pas encore de sessions.
+  loadLive().then(startLiveTicker).catch(()=>{});
   if(ALERTS_LOADED) return;
   ALERTS_LOADED = true;
   if(!$('alerts')) return;
@@ -4188,6 +4326,7 @@ async function runRoulette(){
 function showRoulette(){
   $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
   $('leaderboard').hidden=true; $('roulette').hidden=false;
+  stopLiveTicker();
   const cmp=$('comps'); if(cmp) cmp.hidden=true;
   window.scrollTo(0,0);
   // Par défaut : toute la squad est sélectionnée, on retire ceux qui ne jouent pas.
@@ -4560,7 +4699,12 @@ async function init(){
   registerSW();
   startFreshTicker();
   document.addEventListener('visibilitychange', ()=>{
-    if(document.hidden) stopFreshTicker(); else { renderFresh(); startFreshTicker(); }
+    if(document.hidden){ stopFreshTicker(); stopLiveTicker(); }
+    else {
+      renderFresh(); startFreshTicker();
+      // On rattrape tout de suite : un score de 20 s d'âge est déjà vieux.
+      if(!$('home').hidden){ loadLive().catch(()=>{}); startLiveTicker(); }
+    }
   });
   // Lien de session partagé : on ouvre directement le profil concerné, et le
   // rapport s'ouvrira dès que les données seront prêtes (cf. refreshSessions).
