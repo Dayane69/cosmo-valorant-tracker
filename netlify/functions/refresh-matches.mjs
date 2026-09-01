@@ -9,7 +9,26 @@
 
 import { getStore } from "@netlify/blobs";
 import roster from "../../roster.json" with { type: "json" };
-import { runRefresh } from "./lib/refresh-core.mjs";
+import { runRefresh, blobKey } from "./lib/refresh-core.mjs";
+import { runCompsBackfill } from "./lib/comps-core.mjs";
+
+// Parties récentes de chaque membre, pour donner au backfill des compos de quoi
+// travailler. On ne relit que le haut de chaque blob (déjà trié du plus récent
+// au plus ancien) : l'historique complet est déjà couvert par comps.json, ce
+// passage n'a qu'à rattraper les parties du jour.
+const RECENT_PER_MEMBER = 30;
+
+async function recentMatches(members) {
+  const store = getStore("cosmo-history");
+  const out = [];
+  for (const m of members) {
+    try {
+      const list = (await store.get(blobKey(m.name, m.tag), { type: "json" })) || [];
+      out.push(...list.slice(0, RECENT_PER_MEMBER));
+    } catch (e) { /* un membre sans blob ne bloque pas les autres */ }
+  }
+  return out;
+}
 
 export default async () => {
   const apiKey = process.env.HENRIK_KEY;
@@ -30,7 +49,21 @@ export default async () => {
 
   try {
     const res = await runRefresh({ roster: members, region, getStore, fetchImpl: fetch, apiKey });
-    return new Response(JSON.stringify({ ok: true, ...res }), {
+
+    // Compos par map : on projette les parties du jour (les 10 joueurs, donc
+    // les deux compos). Un échec ici ne doit surtout pas faire passer tout le
+    // rafraîchissement pour raté — l'historique, lui, est déjà écrit.
+    let comps = null;
+    try {
+      comps = await runCompsBackfill({
+        getStore, fetchImpl: fetch, apiKey,
+        storedMatches: await recentMatches(members),
+      });
+    } catch (e) {
+      console.error(`[comps] échec: ${(e && e.message) || e}`);
+    }
+
+    return new Response(JSON.stringify({ ok: true, ...res, comps }), {
       headers: { "content-type": "application/json" },
     });
   } catch (e) {

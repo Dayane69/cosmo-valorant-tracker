@@ -1617,6 +1617,181 @@ function resetSquadIndex(){
   SQUAD_INDEX=null; SQUAD_HIST=null; SQUAD_LOADING=null; SQUAD_BLOBS_DONE=false; PUUID_MEMBER={};
 }
 
+/* ===================== COMPOS PAR MAP =====================
+   Quelles compositions gagnent, map par map.
+
+   D'où viennent les données. Les blobs d'historique ne contiennent qu'UN
+   joueur par partie (c'est tout ce que renvoie stored-matches) : on n'y voit
+   jamais de compo. Le jeu `COMPS` vient d'un autre endpoint, rejoué partie par
+   partie, qui donne les 10 joueurs. Chaque partie fournit donc DEUX compos
+   réelles avec leur résultat : la nôtre et celle d'en face.
+
+   Les deux échelles :
+   - « Observé »  : les deux camps de toutes les parties connues. C'est la
+     population la plus large qu'on puisse mesurer honnêtement. Ce n'est PAS un
+     winrate mondial — aucune API publique ne donne ça — et l'écran le dit.
+   - « COSMO »    : seulement le camp où un membre jouait.
+
+   Toutes les statistiques affichées sont mesurées. Rien n'est estimé. */
+
+let COMPS = [];                 // [{id,map,mode,at,sides,t:[[5],[5]],r,w}]
+let COMPS_LOADED = false;
+let COMPS_LOADING = null;
+let COMPS_SRC = '';             // provenance, pour l'afficher
+
+// En dessous, un « winrate » ne veut plus rien dire : 2 parties sur 2 gagnées
+// ne fait pas une bonne compo. Les seuils diffèrent car les populations n'ont
+// pas du tout la même taille (une compo exacte est bien plus rare qu'un rôle).
+// Pas de « compo exacte à 5 » : mesuré sur l'historique complet, UNE seule
+// atteignait 4 parties sur 13 maps. Un classement qui reste vide n'est pas un
+// classement. Le noyau à 3, lui, se répète vraiment (227 trios sur 10 maps).
+const COMPO_MIN = { roles: 8, trio: 6, agent: 10, duo: 6 };
+
+// Borne basse de l'intervalle de Wilson (95 %). C'est ELLE qui classe, jamais
+// le winrate brut : sinon un 3/3 à 100 % passerait devant un 42/60 à 70 %.
+// Plus l'échantillon est petit, plus la borne est prudente.
+function wilsonLower(w, n){
+  if(!n) return 0;
+  const z=1.96, p=w/n, z2=z*z;
+  return (p + z2/(2*n) - z*Math.sqrt((p*(1-p) + z2/(4*n))/n)) / (1 + z2/n);
+}
+
+// Rôle d'un agent, d'après la liste chargée depuis valorant-api.
+function roleOf(agent){
+  const a = AGENT_LIST.find(x=>x.name===agent);
+  return (a && a.role) || null;
+}
+
+// Signature de rôles d'une compo : « 2-1-1-1 » dans l'ordre fixe de ROLES.
+// Renvoie null si un agent n'a pas de rôle connu — une signature incomplète
+// serait rangée avec les autres et fausserait le décompte.
+function roleSig(agents){
+  const c={}; ROLES.forEach(r=>c[r]=0);
+  for(const a of (agents||[])){
+    const r = roleOf(a);
+    if(!r) return null;
+    c[r]++;
+  }
+  return ROLES.map(r=>c[r]).join('-');
+}
+
+// « 2-1-1-1 » -> « 2 Duellistes · 1 Initiateur · 1 Contrôleur · 1 Sentinelle ».
+// Les quatre rôles prennent un simple « s » au pluriel.
+function roleSigLabel(sig){
+  return String(sig||'').split('-').map((n,i)=>{
+    n=Number(n)||0;
+    return n ? `${n} ${ROLES[i]||'?'}${n>1?'s':''}` : null;
+  }).filter(Boolean).join(' · ');
+}
+
+/* Toutes les lignes « une équipe dans une partie », selon l'échelle demandée.
+   scope 'cosmo' : on ne garde que le camp d'un membre COSMO, retrouvé via
+   l'index d'escouade (match_id -> membres, avec leur camp). */
+function compRows(comps, scope, squadIndex, opts){
+  const o = opts||{};
+  const out=[];
+  for(const c of (comps||[])){
+    if(!c || !Array.isArray(c.t) || c.w == null) continue;
+    if(o.map && c.map !== o.map) continue;
+    if(o.mode !== 'all' && !isRanked({ mode:c.mode })) continue;
+    if(o.since && (c.at||0) < o.since) continue;
+
+    if(scope==='cosmo'){
+      const mates = (squadIndex && squadIndex[c.id]) || [];
+      // On exige un camp connu : un membre sans camp ne permet pas de savoir
+      // LAQUELLE des deux compos était la nôtre.
+      // Deux membres peuvent en théorie tomber dans des camps opposés (file
+      // solo). Mesuré sur l'historique : 0 cas sur 376 parties à 2+ membres —
+      // ils jouent toujours ensemble. On prend quand même le camp majoritaire
+      // plutôt que le premier venu, et on renonce en cas d'égalité : mieux vaut
+      // écarter une partie que compter la compo adverse comme la nôtre.
+      const bySide = {};
+      mates.forEach(m=>{ if(m && m.team) bySide[m.team]=(bySide[m.team]||0)+1; });
+      const ranked = Object.entries(bySide).sort((a,b)=>b[1]-a[1]);
+      if(!ranked.length) continue;
+      if(ranked.length > 1 && ranked[0][1] === ranked[1][1]) continue;
+      const side = ranked[0][0];
+      const i = (c.sides||[]).indexOf(side);
+      if(i < 0 || !c.t[i]) continue;
+      out.push({ id:c.id, map:c.map, at:c.at, agents:c.t[i], won:c.w===i,
+                 draw:c.w<0, rounds:(c.r||[])[i], mates:mates.length });
+    } else {
+      (c.t||[]).forEach((agents,i)=>{
+        if(!agents || !agents.length) return;
+        out.push({ id:c.id, map:c.map, at:c.at, agents, won:c.w===i,
+                   draw:c.w<0, rounds:(c.r||[])[i] });
+      });
+    }
+  }
+  return out;
+}
+
+// Agrège des lignes par clé, et classe par borne de Wilson.
+// `keys(row)` renvoie 0..n clés : un agent apparaît dans 5 clés, une compo
+// dans une seule.
+function tally(rows, keys, min){
+  const acc={};
+  for(const r of rows||[]){
+    if(r.draw) continue;                       // une égalité ne tranche rien
+    for(const k of keys(r)){
+      const e = acc[k] || (acc[k] = { key:k, n:0, w:0 });
+      e.n++; if(r.won) e.w++;
+    }
+  }
+  return Object.values(acc)
+    .filter(e=>e.n >= (min||1))
+    .map(e=>({ ...e, wr:e.w/e.n, score:wilsonLower(e.w,e.n) }))
+    .sort((a,b)=> b.score-a.score || b.n-a.n);
+}
+
+// Les paires d'agents d'une compo (10 paires pour 5 agents), en clé stable.
+function agentPairs(agents){
+  const a=(agents||[]).slice().sort(), out=[];
+  for(let i=0;i<a.length;i++) for(let j=i+1;j<a.length;j++) out.push(a[i]+' + '+a[j]);
+  return out;
+}
+
+// Les trios (10 pour 5 agents). C'est le bon grain : une compo entière ne se
+// rejoue presque jamais, un noyau à 3 si.
+function agentTrios(agents){
+  const a=(agents||[]).slice().sort(), out=[];
+  for(let i=0;i<a.length;i++) for(let j=i+1;j<a.length;j++) for(let k=j+1;k<a.length;k++)
+    out.push(a[i]+' + '+a[j]+' + '+a[k]);
+  return out;
+}
+
+/* Le tableau complet d'une map, pour une échelle donnée. */
+function mapReport(comps, scope, squadIndex, opts){
+  const rows = compRows(comps, scope, squadIndex, opts);
+  const played = rows.length;
+  const won = rows.filter(r=>r.won).length;
+  const decided = rows.filter(r=>!r.draw).length;
+  return {
+    scope, played, won, decided,
+    wr: decided ? won/decided : null,
+    from: rows.length ? Math.min(...rows.map(r=>r.at||0)) : 0,
+    to:   rows.length ? Math.max(...rows.map(r=>r.at||0)) : 0,
+    roles:  tally(rows, r=>{ const s=roleSig(r.agents); return s?[s]:[]; }, COMPO_MIN.roles),
+    trios:  tally(rows, r=>agentTrios(r.agents), COMPO_MIN.trio),
+    agents: tally(rows, r=>r.agents, COMPO_MIN.agent),
+    duos:   tally(rows, r=>agentPairs(r.agents), COMPO_MIN.duo),
+  };
+}
+
+// Les maps disponibles, la plus jouée d'abord.
+function compMaps(comps, opts){
+  const o=opts||{}, c={};
+  (comps||[]).forEach(x=>{
+    if(!x || !x.map) return;
+    if(o.mode !== 'all' && !isRanked({ mode:x.mode })) return;
+    // Même borne que le classement : sinon une map figurerait au menu grâce à
+    // des parties que le classement, lui, écarte — et l'écran serait vide.
+    if(o.since && (x.at||0) < o.since) return;
+    c[x.map]=(c[x.map]||0)+1;
+  });
+  return Object.entries(c).sort((a,b)=>b[1]-a[1]).map(([map,n])=>({ map, n }));
+}
+
 /* ===================== ROULETTE =====================
    Le destin choisit qui joue et avec quel agent, pour les modes autres que la
    ranked. Toute la logique de tirage est ici, séparée de l'animation : elle est
@@ -1818,6 +1993,7 @@ function showHome(){
   $('tribunal').hidden = true;
   $('leaderboard').hidden = true;
   const rou=$('roulette'); if(rou) rou.hidden = true;
+  const cmp=$('comps'); if(cmp) cmp.hidden = true;
   $('home').hidden = false;
   window.scrollTo(0,0);
   // On nettoie les paramètres de partage : un rafraîchissement depuis l'accueil
@@ -2887,7 +3063,7 @@ function openProfile(idx){
 
   const bust=$('phead').querySelector('.pbust img');
   if(bust){const pb=bust.closest('.pbust');const f=()=>{bust.style.display='none';if(pb)pb.classList.add('noimg');};bust.addEventListener('error',f);if(bust.complete&&bust.naturalWidth===0)f();}
-  $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; $('profile').hidden=false; window.scrollTo(0,0);
+  $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; if($('comps')) $('comps').hidden=true; $('profile').hidden=false; window.scrollTo(0,0);
 
   CURRENT_MODE = 'all';
   document.querySelectorAll('#modeTabs button').forEach(x => x.classList.toggle('on', x.dataset.mode === 'all'));
@@ -3264,6 +3440,7 @@ async function loadTribunal() {
   $('profile').hidden = true;
   $('leaderboard').hidden = true;
   if($('roulette')) $('roulette').hidden = true;
+  if($('comps')) $('comps').hidden = true;
   $('tribunal').hidden = false;
   $('appTrib').hidden = true;
 
@@ -3305,6 +3482,7 @@ async function loadLeaderboard() {
   $('profile').hidden = true;
   $('tribunal').hidden = true;
   if($('roulette')) $('roulette').hidden = true;
+  if($('comps')) $('comps').hidden = true;
   $('leaderboard').hidden = false;
   $('appLb').hidden = true;
   window.scrollTo(0,0);
@@ -3604,6 +3782,177 @@ function pickVs(e) {
   renderVs();
 }
 
+/* ===================== COMPOS — CHARGEMENT & AFFICHAGE ===================== */
+
+let COMPO_MAP = null;          // map affichée (null = pas encore choisie)
+let COMPO_SCOPE = 'global';    // global | cosmo
+let COMPO_TAB = 'roles';       // roles | exact | agents | duos
+/* Fenêtre par défaut : un an. Le stock remonte à 2023, mais les agents et les
+   maps d'alors ne sont plus les mêmes — une compo « gagnante » d'il y a trois
+   ans ne dit rien d'aujourd'hui. Un an garde l'essentiel du volume (mesuré :
+   588 parties sur 635) en coupant la queue vraiment périmée. */
+let COMPO_DAYS = 365;          // 0 = tout l'historique
+
+/* Deux sources, fusionnées : comps.json (amorce versionnée, tout l'historique
+   au moment du déploiement) et le blob entretenu par le cron (les parties
+   d'après). Le blob est prioritaire, l'amorce comble le reste — même schéma
+   que le roster. */
+async function loadComps(){
+  if(COMPS_LOADED) return COMPS;
+  if(COMPS_LOADING) return COMPS_LOADING;
+  COMPS_LOADING=(async()=>{
+    const grab = async (url, pick) => {
+      try{
+        const r=await fetch(url);
+        if(!r.ok) return [];
+        const d=await r.json();
+        const list=pick(d);
+        return Array.isArray(list)?list:[];
+      }catch(e){ return []; }
+    };
+    const [blob, seed] = await Promise.all([
+      grab('/.netlify/functions/comps', d=>d && d.comps),
+      grab('comps.json', d=>Array.isArray(d)?d:(d && d.comps)),
+    ]);
+    const byId=new Map();
+    [...blob, ...seed].forEach(c=>{ if(c && c.id && !byId.has(c.id)) byId.set(c.id, c); });
+    COMPS=[...byId.values()].sort((a,b)=>(b.at||0)-(a.at||0));
+    COMPS_SRC = blob.length ? (seed.length?'blob + amorce':'blob') : (seed.length?'amorce':'');
+    COMPS_LOADED=true; COMPS_LOADING=null;
+    return COMPS;
+  })();
+  return COMPS_LOADING;
+}
+
+const compoPct = x => x==null ? '—' : Math.round(x*100)+'%';
+// Le winrate colore la ligne, mais on reste sobre : au-dessus de 55 % c'est
+// bon, en dessous de 45 % c'est mauvais, entre les deux ça ne dit rien.
+const compoTone = wr => wr==null ? '' : (wr>=.55 ? ' good' : (wr<.45 ? ' bad' : ''));
+
+// Les têtes d'agents d'une compo, quand on les a.
+function compoFaces(agents){
+  return (agents||[]).map(a=>{
+    // AGENTS est indexé en minuscules (cf. ensureAgents) : sans ça, aucune
+    // tête ne s'afficherait jamais, on n'aurait que les initiales.
+    const ic = AGENTS && AGENTS[String(a||'').toLowerCase()];
+    return ic ? `<img src="${esc(ic)}" alt="${esc(a)}" title="${esc(a)}" loading="lazy">`
+              : `<span class="cmp-noface" title="${esc(a)}">${esc(a.slice(0,2))}</span>`;
+  }).join('');
+}
+
+// Une ligne de classement. `faces` : la clé est une liste d'agents à illustrer.
+function compoRow(e, i, opts){
+  const o=opts||{};
+  const label = o.label ? o.label(e.key) : e.key;
+  const faces = o.faces ? `<div class="cmp-faces">${compoFaces(o.faces(e.key))}</div>` : '';
+  return `<div class="cmp-row${compoTone(e.wr)}">
+    <div class="cmp-rank mono">${i+1}</div>
+    <div class="cmp-main">
+      <div class="cmp-lbl">${esc(label)}</div>
+      ${faces}
+    </div>
+    <div class="cmp-num">
+      <b>${compoPct(e.wr)}</b>
+      <span class="mono">${e.w}V / ${e.n - e.w}D</span>
+    </div>
+  </div>`;
+}
+
+const COMPO_TABS = [
+  { id:'roles',  lbl:'Par rôles',   min:COMPO_MIN.roles  },
+  { id:'trios',  lbl:'Trios',        min:COMPO_MIN.trio   },
+  { id:'agents', lbl:'Agents',      min:COMPO_MIN.agent  },
+  { id:'duos',   lbl:'Duos',        min:COMPO_MIN.duo    },
+];
+
+function compoListHTML(rep){
+  const tab = COMPO_TABS.find(t=>t.id===COMPO_TAB) || COMPO_TABS[0];
+  const list = (rep[COMPO_TAB]||[]).slice(0, 12);
+  if(!list.length){
+    // Le classement par rôles a besoin de la liste des agents (valorant-api).
+    // Sans elle, aucune signature n'est calculable : le dire, plutôt que de
+    // laisser croire qu'on manque de parties.
+    if(COMPO_TAB==='roles' && !AGENT_LIST.length){
+      return `<div class="cmp-empty">Les rôles des agents n'ont pas pu être chargés
+        (valorant-api injoignable). Les autres classements restent disponibles.</div>`;
+    }
+    return `<div class="cmp-empty">Pas encore assez de parties sur cette map pour ce classement.
+      Il en faut au moins ${tab.min} par ligne — en dessous, un pourcentage ne veut rien dire.</div>`;
+  }
+  const opts = COMPO_TAB==='roles'  ? { label:roleSigLabel }
+             : COMPO_TAB==='agents' ? { faces:k=>[k] }
+             : { faces:k=>k.split(' + ') };          // trios et duos
+  return list.map((e,i)=>compoRow(e,i,opts)).join('');
+}
+
+function renderComps(){
+  const host=$('cmpBody'); if(!host) return;
+
+  const since = COMPO_DAYS ? Date.now() - COMPO_DAYS*86400000 : 0;
+  const opts = { map:COMPO_MAP, mode:'ranked', since };
+  const maps = compMaps(COMPS, { mode:'ranked', since });
+  if(!maps.length){
+    host.innerHTML = `<div class="cmp-empty">Aucune partie exploitable pour l'instant.
+      Les compos se remplissent au fil du rafraîchissement quotidien.</div>`;
+    const ms=$('cmpMaps'); if(ms) ms.innerHTML='';
+    return;
+  }
+  if(!COMPO_MAP || !maps.some(m=>m.map===COMPO_MAP)) COMPO_MAP = maps[0].map;
+
+  const ms=$('cmpMaps');
+  if(ms) ms.innerHTML = maps.map(m=>
+    `<button class="cmp-map${m.map===COMPO_MAP?' on':''}" type="button" data-cmap="${esc(m.map)}">
+      ${esc(m.map)}<i class="mono">${m.n}</i></button>`).join('');
+
+  document.querySelectorAll('#cmpScope button').forEach(b=>b.classList.toggle('on', b.dataset.scope===COMPO_SCOPE));
+  document.querySelectorAll('#cmpTabs button').forEach(b=>b.classList.toggle('on', b.dataset.tab===COMPO_TAB));
+  document.querySelectorAll('#cmpDays button').forEach(b=>b.classList.toggle('on', Number(b.dataset.days)===COMPO_DAYS));
+
+  const rep = mapReport(COMPS, COMPO_SCOPE, SQUAD_INDEX, { ...opts, map:COMPO_MAP });
+
+  const head = rep.played
+    ? `<b>${rep.played}</b> compo${rep.played>1?'s':''} observée${rep.played>1?'s':''} sur ${esc(COMPO_MAP)}
+       · winrate global <b>${compoPct(rep.wr)}</b>
+       ${rep.from?`· ${new Date(rep.from).toLocaleDateString('fr-FR')} → ${new Date(rep.to).toLocaleDateString('fr-FR')}`:''}`
+    : (COMPO_SCOPE==='cosmo'
+        ? `Aucune partie COSMO relevée sur ${esc(COMPO_MAP)}.`
+        : `Aucune donnée sur ${esc(COMPO_MAP)}.`);
+
+  host.innerHTML = `<div class="cmp-head mono">${head}</div>${compoListHTML(rep)}`;
+
+  const note=$('cmpNote');
+  if(note) note.innerHTML = COMPO_SCOPE==='global'
+    ? `Mesuré sur les deux camps de chaque partie que la squad a jouée — adversaires compris.
+       Ce n'est pas un winrate mondial : aucune API publique ne le fournit. C'est ce qu'on
+       observe réellement, à notre niveau de jeu.`
+    : `Mesuré uniquement sur le camp où un membre COSMO jouait. Une partie n'y figure que si
+       on sait de quel côté on était.`;
+}
+
+let COMPS_RENDERING=false;
+async function showComps(){
+  $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
+  $('leaderboard').hidden=true;
+  const rou=$('roulette'); if(rou) rou.hidden=true;
+  const sec=$('comps'); if(!sec) return;
+  sec.hidden=false;
+  window.scrollTo(0,0);
+
+  if(COMPS_LOADED && AGENT_LIST.length){ renderComps(); return; }
+  if(COMPS_RENDERING) return;
+  COMPS_RENDERING=true;
+  const host=$('cmpBody');
+  if(host && !COMPS_LOADED) host.innerHTML='<div class="cmp-empty">Chargement des compos…</div>';
+  try{
+    // L'escouade sert à savoir de quel côté COSMO jouait ; les agents à
+    // connaître leur rôle. Sans eux, l'onglet « par rôles » serait vide.
+    await Promise.all([ loadComps(), ensureAgents(), ensureSquadHistories().catch(()=>null) ]);
+  }finally{
+    COMPS_RENDERING=false;
+  }
+  if(!$('comps').hidden) renderComps();
+}
+
 /* ===================== ROSTER (source unique) ===================== */
 // Charge roster.json (membres + région par défaut), source de vérité partagée
 // avec la fonction planifiée. Repli silencieux si indisponible.
@@ -3839,6 +4188,7 @@ async function runRoulette(){
 function showRoulette(){
   $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
   $('leaderboard').hidden=true; $('roulette').hidden=false;
+  const cmp=$('comps'); if(cmp) cmp.hidden=true;
   window.scrollTo(0,0);
   // Par défaut : toute la squad est sélectionnée, on retire ceux qui ne jouent pas.
   if(!ROU_PICKED) ROU_PICKED=new Set(ROSTER.map(memberKey));
@@ -4021,6 +4371,16 @@ function wireStatic(){
   $('btnTribunal')?.addEventListener('click',loadTribunal);
   $('btnRoulette')?.addEventListener('click',showRoulette);
   $('btnBackRou')?.addEventListener('click',showHome);
+  $('btnComps')?.addEventListener('click',showComps);
+  $('btnBackCmp')?.addEventListener('click',showHome);
+  $('cmpMaps')?.addEventListener('click',e=>{ const b=e.target.closest('[data-cmap]');
+    if(b){ COMPO_MAP=b.dataset.cmap; renderComps(); } });
+  $('cmpScope')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-scope]');
+    if(b){ COMPO_SCOPE=b.dataset.scope; renderComps(); } });
+  $('cmpTabs')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-tab]');
+    if(b){ COMPO_TAB=b.dataset.tab; renderComps(); } });
+  $('cmpDays')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-days]');
+    if(b){ COMPO_DAYS=Number(b.dataset.days); renderComps(); } });
   $('rouGo')?.addEventListener('click',runRoulette);
   $('rouMode')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-mode]');
     if(b){ ROU_MODE=b.dataset.mode; renderRouletteControls(); } });

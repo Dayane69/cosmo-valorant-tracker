@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check": "node --check app.js && node --check sw.js && node --check netlify/functions/valo.mjs && node --check netlify/functions/refresh-matches.mjs && node --check netlify/functions/refresh-now.mjs && node --check netlify/functions/save-history.mjs && node --check netlify/functions/historique.mjs && node --check netlify/functions/roster.mjs && node --check netlify/functions/lib/refresh-core.mjs"
+    "check": "node --check app.js && node --check sw.js && node --check netlify/functions/valo.mjs && node --check netlify/functions/refresh-matches.mjs && node --check netlify/functions/refresh-now.mjs && node --check netlify/functions/save-history.mjs && node --check netlify/functions/historique.mjs && node --check netlify/functions/roster.mjs && node --check netlify/functions/lib/refresh-core.mjs && node --check netlify/functions/comps.mjs && node --check netlify/functions/lib/comps-core.mjs"
   },
   "keywords": [
     "valorant",

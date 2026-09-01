@@ -46,6 +46,23 @@ afin de garder la clé API **hors du navigateur**.
   Déclencheurs et seuils sont **calibrés sur les sessions réelles de la squad** (mesurées : 2 à 7 parties, RR net de −46 à +68) : à ≥ 6 parties et ±40 RR, des soirées à +68 RR ne déclenchaient rien. Un **récapitulatif** est par ailleurs toujours produit pour la session du jour (« 5 parties hier après-midi — 2V-3D, −10 RR, indice 73 ») : sa gravité est sous celle de tous les autres cas, il ne prend donc la place que si rien de plus marquant n'a eu lieu. Et une soirée qui **rapporte du RR** n'est jamais accusée d'être « partie en vrille ».
 
   > Source : les **blobs d'historique**, donc aucun appel HenrikDev sur l'accueil et aucun risque de rate limit. Le cron ne passant qu'à 04:00, les parties fraîches d'un profil qu'on vient d'ouvrir sont **injectées dans l'index** : la session jouée ce soir apparaît dans le bandeau dès qu'on est passé par le profil, sans attendre le lendemain.
+- **Compos par map** — 🗺 quelles compositions gagnent, map par map, avec **deux échelles**.
+
+  **Le problème de départ.** Les blobs d'historique viennent de `stored-matches`, qui ne renvoie **qu'un seul joueur par partie** : on y connaît l'agent d'un membre COSMO, jamais celui des neuf autres. Aucune compo n'en sort. Les compos viennent donc d'une **seconde source** : `/valorant/v4/match/{region}/{id}`, rejoué partie par partie, qui donne les 10 joueurs. Chaque partie fournit ainsi **deux compos réelles avec leur résultat** — la nôtre et celle d'en face.
+
+  **Échelle « Observé »** — les deux camps de toutes les parties connues, adversaires compris, soit ~10× plus de données que le seul côté COSMO. **Ce n'est pas un winrate mondial** : il n'existe aucune API publique qui le fournisse, et l'écran le dit noir sur blanc plutôt que de laisser croire le contraire. C'est ce qu'on observe réellement, à notre niveau de jeu.
+
+  **Échelle « COSMO »** — uniquement le camp où un membre jouait. Une partie n'y figure **que si on sait de quel côté on était** (croisement par `match_id` via l'index d'escouade) ; sinon elle est écartée, jamais devinée.
+
+  Quatre classements par map : **par rôles** (*2 Duellistes · 1 Initiateur · 1 Contrôleur · 1 Sentinelle*), **trios**, **agents** et **duos d'agents**. Le tri se fait sur la **borne basse de l'intervalle de Wilson**, jamais sur le winrate brut — sinon un 3/3 à 100 % passerait devant un 42/60 à 70 %. Et chaque classement a un **minimum de parties** (8 pour les rôles, 6 pour un trio ou un duo, 10 pour un agent) : en dessous, aucun pourcentage n'est affiché, parce qu'il ne voudrait rien dire.
+
+  Il n'y a **pas de classement « compo exacte à 5 »**, et c'est un choix mesuré : sur tout l'historique, **une seule** compo complète atteignait ne serait-ce que 4 parties, sur 13 maps. Un onglet qui reste vide n'est pas un onglet. Le **noyau à 3**, lui, se rejoue vraiment — 227 trios au-dessus du seuil sur 10 maps, certains à 20-27 parties : c'est le bon grain entre le duo et la compo entière.
+
+  **Période** : 3 mois / 1 an / tout, par défaut **1 an**. Le stock remonte à 2023, mais les agents et les maps d'alors ne sont plus les mêmes — une compo gagnante d'il y a trois ans ne dit rien d'aujourd'hui. Un an garde l'essentiel du volume (588 parties sur 635) en coupant la queue périmée.
+
+  Une compo n'est comptée que si les **5 agents** sont connus et la partie **terminée** — une compo tronquée fausserait les statistiques de composition. Les agents d'une compo sont **triés** : c'est un ensemble, pas un ordre, donc les mêmes 5 joueurs donnent toujours la même ligne. Les égalités ne comptent dans aucun winrate.
+
+  > Source : `comps.json` (amorce versionnée, l'historique au moment du déploiement) fusionné avec le blob `cosmo-comps` que le cron entretient — même schéma que le roster. Le backfill quotidien est **borné en temps et en nombre**, et s'arrête net sur un 429 : rater quelques parties n'est pas grave, elles sont reprises le lendemain.
 - **Roulette** — 🎲 pour lancer autre chose que de la ranked sans débattre dix minutes. Deux tirages : **Compo d'équipe** et **Un agent** (au hasard, filtrable par rôle).
 
   Les joueurs **ne sont pas tirés au sort** : le groupe est déjà formé, donc tu **coches qui est là** (la squad est cochée par défaut, les invités aussi). Ce qui est tiré, c'est la répartition des rôles puis l'agent de chacun.
@@ -69,6 +86,7 @@ afin de garder la clé API **hors du navigateur**.
 ├── index.html                       # UI + styles (CSS inline dans le <head>)
 ├── app.js                           # logique front : fetch, calcul des stats, rendu
 ├── roster.json                      # SOURCE DE VÉRITÉ unique de la squad (membres + région)
+├── comps.json                       # amorce des compos par map (versionnée ; le cron prend la suite)
 ├── netlify.toml                     # config de build / fonctions Netlify
 ├── package.json                     # deps (@netlify/blobs) + tests
 ├── test/                            # tests (node --test + jsdom)
@@ -78,7 +96,9 @@ afin de garder la clé API **hors du navigateur**.
         ├── refresh-matches.mjs      # fonction PLANIFIÉE (cron quotidien)
         ├── refresh-now.mjs          # déclenchement manuel (protégé par REFRESH_TOKEN)
         ├── historique.mjs           # lecture de l'historique accumulé (blob)
-        └── lib/refresh-core.mjs     # logique de fusion/refresh (testable, sans dépendance)
+        ├── comps.mjs                # lecture des compos par map (blob)
+        ├── lib/refresh-core.mjs     # logique de fusion/refresh (testable, sans dépendance)
+        └── lib/comps-core.mjs       # projection d'une partie en compos + backfill (testable)
 ```
 
 > **Roster = une seule source de vérité.** `roster.json` est lu à la fois par le

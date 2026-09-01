@@ -634,6 +634,52 @@
   .rou-pair .rou-who{display:block;width:auto;font-family:var(--mono);font-size:12px;font-weight:800;
     color:var(--c);border-left:3px solid var(--c);padding-left:8px;text-align:left;align-self:stretch}
 
+  /* ============ COMPOS PAR MAP ============ */
+  .cmp-ctl{display:flex;flex-direction:column;gap:12px;margin-bottom:14px}
+  .cmp-row-ctl{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap}
+  .cmp-lab{font-family:var(--mono);font-size:10.5px;color:var(--dim);letter-spacing:.08em;
+    text-transform:uppercase;padding-top:9px;flex:none;width:74px}
+  .cmp-note{font-size:11px;line-height:1.5;color:var(--dim);background:var(--panel2);
+    border:1px solid var(--line);border-left:3px solid var(--amber);border-radius:8px;padding:9px 11px}
+  .cmp-maps{display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0}
+  .cmp-map{font-family:var(--mono);font-size:11.5px;border:1px solid var(--line);border-radius:999px;
+    background:var(--panel2);color:var(--muted);padding:8px 12px;cursor:pointer;display:flex;
+    align-items:center;gap:6px;line-height:1}
+  .cmp-map:hover{border-color:var(--muted);color:var(--txt)}
+  .cmp-map.on{border-color:var(--amber);color:var(--amber);background:rgba(255,180,84,.1)}
+  .cmp-map i{font-style:normal;font-size:10px;color:var(--dim)}
+  .cmp-map.on i{color:var(--amber);opacity:.75}
+  .cmp-head{font-size:11.5px;color:var(--muted);padding:0 0 10px;border-bottom:1px solid var(--line);
+    margin-bottom:10px;line-height:1.6}
+  .cmp-head b{color:var(--txt)}
+  .cmp-empty{font-family:var(--mono);font-size:11.5px;color:var(--dim);line-height:1.7;
+    background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .cmp-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);
+    border-radius:10px;background:var(--panel2);margin-bottom:6px;border-left:3px solid var(--line)}
+  .cmp-row.good{border-left-color:var(--win)}
+  .cmp-row.bad{border-left-color:var(--loss)}
+  .cmp-rank{font-size:12px;color:var(--dim);width:18px;text-align:center;flex:none}
+  .cmp-main{flex:1;min-width:0}
+  .cmp-lbl{font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cmp-faces{display:flex;gap:3px;margin-top:5px;flex-wrap:wrap}
+  .cmp-faces img{width:26px;height:26px;border-radius:6px;background:var(--panel);flex:none}
+  .cmp-noface{width:26px;height:26px;border-radius:6px;background:var(--panel);flex:none;
+    display:grid;place-items:center;font-family:var(--mono);font-size:9px;color:var(--dim)}
+  .cmp-num{text-align:right;flex:none;min-width:74px}
+  .cmp-num b{display:block;font-size:16px;font-weight:800;line-height:1.2}
+  .cmp-num span{font-size:10px;color:var(--dim)}
+  .cmp-row.good .cmp-num b{color:var(--win)}
+  .cmp-row.bad .cmp-num b{color:var(--loss)}
+  @media(max-width:520px){
+    .cmp-lab{width:auto;padding-top:0;width:100%}
+    .cmp-row-ctl{gap:6px}
+    .cmp-lbl{white-space:normal}
+    .cmp-num{min-width:62px}
+    .cmp-faces img,.cmp-noface{width:22px;height:22px}
+    #cmpTabs,#cmpScope,#cmpDays{width:100%}
+    #cmpTabs button,#cmpScope button,#cmpDays button{flex:1;min-width:0;min-height:40px}
+  }
+
   /* ============ VOYANT DE FRAÎCHEUR ============ */
   .fresh{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);
     background:var(--panel2);color:var(--muted);border-radius:999px;padding:7px 12px;
@@ -835,6 +881,7 @@
     .edrow input{min-height:44px}
     .edrow .edrm{width:44px;height:44px}
     .chip{min-height:44px}
+    .cmp-map{min-height:44px}
     .fresh{min-height:44px}
     .sx-row{min-height:56px}
     .rec{min-height:56px}
@@ -864,6 +911,7 @@
 <section id="home">
   <div class="gear">
     <button class="fresh" id="freshHome" type="button" hidden></button>
+    <button id="btnComps" aria-label="Compos par map">🗺<span class="glbl"> Compos</span></button>
     <button id="btnRoulette" aria-label="Roulette">🎲<span class="glbl"> Roulette</span></button>
     <button id="btnLeaderboard" aria-label="Leaderboard">🏆<span class="glbl"> Leaderboard</span></button>
     <button id="btnTribunal" aria-label="Tribunal COSMO">⚖<span class="glbl"> Tribunal COSMO</span></button>
@@ -1087,6 +1135,55 @@
   </div>
 </section>
 
+<!-- ===================== COMPOS PAR MAP ===================== -->
+<section id="comps" hidden>
+  <div class="pwrap">
+    <button class="back" id="btnBackCmp">← Retour à l'accueil</button>
+    <div class="phead" style="margin-bottom:12px;border-bottom:0;justify-content:center;text-align:center;">
+      <div>
+        <div class="eyebrow" style="color:var(--amber)">Ce qui gagne, map par map</div>
+        <h1 style="margin:8px 0 2px;font-size:30px;font-weight:900;letter-spacing:-.02em;text-transform:uppercase">Compos</h1>
+        <div class="tag mono" style="font-size:12.5px;color:var(--muted)">Winrates mesurés, jamais estimés</div>
+      </div>
+    </div>
+
+    <div class="card full">
+      <div class="cmp-ctl">
+        <div class="cmp-row-ctl">
+          <span class="cmp-lab">Échelle</span>
+          <div class="seg" id="cmpScope">
+            <button type="button" data-scope="global" class="on">Observé</button>
+            <button type="button" data-scope="cosmo">COSMO</button>
+          </div>
+        </div>
+        <div class="cmp-note mono" id="cmpNote"></div>
+        <div class="cmp-row-ctl">
+          <span class="cmp-lab">Période</span>
+          <div class="seg" id="cmpDays">
+            <button type="button" data-days="90">3 mois</button>
+            <button type="button" data-days="365" class="on">1 an</button>
+            <button type="button" data-days="0">Tout</button>
+          </div>
+        </div>
+        <div class="cmp-row-ctl">
+          <span class="cmp-lab">Map</span>
+          <div class="cmp-maps" id="cmpMaps"></div>
+        </div>
+        <div class="cmp-row-ctl">
+          <span class="cmp-lab">Classement</span>
+          <div class="seg" id="cmpTabs">
+            <button type="button" data-tab="roles" class="on">Par rôles</button>
+            <button type="button" data-tab="trios">Trios</button>
+            <button type="button" data-tab="agents">Agents</button>
+            <button type="button" data-tab="duos">Duos</button>
+          </div>
+        </div>
+      </div>
+      <div id="cmpBody"></div>
+    </div>
+  </div>
+</section>
+
 <!-- ===================== ROULETTE ===================== -->
 <section id="roulette" hidden>
   <div class="pwrap">
@@ -1182,6 +1279,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260831b" defer></script>
+<script src="app.js?v=20260901a" defer></script>
 </body>
 </html>
