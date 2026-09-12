@@ -58,6 +58,13 @@ const num = (v,f=0)=>(v===undefined||v===null||isNaN(v))?f:Number(v);
 const clamp = (x, a=0, b=100) => Math.max(a, Math.min(b, x));
 const ESC_MAP = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ESC_MAP[c]);
+// Une URL d'image, validée au lieu d'être échappée. `esc()` ne protège PAS un
+// contexte CSS : le parseur HTML décode &#39; avant que CSS ne lise la valeur,
+// donc une apostrophe ressort intacte dans url('…'). On exige donc la forme
+// d'une URL https sans guillemet, parenthèse, espace ni antislash — ce que
+// valorant-api renvoie — et on ne rend rien sinon.
+const IMG_URL_RE = /^https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._~\/%-]*$/;
+const imgURL = u => IMG_URL_RE.test(String(u ?? '')) ? String(u) : '';
 
 /* ===================== INDICE COSMO /100 (v2) =====================
    Principes :
@@ -2359,7 +2366,7 @@ function renderList(){
   $('ml').innerHTML = filtered.map((M) => {
     const i = STATE.matches.indexOf(M);
     const s = M.me, sc100 = s ? s.score100 : 0, t = tierOf(sc100), f = s ? flair(s.kd) : '';
-    const splash = MAPS && MAPS[(M.map||'').toLowerCase()];
+    const splash = imgURL(MAPS && MAPS[(M.map||'').toLowerCase()]);
     const bg = splash ? `<div class="mbg" style="background-image:url('${splash}')"></div>` : '';
     return `<div class="mrow" data-idx="${i}">${bg}
       <div class="res ${M.result}">${M.result==='w'?'V':'D'}</div>
@@ -3014,7 +3021,12 @@ function openMatch(i){
       const raw=MATCH_DETAILS[M.id];
       if(raw){
         const full=normMatch(raw);
-        if(full && full.me){ M.me=Object.assign(full.me,{placement:M.me&&M.me.placement}); M.lines=full.lines; M.facts=full.facts; M.partial=false; }
+        // `players` AUSSI, pas seulement `lines` : mateMatch cherche un indice
+        // dans players pour lire lines[i], et indexSquadFromFullMatches ignore
+        // une partie à moins de 2 joueurs. Les laisser désaccordés (1 joueur
+        // d'un côté, 10 de l'autre) armait un piège et privait la composition
+        // des vieilles sessions du scoreboard qu'on venait de télécharger.
+        if(full && full.me){ M.me=Object.assign(full.me,{placement:M.me&&M.me.placement}); M.players=full.players; M.lines=full.lines; M.facts=full.facts; M.partial=false; }
       }
       renderList();
       if(SELECTED_IDX===i && !$('matchModal').hidden) renderMatchModal(i);
@@ -3592,11 +3604,11 @@ function renderBadges() {
   const el = $('lbBadges');
   if (!badges.length) { el.innerHTML = ''; return; }
   el.innerHTML = badges.map(b => `
-    <div class="badge" style="--c:${b.w.member.color}">
+    <div class="badge" style="--c:${esc(b.w.member.color)}">
       <div class="b-emoji">${b.emoji}</div>
       <div class="b-title">${b.title}</div>
-      <div class="b-winner" style="color:${b.w.member.color}">${b.w.member.name}</div>
-      <div class="b-value">${b.fmt(b.w[b.key])}</div>
+      <div class="b-winner" style="color:${esc(b.w.member.color)}">${esc(b.w.member.name)}</div>
+      <div class="b-value">${esc(b.fmt(b.w[b.key]))}</div>
       <div class="b-desc">${b.desc}</div>
     </div>`).join('');
 }
@@ -3756,20 +3768,20 @@ function renderVs() {
     verdict = `Égalité ${aWins}–${bWins} · personne ne se détache`;
   } else {
     const winner = aWins > bWins ? a.member : b.member;
-    verdict = `${winner.name} domine ${Math.max(aWins,bWins)}–${Math.min(aWins,bWins)} sur les ${LB.n} dernières ranked`;
+    verdict = `${esc(winner.name)} domine ${Math.max(aWins,bWins)}–${Math.min(aWins,bWins)} sur les ${LB.n} dernières ranked`;
   }
 
   out.innerHTML = `
     <div class="vs-heads">
-      <div class="vs-head" style="--c:${a.member.color}">
-        <div class="nm" style="color:${a.member.color}">${a.member.name}</div>
-        <div class="sub">${a.member.agent} · #${a.member.tag}</div>
+      <div class="vs-head" style="--c:${esc(a.member.color)}">
+        <div class="nm" style="color:${esc(a.member.color)}">${esc(a.member.name)}</div>
+        <div class="sub">${esc(a.member.agent)} · #${esc(a.member.tag)}</div>
         <div class="smp">${a.count} parties</div>
       </div>
       <div class="vs-divider">VS</div>
-      <div class="vs-head" style="--c:${b.member.color}">
-        <div class="nm" style="color:${b.member.color}">${b.member.name}</div>
-        <div class="sub">${b.member.agent} · #${b.member.tag}</div>
+      <div class="vs-head" style="--c:${esc(b.member.color)}">
+        <div class="nm" style="color:${esc(b.member.color)}">${esc(b.member.name)}</div>
+        <div class="sub">${esc(b.member.agent)} · #${esc(b.member.tag)}</div>
         <div class="smp">${b.count} parties</div>
       </div>
     </div>

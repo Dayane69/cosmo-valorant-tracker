@@ -257,6 +257,14 @@ test("partie du blob : le détail complet (tous les joueurs + rang ACS) se charg
   assert.ok(positions.includes("1er") && positions.includes("3e"),
     "après chargement : scoreboard complet avec classement ACS");
   assert.ok(!positions.includes("—"), "plus de position inconnue une fois le détail chargé");
+
+  // Le blob ne donne qu'UN joueur, le détail en apporte dix : `players` et
+  // `lines` doivent rester alignés, puisque mateMatch cherche un indice dans
+  // l'un pour lire l'autre. Ils ne l'étaient pas — seul `lines` était remplacé.
+  const M = T.getState().matches[idx];
+  assert.equal(M.partial, false, "la partie n'est plus compacte");
+  assert.ok(M.players.length > 1, "le scoreboard complet a remplacé le joueur unique");
+  assert.equal(M.players.length, M.lines.length, "players et lines restent alignés");
 });
 
 // Faits d'armes synthétiques, à la forme exacte de ce que matchFacts produit.
