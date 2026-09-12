@@ -517,7 +517,7 @@ function slimMatch(M){
   const s = M && M.me;
   return {
     id:M.id, map:M.map, mode:M.mode, started:M.started, startedMs:M.startedMs,
-    durMs:M.durMs||0, rounds:M.rounds, result:M.result,
+    durMs:M.durMs||0, rounds:M.rounds, result:M.result, region:M.region||'',
     myScore:M.myScore, oppScore:M.oppScore, forfeit:!!M.forfeit,
     myTeamId:M.myTeamId, party:M.party||null, rr:M.rr||null, season:M.season||null,
     me: s ? { k:s.k, d:s.d, a:s.a, hs:s.hs, acs:s.acs, adr:s.adr, dd:s.dd, kd:s.kd,
@@ -540,7 +540,7 @@ function rehydrateMatch(s){
     me.score100 = s.me.score100;      // on réaffiche la note telle qu'elle était
   }
   return { id:s.id, map:s.map, mode:s.mode, started:s.started, startedMs:s.startedMs,
-    durMs:s.durMs, rounds:s.rounds, result:s.result, myScore:s.myScore, oppScore:s.oppScore,
+    durMs:s.durMs, rounds:s.rounds, result:s.result, region:s.region||'', myScore:s.myScore, oppScore:s.oppScore,
     forfeit:s.forfeit, myTeamId:s.myTeamId, party:s.party, rr:s.rr, season:s.season,
     players:[], lines: me ? [me] : [], facts:null, partial:true, cached:true, me };
 }
@@ -881,6 +881,7 @@ function normMatch(m, targetState = STATE, opts){
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
     startedMs,
     id: meta.match_id||meta.matchid||meta.matchId||null,
+    region: meta.region||'',
     myScore:rwon(myTeam), oppScore:rwon(oppTeam), result,
     me:meStat, myTeamId:me?me.team_id:'Blue'};
 }
@@ -912,6 +913,7 @@ function normStored(entry, targetState = STATE){   // format compact : jamais de
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
     startedMs,
     id: meta.id||meta.match_id||null,
+    region: meta.region||'',
     myScore, oppScore, result, me:meStat, myTeamId:st.team||'Blue' };
 }
 
@@ -3005,7 +3007,7 @@ function openMatch(i){
   // Partie compacte : on va chercher le détail complet, puis on ré-affiche.
   if(M.partial && M.id && !(M.id in MATCH_DETAILS)){
     DETAIL_PENDING[M.id]=true;
-    fetchMatchDetail(M.id).finally(()=>{
+    fetchMatchDetail(M.id, M.region).finally(()=>{
       delete DETAIL_PENDING[M.id];
       // Le détail complet apporte le KAST : on met à jour l'indice de cette partie
       // pour que la liste et le scoreboard affichent la même note.
@@ -3031,11 +3033,19 @@ function openMatchScore(i){
 
 // Charge à la demande le détail complet d'un match (tous les joueurs) via match-by-id.
 // Sert aux parties venues du blob (format compact), pour reconstituer le scoreboard.
-async function fetchMatchDetail(id){
+// La route match-par-id est /valorant/v4/match/{region}/{id} : PAS de segment
+// de plateforme. Le `pc/` qui traînait ici appartient à la route de LISTE
+// (/v4/matches/{region}/pc/{name}/{tag}) ; avec lui l'appel ne pouvait
+// qu'échouer, et l'écran mettait ça sur le compte de l'âge de la partie. La
+// forme retenue est celle que le cron utilise depuis toujours (comps-core),
+// éprouvée sur 635 parties sans un échec.
+// La région est celle de la PARTIE quand on la connaît, pas celle du sélecteur :
+// une partie jouée sur un autre serveur n'est pas cherchée au bon endroit.
+async function fetchMatchDetail(id, region){
   if(!id || (id in MATCH_DETAILS)) return MATCH_DETAILS[id];
   MATCH_DETAILS[id]=null; // marque "en cours" pour éviter les appels en double
   try{
-    const r=await api(`/valorant/v4/match/${REGION()}/pc/${enc(id)}`);
+    const r=await api(`/valorant/v4/match/${enc(region||REGION())}/${enc(id)}`);
     const raw=(r&&r.data)||r;
     // On garde le match BRUT : il est re-normalisé selon le profil affiché (un même
     // match peut figurer dans l'historique de deux membres -> "ta team" diffère).
