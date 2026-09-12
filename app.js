@@ -2304,7 +2304,24 @@ function renderStatsCards(filtered){
   const rows = STATS_SEASON==='all' ? filtered : filtered.filter(M => M && M.season===STATS_SEASON);
   renderStatsTable('agentStats', groupStats(rows, M => M.me.agent), 'Agent');
   renderStatsTable('mapStats',   groupStats(rows, M => M.map),      'Map');
+  renderStatsNote(filtered, rows);
   markScrollable();
+}
+
+/* L'acte d'une partie vient de l'historique RR, qui ne couvre QUE le classé :
+   une partie non classée n'a pas d'acte et disparaît donc dès qu'un acte est
+   choisi. Sans un mot, l'écran affichait « Aucune donnée » et laissait croire
+   que ces parties n'existaient pas — alors qu'elles sont bien là, juste sans
+   acte connu. Même principe que l'onglet « par rôles » des compos : on dit ce
+   qui manque plutôt que de laisser deviner. */
+function renderStatsNote(before, after){
+  const el=$('statsNote'); if(!el) return;
+  const dropped=(before||[]).length-(after||[]).length;
+  if(STATS_SEASON==='all' || dropped<=0){ el.hidden=true; el.innerHTML=''; return; }
+  el.hidden=false;
+  el.innerHTML = after.length
+    ? `L'acte d'une partie n'est connu que sur les <b>parties classées</b> : ${dropped} partie${dropped>1?'s':''} de ce mode ${dropped>1?'n\'apparaissent':'n\'apparaît'} pas dans ce filtre.`
+    : `Aucune partie <b>classée</b> de cet acte dans ce mode. L'acte n'est connu que sur les parties classées : les autres n'apparaissent jamais quand un acte est choisi. Repasse sur « Toutes les saisons », ou sur l'onglet <b>Classé</b>.`;
 }
 
 // (Re)remplit le menu Saison/Acte des stats à partir des actes présents dans les matchs.

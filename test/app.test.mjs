@@ -133,7 +133,7 @@ async function boot() {
 
   let code = readFileSync(join(root, "app.js"), "utf8");
   // Épilogue de test : expose les fonctions + un accès à l'état interne.
-  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, openMatch, closeMatchFacts, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, perfDetail, perfParts, IDX_W, openMatchScore, init, getState: () => STATE, getRoster: () => ROSTER };";
+  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, openMatch, closeMatchFacts, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, perfDetail, perfParts, IDX_W, openMatchScore, init, renderStatsCards, setStatsSeason: (v) => { STATS_SEASON = v; }, getState: () => STATE, getRoster: () => ROSTER };";
   vm.runInContext(code, ctx);
   const T = ctx.__t;
   await T.init(); // garantit roster chargé + grille construite
@@ -488,6 +488,36 @@ test("stats agent/map filtrables par acte", async () => {
   sel.value = "e8a3";
   sel.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
   assert.match(doc.querySelector("#agentStats").textContent, /Cypher/, "les stats de l'acte s'affichent sans erreur");
+
+  // m3 vient du blob et n'a pas d'acte (l'acte vient de l'historique RR, qui
+  // ne couvre que le classé) : il disparaît du tableau. L'écran doit le DIRE,
+  // sinon des parties bien présentes semblent ne pas exister.
+  const note = doc.querySelector("#statsNote");
+  assert.equal(note.hidden, false, "le filtre explique ce qu'il écarte");
+  assert.match(note.textContent, /classées/);
+  assert.match(note.textContent, /1 partie/);
+
+  // Et sans filtre d'acte, aucun message : il n'y a rien à expliquer.
+  sel.value = "all";
+  sel.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  assert.equal(doc.querySelector("#statsNote").hidden, true);
+});
+
+test("acte choisi mais plus rien à montrer : l'écran dit pourquoi", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  // Le cas réel : des parties non classées (donc sans acte connu) et un acte
+  // sélectionné. Tout est écarté, et « Aucune donnée » tout seul laisserait
+  // croire que ces parties n'existent pas.
+  T.setStatsSeason("e8a3");
+  T.renderStatsCards(T.getState().allMatches.map((M) => ({ ...M, season: null })));
+  const note = doc.querySelector("#statsNote");
+  assert.equal(note.hidden, false, "le filtre s'explique au lieu de laisser un vide");
+  assert.match(note.textContent, /Aucune partie/);
+  assert.match(note.textContent, /Classé/, "et dit où retrouver ses parties");
+  assert.match(doc.querySelector("#agentStats").textContent, /Aucune donnée/);
 });
 
 test("le filtre saison/acte restreint le graphe RR à l'acte choisi", async () => {
