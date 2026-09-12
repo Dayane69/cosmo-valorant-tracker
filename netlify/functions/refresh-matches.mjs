@@ -8,8 +8,8 @@
 // La clé API vit UNIQUEMENT dans process.env.HENRIK_KEY (jamais en dur).
 
 import { getStore } from "@netlify/blobs";
-import roster from "../../roster.json" with { type: "json" };
 import { runRefresh, blobKey } from "./lib/refresh-core.mjs";
+import { loadRoster } from "./lib/roster-source.mjs";
 import { runCompsBackfill } from "./lib/comps-core.mjs";
 
 // Parties récentes de chaque membre, pour donner au backfill des compos de quoi
@@ -32,8 +32,6 @@ async function recentMatches(members) {
 
 export default async () => {
   const apiKey = process.env.HENRIK_KEY;
-  const all = roster.members || roster;
-  const region = roster.region || "eu";
 
   if (!apiKey) {
     return new Response(JSON.stringify({ ok: false, error: "HENRIK_KEY manquante" }), {
@@ -41,6 +39,10 @@ export default async () => {
       headers: { "content-type": "application/json" },
     });
   }
+
+  // Roster stocké d'abord (éditable dans l'interface), roster.json en repli :
+  // sans ça, un membre ajouté depuis le site n'était jamais rafraîchi.
+  const { members: all, region } = await loadRoster(getStore);
 
   // Rotation quotidienne de l'ordre : si un jour la boucle est coupée (rate limit /
   // limite de 10s), ce ne sont pas toujours les mêmes membres qui passent en dernier.

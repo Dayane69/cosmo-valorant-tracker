@@ -6,8 +6,8 @@
 // GET/POST /.netlify/functions/save-history?name=X&tag=Y[&region=eu][&trigger=1]
 
 import { getStore } from "@netlify/blobs";
-import roster from "../../roster.json" with { type: "json" };
 import { refreshOne } from "./lib/refresh-core.mjs";
+import { loadRoster, findMember } from "./lib/roster-source.mjs";
 
 const json = (obj, status) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
@@ -20,10 +20,10 @@ export default async (req) => {
   const name = url.searchParams.get("name") || "";
   const tag = url.searchParams.get("tag") || "";
 
-  const members = roster.members || roster;
-  const member = members.find(
-    (m) => String(m.name).toLowerCase() === name.toLowerCase() && String(m.tag).toLowerCase() === tag.toLowerCase()
-  );
+  // Roster stocké d'abord : un membre ajouté depuis l'interface doit pouvoir
+  // enregistrer son historique, sinon l'éditeur ne sert à rien.
+  const roster = await loadRoster(getStore);
+  const member = findMember(roster.members, name, tag);
   if (!member) return json({ ok: false, error: "joueur hors roster" }, 403);
 
   const region = url.searchParams.get("region") || roster.region || "eu";

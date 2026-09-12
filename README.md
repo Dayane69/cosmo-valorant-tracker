@@ -85,7 +85,7 @@ afin de garder la clé API **hors du navigateur**.
 .
 ├── index.html                       # UI + styles (CSS inline dans le <head>)
 ├── app.js                           # logique front : fetch, calcul des stats, rendu
-├── roster.json                      # SOURCE DE VÉRITÉ unique de la squad (membres + région)
+├── roster.json                      # amorce du roster (membres + région) ; le blob cosmo-roster prend la suite
 ├── comps.json                       # amorce des compos par map (versionnée ; le cron prend la suite)
 ├── netlify.toml                     # config de build / fonctions Netlify
 ├── package.json                     # deps (@netlify/blobs) + tests
@@ -98,12 +98,20 @@ afin de garder la clé API **hors du navigateur**.
         ├── historique.mjs           # lecture de l'historique accumulé (blob)
         ├── comps.mjs                # lecture des compos par map (blob)
         ├── lib/refresh-core.mjs     # logique de fusion/refresh (testable, sans dépendance)
-        └── lib/comps-core.mjs       # projection d'une partie en compos + backfill (testable)
+        ├── lib/comps-core.mjs       # projection d'une partie en compos + backfill (testable)
+        └── lib/roster-source.mjs    # roster effectif côté serveur : blob d'abord, roster.json en repli
 ```
 
-> **Roster = une seule source de vérité.** `roster.json` est lu à la fois par le
-> front (`app.js` construit les cartes dynamiquement) et par la fonction planifiée.
-> Pour modifier la squad, on n'édite que ce fichier.
+> **Roster = une seule source de vérité, des deux côtés.** L'ordre est le même
+> pour le front et pour le serveur : le roster **stocké** (blob `cosmo-roster`,
+> éditable depuis ⚙ Paramètres) d'abord, `roster.json` en repli. Le fichier
+> versionné reste la valeur de départ et n'est jamais écrasé.
+>
+> Ça n'a pas toujours été le cas : le front lisait le blob pendant que le cron et
+> `save-history` lisaient `roster.json` en dur. Un membre ajouté depuis
+> l'interface n'était donc jamais rafraîchi, et l'ouverture de son profil
+> recevait un `403 joueur hors roster`. Les deux moitiés passent désormais par
+> `lib/roster-source.mjs`.
 
 ### Sources de données
 - **Agents & rangs** : [valorant-api.com](https://valorant-api.com) (têtes d'agents, icônes de paliers, splash des maps) — chargé et mis en cache côté client.
@@ -201,10 +209,12 @@ npm run check # node --check sur tous les fichiers .js / .mjs
 
 ## ⚙️ Personnalisation
 
-- **La squad** : édite **uniquement `roster.json`** (pseudo, tag, agent, `uuid` de
-  l'agent, couleur, `mono` 2 lettres, et `region` par défaut). Le front et le cron
-  lisent ce seul fichier. Un membre peut avoir une image custom via `customImg`
-  (cf. l'entrée *Son Goku*).
+- **La squad** : depuis ⚙ Paramètres → *Modifier le roster* (stocké côté serveur,
+  protégé par `REFRESH_TOKEN`) — c'est ce roster-là que lisent le front, le cron et
+  `save-history`. `roster.json` reste la valeur de départ, à éditer pour changer ce
+  que voit une installation neuve : pseudo, tag, agent, `uuid` de l'agent, couleur,
+  `mono` 2 lettres, `region` par défaut. Un membre peut avoir une image custom via
+  `customImg` (cf. l'entrée *Son Goku*).
 - **Région** : `region` dans `roster.json` (valeur par défaut), aussi changeable
   depuis ⚙ Paramètres sur l'accueil (`eu`, `na`, `ap`, `kr`, `latam`, `br`).
 - **Heure du cron** : `export const config = { schedule }` dans `refresh-matches.mjs` (UTC).
