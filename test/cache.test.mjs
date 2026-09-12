@@ -78,7 +78,15 @@ test("la projection garde ce qu'il faut pour afficher, et jette le lourd", () =>
 
 test("la projection reste minuscule comparée à la partie normalisée", () => {
   const X = load(makeStorage());
-  const M = X.normMatch(fullRaw("m1"), ME);
+  // Sur une partie d'UN round, ce qu'on mesure est surtout du vide : le poids
+  // réel d'une partie normalisée, c'est le détail par round (579 Ko des 972 Ko
+  // mesurés à l'origine). La marge y tenait à quelques octets, au point qu'un
+  // champ de plus la faisait basculer. On mesure donc sur une partie de
+  // longueur plausible, où le rapport a un sens.
+  const raw = fullRaw("m1");
+  raw.rounds = Array.from({ length: 21 }, (_, i) => ({ ...raw.rounds[0], winning_team: i % 2 ? "Red" : "Blue" }));
+  raw.kills = Array.from({ length: 21 }, (_, i) => ({ ...raw.kills[0], round: i }));
+  const M = X.normMatch(raw, ME);
   const slim = JSON.stringify(X.slimMatch(M)).length;
   const norm = JSON.stringify({ me: M.me, facts: M.facts, players: M.players }).length;
   assert.ok(slim * 5 < norm, `projection ${slim} o vs normalisé ${norm} o`);

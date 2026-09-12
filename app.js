@@ -58,6 +58,13 @@ const num = (v,f=0)=>(v===undefined||v===null||isNaN(v))?f:Number(v);
 const clamp = (x, a=0, b=100) => Math.max(a, Math.min(b, x));
 const ESC_MAP = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ESC_MAP[c]);
+// Une URL d'image, validée au lieu d'être échappée. `esc()` ne protège PAS un
+// contexte CSS : le parseur HTML décode &#39; avant que CSS ne lise la valeur,
+// donc une apostrophe ressort intacte dans url('…'). On exige donc la forme
+// d'une URL https sans guillemet, parenthèse, espace ni antislash — ce que
+// valorant-api renvoie — et on ne rend rien sinon.
+const IMG_URL_RE = /^https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._~\/%-]*$/;
+const imgURL = u => IMG_URL_RE.test(String(u ?? '')) ? String(u) : '';
 
 /* ===================== INDICE COSMO /100 (v2) =====================
    Principes :
@@ -517,7 +524,7 @@ function slimMatch(M){
   const s = M && M.me;
   return {
     id:M.id, map:M.map, mode:M.mode, started:M.started, startedMs:M.startedMs,
-    durMs:M.durMs||0, rounds:M.rounds, result:M.result,
+    durMs:M.durMs||0, rounds:M.rounds, result:M.result, region:M.region||'',
     myScore:M.myScore, oppScore:M.oppScore, forfeit:!!M.forfeit,
     myTeamId:M.myTeamId, party:M.party||null, rr:M.rr||null, season:M.season||null,
     me: s ? { k:s.k, d:s.d, a:s.a, hs:s.hs, acs:s.acs, adr:s.adr, dd:s.dd, kd:s.kd,
@@ -540,7 +547,7 @@ function rehydrateMatch(s){
     me.score100 = s.me.score100;      // on réaffiche la note telle qu'elle était
   }
   return { id:s.id, map:s.map, mode:s.mode, started:s.started, startedMs:s.startedMs,
-    durMs:s.durMs, rounds:s.rounds, result:s.result, myScore:s.myScore, oppScore:s.oppScore,
+    durMs:s.durMs, rounds:s.rounds, result:s.result, region:s.region||'', myScore:s.myScore, oppScore:s.oppScore,
     forfeit:s.forfeit, myTeamId:s.myTeamId, party:s.party, rr:s.rr, season:s.season,
     players:[], lines: me ? [me] : [], facts:null, partial:true, cached:true, me };
 }
@@ -881,6 +888,7 @@ function normMatch(m, targetState = STATE, opts){
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
     startedMs,
     id: meta.match_id||meta.matchid||meta.matchId||null,
+    region: meta.region||'',
     myScore:rwon(myTeam), oppScore:rwon(oppTeam), result,
     me:meStat, myTeamId:me?me.team_id:'Blue'};
 }
@@ -912,6 +920,7 @@ function normStored(entry, targetState = STATE){   // format compact : jamais de
     started: meta.started_at||meta.game_start_iso||msToIso(startedMs),
     startedMs,
     id: meta.id||meta.match_id||null,
+    region: meta.region||'',
     myScore, oppScore, result, me:meStat, myTeamId:st.team||'Blue' };
 }
 
@@ -1995,7 +2004,6 @@ function showHome(){
   const rou=$('roulette'); if(rou) rou.hidden = true;
   const cmp=$('comps'); if(cmp) cmp.hidden = true;
   $('home').hidden = false;
-  loadLive().catch(()=>{}); startLiveTicker();
   window.scrollTo(0,0);
   // On nettoie les paramètres de partage : un rafraîchissement depuis l'accueil
   // ne doit pas rouvrir le rapport qu'on vient de quitter.
@@ -2296,7 +2304,24 @@ function renderStatsCards(filtered){
   const rows = STATS_SEASON==='all' ? filtered : filtered.filter(M => M && M.season===STATS_SEASON);
   renderStatsTable('agentStats', groupStats(rows, M => M.me.agent), 'Agent');
   renderStatsTable('mapStats',   groupStats(rows, M => M.map),      'Map');
+  renderStatsNote(filtered, rows);
   markScrollable();
+}
+
+/* L'acte d'une partie vient de l'historique RR, qui ne couvre QUE le classé :
+   une partie non classée n'a pas d'acte et disparaît donc dès qu'un acte est
+   choisi. Sans un mot, l'écran affichait « Aucune donnée » et laissait croire
+   que ces parties n'existaient pas — alors qu'elles sont bien là, juste sans
+   acte connu. Même principe que l'onglet « par rôles » des compos : on dit ce
+   qui manque plutôt que de laisser deviner. */
+function renderStatsNote(before, after){
+  const el=$('statsNote'); if(!el) return;
+  const dropped=(before||[]).length-(after||[]).length;
+  if(STATS_SEASON==='all' || dropped<=0){ el.hidden=true; el.innerHTML=''; return; }
+  el.hidden=false;
+  el.innerHTML = after.length
+    ? `L'acte d'une partie n'est connu que sur les <b>parties classées</b> : ${dropped} partie${dropped>1?'s':''} de ce mode ${dropped>1?'n\'apparaissent':'n\'apparaît'} pas dans ce filtre.`
+    : `Aucune partie <b>classée</b> de cet acte dans ce mode. L'acte n'est connu que sur les parties classées : les autres n'apparaissent jamais quand un acte est choisi. Repasse sur « Toutes les saisons », ou sur l'onglet <b>Classé</b>.`;
 }
 
 // (Re)remplit le menu Saison/Acte des stats à partir des actes présents dans les matchs.
@@ -2358,7 +2383,7 @@ function renderList(){
   $('ml').innerHTML = filtered.map((M) => {
     const i = STATE.matches.indexOf(M);
     const s = M.me, sc100 = s ? s.score100 : 0, t = tierOf(sc100), f = s ? flair(s.kd) : '';
-    const splash = MAPS && MAPS[(M.map||'').toLowerCase()];
+    const splash = imgURL(MAPS && MAPS[(M.map||'').toLowerCase()]);
     const bg = splash ? `<div class="mbg" style="background-image:url('${splash}')"></div>` : '';
     return `<div class="mrow" data-idx="${i}">${bg}
       <div class="res ${M.result}">${M.result==='w'?'V':'D'}</div>
@@ -3006,14 +3031,19 @@ function openMatch(i){
   // Partie compacte : on va chercher le détail complet, puis on ré-affiche.
   if(M.partial && M.id && !(M.id in MATCH_DETAILS)){
     DETAIL_PENDING[M.id]=true;
-    fetchMatchDetail(M.id).finally(()=>{
+    fetchMatchDetail(M.id, M.region).finally(()=>{
       delete DETAIL_PENDING[M.id];
       // Le détail complet apporte le KAST : on met à jour l'indice de cette partie
       // pour que la liste et le scoreboard affichent la même note.
       const raw=MATCH_DETAILS[M.id];
       if(raw){
         const full=normMatch(raw);
-        if(full && full.me){ M.me=Object.assign(full.me,{placement:M.me&&M.me.placement}); M.lines=full.lines; M.facts=full.facts; M.partial=false; }
+        // `players` AUSSI, pas seulement `lines` : mateMatch cherche un indice
+        // dans players pour lire lines[i], et indexSquadFromFullMatches ignore
+        // une partie à moins de 2 joueurs. Les laisser désaccordés (1 joueur
+        // d'un côté, 10 de l'autre) armait un piège et privait la composition
+        // des vieilles sessions du scoreboard qu'on venait de télécharger.
+        if(full && full.me){ M.me=Object.assign(full.me,{placement:M.me&&M.me.placement}); M.players=full.players; M.lines=full.lines; M.facts=full.facts; M.partial=false; }
       }
       renderList();
       if(SELECTED_IDX===i && !$('matchModal').hidden) renderMatchModal(i);
@@ -3032,11 +3062,19 @@ function openMatchScore(i){
 
 // Charge à la demande le détail complet d'un match (tous les joueurs) via match-by-id.
 // Sert aux parties venues du blob (format compact), pour reconstituer le scoreboard.
-async function fetchMatchDetail(id){
+// La route match-par-id est /valorant/v4/match/{region}/{id} : PAS de segment
+// de plateforme. Le `pc/` qui traînait ici appartient à la route de LISTE
+// (/v4/matches/{region}/pc/{name}/{tag}) ; avec lui l'appel ne pouvait
+// qu'échouer, et l'écran mettait ça sur le compte de l'âge de la partie. La
+// forme retenue est celle que le cron utilise depuis toujours (comps-core),
+// éprouvée sur 635 parties sans un échec.
+// La région est celle de la PARTIE quand on la connaît, pas celle du sélecteur :
+// une partie jouée sur un autre serveur n'est pas cherchée au bon endroit.
+async function fetchMatchDetail(id, region){
   if(!id || (id in MATCH_DETAILS)) return MATCH_DETAILS[id];
   MATCH_DETAILS[id]=null; // marque "en cours" pour éviter les appels en double
   try{
-    const r=await api(`/valorant/v4/match/${REGION()}/pc/${enc(id)}`);
+    const r=await api(`/valorant/v4/match/${enc(region||REGION())}/${enc(id)}`);
     const raw=(r&&r.data)||r;
     // On garde le match BRUT : il est re-normalisé selon le profil affiché (un même
     // match peut figurer dans l'historique de deux membres -> "ta team" diffère).
@@ -3064,7 +3102,7 @@ function openProfile(idx){
 
   const bust=$('phead').querySelector('.pbust img');
   if(bust){const pb=bust.closest('.pbust');const f=()=>{bust.style.display='none';if(pb)pb.classList.add('noimg');};bust.addEventListener('error',f);if(bust.complete&&bust.naturalWidth===0)f();}
-  $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; if($('comps')) $('comps').hidden=true; $('profile').hidden=false; stopLiveTicker(); window.scrollTo(0,0);
+  $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; if($('comps')) $('comps').hidden=true; $('profile').hidden=false; window.scrollTo(0,0);
 
   CURRENT_MODE = 'all';
   document.querySelectorAll('#modeTabs button').forEach(x => x.classList.toggle('on', x.dataset.mode === 'all'));
@@ -3442,7 +3480,6 @@ async function loadTribunal() {
   $('leaderboard').hidden = true;
   if($('roulette')) $('roulette').hidden = true;
   if($('comps')) $('comps').hidden = true;
-  stopLiveTicker();
   $('tribunal').hidden = false;
   $('appTrib').hidden = true;
 
@@ -3485,7 +3522,6 @@ async function loadLeaderboard() {
   $('tribunal').hidden = true;
   if($('roulette')) $('roulette').hidden = true;
   if($('comps')) $('comps').hidden = true;
-  stopLiveTicker();
   $('leaderboard').hidden = false;
   $('appLb').hidden = true;
   window.scrollTo(0,0);
@@ -3585,11 +3621,11 @@ function renderBadges() {
   const el = $('lbBadges');
   if (!badges.length) { el.innerHTML = ''; return; }
   el.innerHTML = badges.map(b => `
-    <div class="badge" style="--c:${b.w.member.color}">
+    <div class="badge" style="--c:${esc(b.w.member.color)}">
       <div class="b-emoji">${b.emoji}</div>
       <div class="b-title">${b.title}</div>
-      <div class="b-winner" style="color:${b.w.member.color}">${b.w.member.name}</div>
-      <div class="b-value">${b.fmt(b.w[b.key])}</div>
+      <div class="b-winner" style="color:${esc(b.w.member.color)}">${esc(b.w.member.name)}</div>
+      <div class="b-value">${esc(b.fmt(b.w[b.key]))}</div>
       <div class="b-desc">${b.desc}</div>
     </div>`).join('');
 }
@@ -3749,20 +3785,20 @@ function renderVs() {
     verdict = `Égalité ${aWins}–${bWins} · personne ne se détache`;
   } else {
     const winner = aWins > bWins ? a.member : b.member;
-    verdict = `${winner.name} domine ${Math.max(aWins,bWins)}–${Math.min(aWins,bWins)} sur les ${LB.n} dernières ranked`;
+    verdict = `${esc(winner.name)} domine ${Math.max(aWins,bWins)}–${Math.min(aWins,bWins)} sur les ${LB.n} dernières ranked`;
   }
 
   out.innerHTML = `
     <div class="vs-heads">
-      <div class="vs-head" style="--c:${a.member.color}">
-        <div class="nm" style="color:${a.member.color}">${a.member.name}</div>
-        <div class="sub">${a.member.agent} · #${a.member.tag}</div>
+      <div class="vs-head" style="--c:${esc(a.member.color)}">
+        <div class="nm" style="color:${esc(a.member.color)}">${esc(a.member.name)}</div>
+        <div class="sub">${esc(a.member.agent)} · #${esc(a.member.tag)}</div>
         <div class="smp">${a.count} parties</div>
       </div>
       <div class="vs-divider">VS</div>
-      <div class="vs-head" style="--c:${b.member.color}">
-        <div class="nm" style="color:${b.member.color}">${b.member.name}</div>
-        <div class="sub">${b.member.agent} · #${b.member.tag}</div>
+      <div class="vs-head" style="--c:${esc(b.member.color)}">
+        <div class="nm" style="color:${esc(b.member.color)}">${esc(b.member.name)}</div>
+        <div class="sub">${esc(b.member.agent)} · #${esc(b.member.tag)}</div>
         <div class="smp">${b.count} parties</div>
       </div>
     </div>
@@ -3783,137 +3819,6 @@ function pickVs(e) {
   }
   renderVsPickers();
   renderVs();
-}
-
-/* ===================== EN CE MOMENT (direct) =====================
-   Qui joue là, maintenant. La donnée vient du compagnon PC : aucune API
-   publique n'expose une partie en cours, donc sans compagnon lancé ce panneau
-   reste vide — et c'est normal, il ne devine rien.
-
-   Le sondage n'a lieu QUE sur l'accueil et QUE si l'onglet est visible : ça ne
-   sert à rien de suivre un score qu'on ne regarde pas, et ça viderait la
-   batterie sur mobile. */
-
-let LIVE = [];
-let LIVE_TIMER = null;
-let LIVE_SKINS = null;                 // uuid d'offre -> {name, icon}
-const LIVE_POLL_MS = 20000;
-
-const LIVE_LABEL = { ingame:'en partie', pregame:'sélection des agents', menus:'dans le menu' };
-
-async function fetchLive(){
-  try{
-    const r = await fetch('/.netlify/functions/live');
-    if(!r.ok) return [];
-    const d = await r.json();
-    return Array.isArray(d.players) ? d.players : [];
-  }catch(e){ return []; }
-}
-
-/* Les uuid d'offres de la boutique se traduisent en skins via valorant-api.
-   On charge la table une seule fois : elle pèse, mais elle ne change qu'aux
-   patchs, et sans elle on n'aurait que des uuid illisibles. */
-async function ensureSkins(){
-  if(LIVE_SKINS) return LIVE_SKINS;
-  try{
-    const r = await fetch('https://valorant-api.com/v1/weapons/skinlevels');
-    if(!r.ok) return (LIVE_SKINS = {});
-    const d = await r.json();
-    const map = {};
-    (d.data||[]).forEach(s=>{ if(s && s.uuid) map[s.uuid] = { name:s.displayName||'', icon:s.displayIcon||'' }; });
-    LIVE_SKINS = map;
-  }catch(e){ LIVE_SKINS = {}; }
-  return LIVE_SKINS;
-}
-
-// Rattache une entrée en direct à un membre du roster (couleur, casse du
-// pseudo). Un joueur inconnu du roster est ignoré : l'accueil ne parle que de
-// la squad.
-function liveMember(p){
-  return sessionRoster().find(m => memberKey(m) === p.key) || null;
-}
-
-function liveCardHTML(p, m){
-  const st = p.state==='ingame' ? 'ingame' : (p.state==='pregame' ? 'pregame' : '');
-  const icon = AGENTS && p.agent ? AGENTS[String(p.agent).toLowerCase()] : '';
-  const face = icon
-    ? `<img class="live-face" src="${esc(icon)}" alt="${esc(p.agent)}" loading="lazy">`
-    : `<div class="live-noface">${esc((p.agent||p.name||'?').slice(0,2))}</div>`;
-  const bits = [];
-  if(p.mode) bits.push(esc(p.mode));
-  if(p.map) bits.push(esc(p.map));
-  if(p.agent) bits.push(esc(p.agent));
-  if(p.party && p.party.size>1) bits.push(`${p.party.size} en groupe`);
-  const what = bits.length ? bits.join(' · ') : (LIVE_LABEL[p.state]||'');
-  const score = p.score
-    ? `<div class="live-score"><span class="a">${p.score[0]}</span><i> - </i><span class="b">${p.score[1]}</span></div>`
-    : '';
-  return `<div class="live-card ${st}" style="--c:${esc((m&&m.color)||'#8696a6')}">
-    ${face}
-    <div class="live-main">
-      <div class="live-who">${esc((m&&m.name)||p.name)}</div>
-      <div class="live-what">${what}</div>
-    </div>
-    ${score}
-  </div>`;
-}
-
-/* La boutique du jour, quand un compagnon l'a relevée. Elle est personnelle :
-   on affiche donc à qui elle appartient. */
-function liveShopHTML(p, m){
-  const s = p.store; if(!s || !s.offers || !s.offers.length) return '';
-  const imgs = s.offers.map(u=>{
-    const sk = LIVE_SKINS && LIVE_SKINS[u];
-    if(sk && sk.icon) return `<img src="${esc(sk.icon)}" alt="${esc(sk.name)}" title="${esc(sk.name)}" loading="lazy">`;
-    return sk && sk.name ? `<span class="live-note">${esc(sk.name)}</span>` : '';
-  }).filter(Boolean).join('');
-  if(!imgs) return '';
-  const h = s.secondsLeft ? Math.floor(s.secondsLeft/3600) : null;
-  return `<div class="live-note">Boutique de <b style="color:${esc((m&&m.color)||'')}">${esc((m&&m.name)||p.name)}</b>${
-    h!=null ? ` · encore ${h} h` : ''}<div class="live-shop">${imgs}</div></div>`;
-}
-
-function renderLive(){
-  const host=$('live'); if(!host) return;
-  const known = LIVE.map(p=>({ p, m:liveMember(p) })).filter(x=>x.m);
-  const on = known.filter(x=>x.p.live);
-  const shops = known.filter(x=>x.p.store && x.p.store.offers && x.p.store.offers.length);
-
-  if(!on.length && !shops.length){ host.hidden=true; host.innerHTML=''; return; }
-  host.hidden=false;
-
-  const parts=[];
-  if(on.length){
-    parts.push(`<div class="live-head"><span class="live-dot"></span>En ce moment · ${on.length} joueur${on.length>1?'s':''}</div>`);
-    parts.push(`<div class="live-grid">${on.map(x=>liveCardHTML(x.p, x.m)).join('')}</div>`);
-  }
-  if(shops.length){
-    parts.push(shops.map(x=>liveShopHTML(x.p, x.m)).filter(Boolean).join(''));
-  }
-  host.innerHTML = parts.join('');
-}
-
-async function loadLive(){
-  LIVE = await fetchLive();
-  if(LIVE.some(p=>p.store && p.store.offers && p.store.offers.length)) await ensureSkins();
-  if(LIVE.some(p=>p.agent)) await ensureAgents();
-  renderLive();
-}
-
-/* Sondage borné : uniquement sur l'accueil, uniquement onglet visible.
-   setTimeout et non setInterval, pour ne jamais empiler deux requêtes si le
-   réseau traîne. */
-function stopLiveTicker(){ if(LIVE_TIMER){ clearTimeout(LIVE_TIMER); LIVE_TIMER=null; } }
-function startLiveTicker(){
-  stopLiveTicker();
-  const tick = async () => {
-    LIVE_TIMER = null;
-    const home = $('home');
-    if(!home || home.hidden || document.hidden) return;   // on s'arrête, le retour relancera
-    await loadLive();
-    if(!$('home').hidden && !document.hidden) LIVE_TIMER = setTimeout(tick, LIVE_POLL_MS);
-  };
-  LIVE_TIMER = setTimeout(tick, LIVE_POLL_MS);
 }
 
 /* ===================== COMPOS — CHARGEMENT & AFFICHAGE ===================== */
@@ -4070,7 +3975,6 @@ async function showComps(){
   const rou=$('roulette'); if(rou) rou.hidden=true;
   const sec=$('comps'); if(!sec) return;
   sec.hidden=false;
-  stopLiveTicker();
   window.scrollTo(0,0);
 
   if(COMPS_LOADED && AGENT_LIST.length){ renderComps(); return; }
@@ -4151,9 +4055,6 @@ function refreshHomeAlerts(){
 }
 
 async function loadHomeAlerts(){
-  // Le direct est indépendant des alertes : il ne lit aucun blob d'historique
-  // et doit démarrer même si la squad n'a pas encore de sessions.
-  loadLive().then(startLiveTicker).catch(()=>{});
   if(ALERTS_LOADED) return;
   ALERTS_LOADED = true;
   if(!$('alerts')) return;
@@ -4326,7 +4227,6 @@ async function runRoulette(){
 function showRoulette(){
   $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
   $('leaderboard').hidden=true; $('roulette').hidden=false;
-  stopLiveTicker();
   const cmp=$('comps'); if(cmp) cmp.hidden=true;
   window.scrollTo(0,0);
   // Par défaut : toute la squad est sélectionnée, on retire ceux qui ne jouent pas.
@@ -4699,12 +4599,7 @@ async function init(){
   registerSW();
   startFreshTicker();
   document.addEventListener('visibilitychange', ()=>{
-    if(document.hidden){ stopFreshTicker(); stopLiveTicker(); }
-    else {
-      renderFresh(); startFreshTicker();
-      // On rattrape tout de suite : un score de 20 s d'âge est déjà vieux.
-      if(!$('home').hidden){ loadLive().catch(()=>{}); startLiveTicker(); }
-    }
+    if(document.hidden) stopFreshTicker(); else { renderFresh(); startFreshTicker(); }
   });
   // Lien de session partagé : on ouvre directement le profil concerné, et le
   // rapport s'ouvrira dès que les données seront prêtes (cf. refreshSessions).

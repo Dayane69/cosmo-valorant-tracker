@@ -7,8 +7,8 @@
 // Clés lues UNIQUEMENT côté serveur (process.env) : HENRIK_KEY + REFRESH_TOKEN.
 
 import { getStore } from "@netlify/blobs";
-import roster from "../../roster.json" with { type: "json" };
 import { runRefresh } from "./lib/refresh-core.mjs";
+import { loadRoster } from "./lib/roster-source.mjs";
 
 const json = (obj, status) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
@@ -25,8 +25,7 @@ export default async (req) => {
   if (!apiKey) return json({ ok: false, error: "HENRIK_KEY manquante" }, 500);
 
   try {
-    const members = roster.members || roster;
-    const region = roster.region || "eu";
+    const { members, region } = await loadRoster(getStore);
     // delayMs réduit : on veut finir vite (limite de 10s sur le plan gratuit),
     // 7 membres restent largement sous le rate limit HenrikDev.
     const res = await runRefresh({ roster: members, region, getStore, fetchImpl: fetch, apiKey, delayMs: 100 });

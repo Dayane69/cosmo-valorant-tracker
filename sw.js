@@ -29,7 +29,7 @@ self.addEventListener("fetch", (e) => {
   ) return;
 
   // Shell same-origin : réseau d'abord (pour recevoir les mises à jour), repli
-  // sur le cache si hors-ligne. Le HTML retombe sur la page d'accueil.
+  // sur le cache si hors-ligne.
   if (url.origin === self.location.origin) {
     e.respondWith(
       fetch(req)
@@ -38,7 +38,20 @@ self.addEventListener("fetch", (e) => {
           caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
           return res;
         })
-        .catch(() => caches.match(req).then((r) => r || caches.match("/index.html")))
+        .catch(async () => {
+          const hit = await caches.match(req);
+          if (hit) return hit;
+          // Le repli sur la page d'accueil ne vaut QUE pour une navigation.
+          // Il s'appliquait à toute requête same-origin : hors-ligne et sans
+          // entrée en cache, une demande de app.js ou de comps.json recevait
+          // du HTML — un script qui ne se parse pas, un JSON illisible. Mieux
+          // vaut échouer franchement : tous les fetch de l'app ont leur catch.
+          if (req.mode === "navigate") {
+            const shell = await caches.match("/index.html");
+            if (shell) return shell;
+          }
+          return new Response("", { status: 504, statusText: "hors-ligne" });
+        })
     );
   }
 });
