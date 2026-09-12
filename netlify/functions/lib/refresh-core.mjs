@@ -165,14 +165,40 @@ export async function refreshOne({ member, getStore, fetchImpl, apiKey, region, 
   return { added: Math.max(0, merged.length - existing.length), total: merged.length, rrTotal };
 }
 
-// Boucle principale du cron : séquentielle et espacée pour rester dans le rate
-// limit HenrikDev. L'échec d'un membre est loggé mais ne stoppe pas la boucle.
-export async function runRefresh({ roster, region, getStore, fetchImpl, apiKey, log = console, delayMs = 200, sleep }) {
+/* Réordonne le roster pour commencer par un membre donné (sa clé de blob), le
+   reste suivant dans l'ordre. Sert au relais entre deux exécutions : chacune
+   reprend là où la précédente s'est arrêtée.
+   Clé inconnue (membre retiré, renommé) : on repart du début plutôt que de ne
+   rien faire — un curseur périmé ne doit jamais bloquer le rafraîchissement. */
+export function rotateFrom(members, key) {
+  const list = Array.isArray(members) ? members.slice() : [];
+  if (!key) return list;
+  const i = list.findIndex((m) => m && blobKey(m.name, m.tag) === key);
+  return i > 0 ? list.slice(i).concat(list.slice(0, i)) : list;
+}
+
+/* Boucle principale du cron : séquentielle et espacée pour rester dans le rate
+   limit HenrikDev. L'échec d'un membre est loggé mais ne stoppe pas la boucle.
+
+   `budgetMs` borne le temps passé. Ce n'est pas un confort : une fonction
+   Netlify est coupée net à 10 s, et une coupure au milieu d'un refreshOne perd
+   le travail en cours ET ne dit pas où on s'est arrêté. On préfère rendre la
+   main proprement et annoncer le membre suivant (`next`), que l'appelant
+   mémorise pour la prochaine exécution. Un membre n'est donc jamais affamé,
+   quel que soit le plafond réel de la plateforme.
+
+   Le budget est vérifié AVANT chaque membre sauf le premier : une exécution
+   doit toujours faire avancer au moins un membre, sinon un budget trop serré
+   bloquerait tout le roster pour toujours. */
+export async function runRefresh({ roster, region, getStore, fetchImpl, apiKey, log = console, delayMs = 200, sleep, budgetMs = 0, now = () => Date.now() }) {
   if (!apiKey) throw new Error("HENRIK_KEY manquante");
   const wait = sleep || ((ms) => new Promise((res) => setTimeout(res, ms)));
-  let ok = 0, fail = 0, added = 0;
+  const list = Array.isArray(roster) ? roster : [];
+  const started = now();
+  let ok = 0, fail = 0, added = 0, done = 0;
 
-  for (const member of roster) {
+  for (const member of list) {
+    if (budgetMs && done && now() - started >= budgetMs) break;
     try {
       const { added: gain, total } = await refreshOne({ member, getStore, fetchImpl, apiKey, region, trigger: true, sleep });
       added += gain;
@@ -182,9 +208,13 @@ export async function runRefresh({ roster, region, getStore, fetchImpl, apiKey, 
       fail++;
       log.error(`[refresh] échec ${member.name}#${member.tag}: ${(e && e.message) || e}`);
     }
+    done++;
     if (delayMs) await wait(delayMs);
   }
 
-  log.log(`[refresh] terminé: ${ok} ok, ${fail} échecs, +${added} matchs ajoutés`);
-  return { ok, fail, added };
+  const left = list.slice(done);
+  const next = left.length ? blobKey(left[0].name, left[0].tag) : null;
+  log.log(`[refresh] terminé: ${ok} ok, ${fail} échecs, +${added} matchs ajoutés`
+    + (left.length ? ` — ${left.length} membre(s) au tour suivant, à partir de ${next}` : " — roster complet"));
+  return { ok, fail, added, done, remaining: left.length, next };
 }

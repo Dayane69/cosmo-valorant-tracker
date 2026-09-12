@@ -2,7 +2,7 @@
 // Vérifie que deux exécutions successives sur les mêmes données ne dupliquent rien.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runRefresh, refreshOne, refreshMember, mergeStored, mergeRR, normRRentry, matchID, matchTime, blobKey } from "../netlify/functions/lib/refresh-core.mjs";
+import { runRefresh, refreshOne, refreshMember, mergeStored, mergeRR, normRRentry, matchID, matchTime, blobKey, rotateFrom } from "../netlify/functions/lib/refresh-core.mjs";
 
 // --- Mock Netlify Blobs (clé -> valeur JSON, en mémoire) ---
 function memoryStores() {
@@ -180,4 +180,93 @@ test("un membre en échec API ne fait pas planter la boucle", async () => {
   const res = await runRefresh({ roster, region: "eu", getStore, fetchImpl, apiKey: "FAKE", log: { log() {}, error() {} }, delayMs: 0 });
   assert.equal(res.ok, 1);
   assert.equal(res.fail, 1);
+});
+
+/* ===================== PASSAGE HORAIRE : BUDGET ET RELAIS =====================
+   Le cron tourne maintenant chaque heure. Une fonction Netlify est coupée net à
+   10 s, et un passage complet du roster est pile sur le fil : chaque exécution
+   travaille donc sous un budget et annonce où reprendre. Ce qui est vérifié ici,
+   c'est qu'aucun membre ne peut être affamé, quel que soit le budget. */
+
+const squad = (n) => Array.from({ length: n }, (_, i) => ({ name: `J${i + 1}`, tag: "0001" }));
+
+// Horloge simulée : chaque membre traité fait avancer le temps de `perMember`.
+// Aucune attente réelle, donc les tests restent instantanés.
+function fakeClock(perMember) {
+  let t = 0;
+  return { now: () => t, tick: () => { t += perMember; } };
+}
+
+function budgetDeps(members, clock, budgetMs) {
+  const { getStore, stores } = memoryStores();
+  const base = makeFetch({});
+  return {
+    stores,
+    deps: {
+      roster: members, region: "eu", getStore, apiKey: "FAKE",
+      log: { log() {}, error() {} }, delayMs: 0, budgetMs, now: clock.now,
+      // Le temps avance à chaque appel stored-matches, soit une fois par membre.
+      fetchImpl: async (url) => { if (url.includes("/stored-matches/")) clock.tick(); return base(url); },
+    },
+  };
+}
+
+test("le budget arrête la boucle proprement et annonce le membre suivant", async () => {
+  const members = squad(8);
+  const clock = fakeClock(1000);                 // 1 s par membre
+  const { deps } = budgetDeps(members, clock, 3500);
+  const res = await runRefresh(deps);
+
+  assert.equal(res.done, 4, "quatre membres tiennent dans 3,5 s");
+  assert.equal(res.remaining, 4);
+  assert.equal(res.next, blobKey("J5", "0001"), "on dit où reprendre");
+});
+
+test("un budget ridicule fait quand même avancer d'un membre", async () => {
+  // Sinon un budget trop serré bloquerait le roster pour toujours.
+  const clock = fakeClock(5000);
+  const { deps } = budgetDeps(squad(8), clock, 1);
+  const res = await runRefresh(deps);
+  assert.equal(res.done, 1);
+  assert.equal(res.next, blobKey("J2", "0001"));
+});
+
+test("sans budget, tout le roster passe et il n'y a pas de suite", async () => {
+  const clock = fakeClock(1000);
+  const { deps } = budgetDeps(squad(8), clock, 0);
+  const res = await runRefresh(deps);
+  assert.equal(res.done, 8);
+  assert.equal(res.remaining, 0);
+  assert.equal(res.next, null, "roster complet : la prochaine repart du début");
+});
+
+test("de passage en passage, tout le monde est servi exactement une fois", async () => {
+  const members = squad(8);
+  let cursor = null;
+  const vus = [];
+
+  // Trois passages de 3,5 s : 4 + 4 membres, puis retour au début.
+  for (let run = 0; run < 3; run++) {
+    const clock = fakeClock(1000);
+    const ordered = rotateFrom(members, cursor);
+    const { deps } = budgetDeps(ordered, clock, 3500);
+    const res = await runRefresh(deps);
+    vus.push(...ordered.slice(0, res.done).map((m) => m.name));
+    cursor = res.next;
+  }
+
+  assert.deepEqual(vus.slice(0, 8), ["J1", "J2", "J3", "J4", "J5", "J6", "J7", "J8"],
+    "le tour complet se fait sans sauter ni répéter personne");
+  assert.equal(vus[8], "J1", "puis on recommence par le début");
+});
+
+test("rotateFrom : reprend au bon membre, et pardonne un curseur périmé", () => {
+  const members = squad(4);
+  assert.deepEqual(rotateFrom(members, blobKey("J3", "0001")).map((m) => m.name), ["J3", "J4", "J1", "J2"]);
+  // Curseur absent, vide, ou pointant sur un membre retiré du roster : on
+  // repart du début plutôt que de ne rien rafraîchir du tout.
+  for (const c of [null, "", blobKey("Parti", "9999")]) {
+    assert.deepEqual(rotateFrom(members, c).map((m) => m.name), ["J1", "J2", "J3", "J4"], String(c));
+  }
+  assert.deepEqual(rotateFrom(null, "x"), []);
 });

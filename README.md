@@ -45,7 +45,7 @@ afin de garder la clé API **hors du navigateur**.
 
   Déclencheurs et seuils sont **calibrés sur les sessions réelles de la squad** (mesurées : 2 à 7 parties, RR net de −46 à +68) : à ≥ 6 parties et ±40 RR, des soirées à +68 RR ne déclenchaient rien. Un **récapitulatif** est par ailleurs toujours produit pour la session du jour (« 5 parties hier après-midi — 2V-3D, −10 RR, indice 73 ») : sa gravité est sous celle de tous les autres cas, il ne prend donc la place que si rien de plus marquant n'a eu lieu. Et une soirée qui **rapporte du RR** n'est jamais accusée d'être « partie en vrille ».
 
-  > Source : les **blobs d'historique**, donc aucun appel HenrikDev sur l'accueil et aucun risque de rate limit. Le cron ne passant qu'à 04:00, les parties fraîches d'un profil qu'on vient d'ouvrir sont **injectées dans l'index** : la session jouée ce soir apparaît dans le bandeau dès qu'on est passé par le profil, sans attendre le lendemain.
+  > Source : les **blobs d'historique**, donc aucun appel HenrikDev sur l'accueil et aucun risque de rate limit. Le cron passant **toutes les heures**, la session qu'on vient de jouer apparaît dans le bandeau sans rien ouvrir. Et les parties fraîches d'un profil qu'on ouvre sont de toute façon **injectées dans l'index** au passage : pas besoin d'attendre l'heure suivante.
 - **Compos par map** — 🗺 quelles compositions gagnent, map par map, avec **deux échelles**.
 
   **Le problème de départ.** Les blobs d'historique viennent de `stored-matches`, qui ne renvoie **qu'un seul joueur par partie** : on y connaît l'agent d'un membre COSMO, jamais celui des neuf autres. Aucune compo n'en sort. Les compos viennent donc d'une **seconde source** : `/valorant/v4/match/{region}/{id}`, rejoué partie par partie, qui donne les 10 joueurs. Chaque partie fournit ainsi **deux compos réelles avec leur résultat** — la nôtre et celle d'en face.
@@ -74,7 +74,7 @@ afin de garder la clé API **hors du navigateur**.
   Option **🆕 persos à tester** : privilégie, pour *chaque personne*, les agents qu'elle joue le moins d'après l'historique déjà chargé. Quand tout a déjà été joué, on garde les **moins** joués plutôt que de ne rien rendre. Deux joueurs n'ont jamais le même agent ; s'il n'y en a pas assez dans le rôle demandé, on autorise le doublon plutôt que de laisser quelqu'un sans agent. À compo identique, les rôles sont **redistribués** à chaque tirage : ce n'est pas toujours le même qui hérite du duelliste.
 - **Tribunal COSMO (v2)** — la jauge *Unlucky or Bad*. L'ancienne version tranchait sur le **seul indice moyen** : « UNLUCKY » n'était qu'une note médiane, ce qui n'a rien à voir avec la chance. Le verdict croise maintenant **deux axes indépendants** : la **performance** (indice moyen pondéré par les rounds) et le **résultat** (RR net réel, à défaut le winrate). Bien jouer et perdre → **UNLUCKY**. Mal jouer et gagner → **PORTÉ**. L'aiguille, elle, continue d'indiquer la performance, et l'arc est étiqueté en conséquence (FAIBLE / CORRECT / ÉNORME) : **à aiguille identique le verdict peut différer**, et c'est précisément l'information. `BAD` est réservé à une perf réellement basse — au-dessus du seuil, perdre ne suffit pas à faire de toi le problème. Le détail rapporte ce qui justifie le verdict : indice, RR net, **régularité** (σ de l'indice) et nombre de **sessions parties en vrille**.
 - **Leaderboard** — classement de la squad sur les N dernières classées, badges (Carry, Bourreau, Headhunter, Le plus konstant, Late night warrior…), comparateur 1v1, et **duos détectés** : les paires retrouvées dans la **même équipe** (croisement par `match_id`), avec le winrate du duo **et son écart face au winrate de chacun sans l'autre** — le chiffre intéressant. Un duo qui ne joue jamais séparément n'a pas de référence : l'écart affiche `—` plutôt qu'un nombre inventé.
-- **Historique grandissant** — un cron quotidien fait grossir l'historique stocké de chaque membre côté serveur, sans qu'il faille ouvrir un profil (voir plus bas).
+- **Historique grandissant** — un cron **horaire** fait grossir l'historique stocké de chaque membre côté serveur, sans qu'il faille ouvrir un profil. Chaque passage est borné en temps et reprend où le précédent s'est arrêté (voir plus bas).
 - **Comparaison 2 joueurs** — superpose la progression RR d'un second joueur sur le graphe.
 - **Roster éditable depuis l'UI** — ⚙ Paramètres → *Modifier le roster* : ajoute/retire/édite les membres (stocké côté serveur dans un blob, protégé par `REFRESH_TOKEN`, `roster.json` reste la valeur de départ).
 - **PWA & mobile** — installable sur mobile/desktop (manifest + icône + service worker qui cache le shell ; les données restent toujours fraîches). L'interface est pensée **mobile-first** : aucune page ne déborde horizontalement, les tableaux larges (scoreboard, stats par agent/map) **défilent dans leur propre conteneur** avec un dégradé qui signale qu'il reste du contenu, les cibles tactiles font **≥ 44 px** sur écran tactile (`@media(pointer:coarse)`), et les **encoches / barres système iOS** sont gérées via les `safe-area-inset`.
@@ -93,7 +93,7 @@ afin de garder la clé API **hors du navigateur**.
 └── netlify/
     └── functions/
         ├── valo.mjs                 # proxy serverless vers HenrikDev (cache la clé)
-        ├── refresh-matches.mjs      # fonction PLANIFIÉE (cron quotidien)
+        ├── refresh-matches.mjs      # fonction PLANIFIÉE (cron horaire, avec relais)
         ├── refresh-now.mjs          # déclenchement manuel (protégé par REFRESH_TOKEN)
         ├── historique.mjs           # lecture de l'historique accumulé (blob)
         ├── comps.mjs                # lecture des compos par map (blob)
@@ -118,11 +118,18 @@ afin de garder la clé API **hors du navigateur**.
 - **Stats joueurs/matchs** : [HenrikDev API](https://docs.henrikdev.xyz/) via le proxy Netlify.
 - **Historique accumulé** : endpoint `stored-matches` de HenrikDev, agrégé jour après jour dans **Netlify Blobs** (store `cosmo-history`).
 
-## 🔄 Rafraîchissement automatique quotidien
+## 🔄 Rafraîchissement automatique horaire
 
 `netlify/functions/refresh-matches.mjs` est une **fonction planifiée Netlify**
-(disponible sur tous les plans, y compris gratuit) qui tourne **chaque jour à
-04:00 UTC** (soit 05h à Paris en hiver, 06h en été).
+(disponible sur tous les plans, y compris gratuit) qui tourne **toutes les
+heures, à l'heure pile**.
+
+> **Pourquoi chaque heure.** Le profil qu'on ouvre est déjà frais : le front
+> appelle `matches` v4 en direct pour ce joueur. Ce qui dépendait du cron, c'est
+> ce qui se lit **sans ouvrir un profil** — le **bandeau d'alertes** de
+> l'accueil, qui ne lit que les blobs. À 04:00, la session du soir n'y
+> apparaissait que le lendemain ; désormais elle est là dans l'heure, y compris
+> si on ouvre le tracker juste après une partie.
 
 Pour chaque membre du roster, elle :
 1. appelle `matches` v4 — ce qui pousse HenrikDev à interroger Riot et à **stocker**
@@ -136,7 +143,27 @@ parties fraîches de `matches` v4, dédoublonnées par `matchid`.
 
 > Les appels du cron sont **séquentiels et espacés** pour rester dans le rate limit
 > HenrikDev (30 req/min en Basic, 90 en Advanced). L'échec d'un membre est loggé
-> sans interrompre la boucle.
+> sans interrompre la boucle. Un passage complet, c'est 8 membres × 3 appels =
+> **24 appels**, qui tiennent dans une fenêtre d'une minute — et il n'y en a
+> qu'un par heure.
+
+### Budget et relais
+
+Une fonction Netlify est **coupée net à 10 s**, et un passage complet du roster
+tourne autour de 9 s : pile sur le fil. Plutôt que de parier dessus, chaque
+exécution travaille sous un **budget de temps** et enregistre dans un blob
+(`cosmo-refresh`) **le membre par lequel reprendre** ; la suivante repart de là.
+
+Conséquences : aucun membre n'est jamais affamé, le plafond réel de la
+plateforme n'a plus d'importance, et un curseur périmé (membre retiré, renommé)
+fait simplement recommencer par le début au lieu de tout bloquer. Un budget
+serré fait toujours avancer d'**au moins un membre**, sinon le roster resterait
+figé pour toujours.
+
+Le **backfill des compos** reste **quotidien** (04:00 UTC) : c'est la partie
+coûteuse — jusqu'à 20 appels de plus, ~370 Ko chacun — et elle ne sert pas une
+lecture « je viens de finir une game ». À cette heure-là, les deux travaux se
+**partagent** le budget au lieu de s'additionner.
 
 ### Déclenchement manuel (sans attendre le cron)
 
@@ -154,8 +181,9 @@ parties fraîches de `matches` v4, dédoublonnées par `matchid`.
   ⚠️ Une seule fonction fait alors toute la boucle : sur beaucoup de membres, elle
   peut buter sur la limite de 10 s / le rate limit — préfère le bouton du site.
 
-Le cron quotidien **tourne l'ordre des membres chaque jour** : si une exécution est
-coupée, ce ne sont pas toujours les mêmes joueurs qui passent en dernier.
+Le cron horaire **reprend au membre suivant** à chaque passage (cf. *Budget et
+relais* ci-dessus) : si une exécution s'arrête à mi-roster, la suivante continue
+exactement là où elle en était.
 
 ### Netlify Blobs
 Le store clé-valeur **Netlify Blobs** est activé automatiquement sur un site
@@ -217,7 +245,7 @@ npm run check # node --check sur tous les fichiers .js / .mjs
   `customImg` (cf. l'entrée *Son Goku*).
 - **Région** : `region` dans `roster.json` (valeur par défaut), aussi changeable
   depuis ⚙ Paramètres sur l'accueil (`eu`, `na`, `ap`, `kr`, `latam`, `br`).
-- **Heure du cron** : `export const config = { schedule }` dans `refresh-matches.mjs` (UTC).
+- **Fréquence du cron** : `export const config = { schedule }` dans `refresh-matches.mjs` (UTC, `0 * * * *` = chaque heure). Les budgets de temps et l'heure du backfill des compos sont les constantes en haut du même fichier.
 - **Seuils de l'indice** : voir `perfScore()` et `tierOf()` dans `app.js`.
 - **Sessions** : `SESSION_GAP_MIN` (coupure par défaut, aussi réglable depuis l'UI),
   `BASELINE_MIN` (parties nécessaires pour comparer) et les règles de diagnostic
