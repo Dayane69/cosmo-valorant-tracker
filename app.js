@@ -58,8 +58,10 @@ const num = (v,f=0)=>(v===undefined||v===null||isNaN(v))?f:Number(v);
 const clamp = (x, a=0, b=100) => Math.max(a, Math.min(b, x));
 const ESC_MAP = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ESC_MAP[c]);
-// Une URL d'image, validée au lieu d'être échappée. `esc()` ne protège PAS un
-// contexte CSS : le parseur HTML décode &#39; avant que CSS ne lise la valeur,
+// Une URL d'image destinée à une FEUILLE DE STYLE, validée au lieu d'être
+// échappée. La règle : `imgURL()` pour un url(...) en CSS, `esc()` pour un
+// attribut src — dans un attribut, l'échappement suffit.
+// `esc()` ne protège PAS un contexte CSS : le parseur HTML décode &#39; avant que CSS ne lise la valeur,
 // donc une apostrophe ressort intacte dans url('…'). On exige donc la forme
 // d'une URL https sans guillemet, parenthèse, espace ni antislash — ce que
 // valorant-api renvoie — et on ne rend rien sinon.
@@ -2359,16 +2361,28 @@ function renderPeakActs(){
     }).join('') + `</div>`;
 }
 
-// Cellule "rang au moment de la partie + RR gagné/perdu" pour une ligne d'historique.
-// Toujours rendue (même vide) pour garder l'alignement de la grille ; remplie quand
-// la partie est présente dans l'historique MMR (ranked récent).
-function rrCell(rr){
-  if(!rr || rr.change==null) return '<div class="mrr"></div>';
+// Puce « RR gagné/perdu + rang au moment de la partie », en haut de la carte.
+// Rien n'est rendu quand la partie n'est pas dans l'historique MMR (non classée,
+// ou trop ancienne) : une place vide ne sert plus à aligner quoi que ce soit.
+function rrChip(rr){
+  if(!rr || rr.change==null) return '';
   const c=rr.change, sign=c>0?'+':'';
-  const icon=rr.icon?`<img class="mrr-icon" src="${esc(rr.icon)}" alt="${esc(rr.tierName||'')}" title="${esc(rr.tierName||'')}" loading="lazy">`:'';
-  return `<div class="mrr" title="${esc(rr.tierName||'')}${rr.rr!=null?' · '+rr.rr+' RR':''}">
-    ${icon}<span class="mrr-delta ${c>=0?'up':'dn'}">${sign}${c}</span>
-  </div>`;
+  const icon=rr.icon?`<img class="mrr-icon" src="${esc(rr.icon)}" alt="" loading="lazy">`:'';
+  return `<span class="mc-rr" title="${esc(rr.tierName||'')}${rr.rr!=null?' · '+rr.rr+' RR':''}">
+    <span class="mrr-delta ${c>=0?'up':'dn'}">${sign}${c}</span>${icon}
+  </span>`;
+}
+
+// Portrait plein de l'agent — le même que sur les cartes d'accueil. L'uuid vient
+// de la partie ; sans lui on cherche par nom dans la liste valorant-api, et en
+// dernier recours on prend la tête, qui est toujours en cache.
+// Peu d'images distinctes en pratique (une squad tourne sur quelques agents),
+// donc le navigateur les sert depuis son cache dès la deuxième carte.
+function agentArt(s){
+  if(!s) return '';
+  if(s.agentId) return `${MEDIA}/${encodeURIComponent(s.agentId)}/fullportrait.png`;
+  const a = AGENT_LIST.find(x => x.name === s.agent);
+  return (a && a.portrait) || (AGENTS && AGENTS[(s.agent||'').toLowerCase()]) || '';
 }
 
 function renderList(){
@@ -2384,13 +2398,29 @@ function renderList(){
     const i = STATE.matches.indexOf(M);
     const s = M.me, sc100 = s ? s.score100 : 0, t = tierOf(sc100), f = s ? flair(s.kd) : '';
     const splash = imgURL(MAPS && MAPS[(M.map||'').toLowerCase()]);
-    const bg = splash ? `<div class="mbg" style="background-image:url('${splash}')"></div>` : '';
-    return `<div class="mrow" data-idx="${i}">${bg}
-      <div class="res ${M.result}">${M.result==='w'?'V':'D'}</div>
-      <div class="minfo"><b>${esc(M.map)}</b><span>${esc(M.mode)} · ${s?esc(s.agent):'—'} · ${s?s.k+'/'+s.d+'/'+s.a:''} · ${relTime(M.started)}</span></div>
-      <div class="mscore" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${M.myScore}–${M.oppScore}</div>
-      ${rrCell(M.rr)}
-      <div class="scorebadge score-mini flair-${f} sd" style="--sc:${t.c}" data-sd="${i}" title="Voir le détail du calcul">${s?sc100:'—'}${flairHTML(f)}</div>
+    const art = agentArt(s);
+    const won = M.result === 'w';
+    return `<div class="mrow ${M.result}" data-idx="${i}">
+      <div class="mc-top">
+        <span class="mc-mode">${esc(M.mode)}</span>
+        <span class="mc-when">${esc(relTime(M.started))}</span>
+        ${rrChip(M.rr)}
+      </div>
+      <div class="mc-hero${art ? ' art' : ''}">
+        ${splash ? `<div class="mbg" style="background-image:url('${splash}')"></div>` : ''}
+        ${art ? `<img class="mc-agent" src="${esc(art)}" alt="" loading="lazy">` : ''}
+        <div class="mc-id">
+          <b>${s ? esc(s.agent) : '—'}</b>
+          <span class="mc-map">${esc(M.map)}</span>
+        </div>
+        <span class="mc-res">${won ? 'VICTOIRE' : 'DÉFAITE'}</span>
+      </div>
+      <div class="mc-stats">
+        <span class="mc-st"><i>K / D / A</i><b>${s ? s.k+' / '+s.d+' / '+s.a : '—'}</b></span>
+        <span class="mc-st"><i>ACS</i><b>${s ? s.acs : '—'}</b></span>
+        <span class="mc-st"><i>Score</i><b>${M.myScore}–${M.oppScore}</b></span>
+        <div class="scorebadge score-mini flair-${f} sd" style="--sc:${t.c}" data-sd="${i}" title="Voir le détail du calcul">${s?sc100:'—'}${flairHTML(f)}</div>
+      </div>
     </div>`;
   }).join('');
   

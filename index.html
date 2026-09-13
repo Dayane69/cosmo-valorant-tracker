@@ -220,25 +220,82 @@
   .rrtip span{display:block;color:var(--muted)}
   .rrtip .d{font-weight:700;margin-top:2px} .rrtip .d.up{color:var(--win)} .rrtip .d.dn{color:var(--loss)}
 
-  .mrow{position:relative;overflow:hidden;display:grid;grid-template-columns:34px 1fr auto auto auto;gap:12px;align-items:center;padding:11px 9px;border-top:1px solid var(--line);cursor:pointer;border-radius:9px}
-  .mrow:first-of-type{border-top:0}
-  .mrow:hover,.mrow.sel{background:var(--panel2)}
-  .mrow > *:not(.mbg){position:relative;z-index:1}
-  .mbg{position:absolute;inset:0;z-index:0;background-size:cover;background-position:center 30%;opacity:.16;pointer-events:none;
-    -webkit-mask-image:linear-gradient(90deg,transparent,#000 22%,#000 78%,transparent);mask-image:linear-gradient(90deg,transparent,#000 22%,#000 78%,transparent)}
-  .mrow:hover .mbg,.mrow.sel .mbg{opacity:.30}
-  .res{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;font-family:var(--mono);font-weight:800;font-size:12px}
-  .res.w{background:rgba(86,216,201,.12);color:var(--win)} .res.l{background:rgba(255,93,93,.12);color:var(--loss)}
-  .minfo b{font-size:14px} .minfo span{display:block;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
-  .mscore{font-family:var(--mono);font-weight:700;font-size:15px}
-  /* Rang au moment de la partie + RR gagné/perdu */
-  .mrr{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-width:40px;font-family:var(--mono)}
-  .mrr-icon{width:26px;height:26px;object-fit:contain}
-  .mrr-delta{font-size:12.5px;font-weight:800;letter-spacing:.01em}
+  /* ---- Carte de partie ------------------------------------------------------
+     Une partie = une carte. Le splash de la map et le portrait de l'agent
+     portent l'image ; en bas, TROIS chiffres seulement, chacun avec son
+     libellé. C'est le point où la densité se décide : au-delà, on ne lit plus
+     rien au doigt. L'indice COSMO garde sa place à droite — c'est la seule
+     note qui n'existe nulle part ailleurs.
+     La couleur du résultat est portée par --mc, une seule fois, et réutilisée
+     par la bordure, l'ombre de sélection et la pastille. */
+  .mrow{--mc:var(--muted);
+    position:relative;display:block;border:1px solid var(--line);border-radius:14px;
+    overflow:hidden;background:var(--panel);cursor:pointer;
+    transition:border-color .18s ease,box-shadow .18s ease}
+  .mrow.w{--mc:var(--win)}
+  .mrow.l{--mc:var(--loss)}
+  /* Une colonne au téléphone, deux ou trois dès qu'il y a la place : étirée sur
+     toute la largeur d'un écran large, la carte se vidait en son milieu. */
+  #ml{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:10px}
+  .mrow:hover,.mrow.sel{border-color:color-mix(in srgb,var(--mc) 55%,var(--line))}
+  .mrow.sel{box-shadow:0 0 0 1px color-mix(in srgb,var(--mc) 40%,transparent)}
+
+  .mc-top{display:flex;align-items:center;gap:9px;padding:9px 12px 8px;
+    font-family:var(--mono);font-size:11.5px;line-height:1.2;min-height:36px}
+  .mc-mode{color:var(--txt);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mc-when{color:var(--dim);white-space:nowrap}
+  .mc-rr{margin-left:auto;display:inline-flex;align-items:center;gap:7px}
+  .mrr-icon{width:22px;height:22px;object-fit:contain}
+  .mrr-delta{font-family:var(--mono);font-size:13px;font-weight:800;letter-spacing:.01em}
   .mrr-delta.up{color:var(--win)} .mrr-delta.dn{color:var(--loss)}
-  @media(max-width:560px){
-    .mrow{grid-template-columns:30px 1fr auto auto;gap:9px}
-    .mrow .mscore{display:none}
+
+  /* Le héros : splash en fond, dégradé pour rendre le texte lisible, portrait
+     de l'agent qui déborde à gauche et s'efface en fondu. */
+  .mc-hero{position:relative;min-height:86px;display:flex;align-items:flex-end;padding:10px 12px}
+  /* Le splash reste LISIBLE : c'est lui qui donne son identité à la carte. Le
+     voile ne sert qu'à rendre le texte lisible, et il est donc dégradé de la
+     gauche (où se trouvent portrait et texte) vers la droite (où l'image
+     respire). Un voile uniforme rendait la map méconnaissable. */
+  .mbg{position:absolute;inset:0;z-index:0;background-size:cover;background-position:center 32%;
+    opacity:.9;pointer-events:none}
+  .mc-hero::after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+    background:linear-gradient(90deg,rgba(10,15,21,.92) 0%,rgba(10,15,21,.72) 34%,rgba(10,15,21,.34) 68%,rgba(10,15,21,.18) 100%)}
+  .mc-agent{position:absolute;left:-8px;bottom:0;z-index:2;height:112px;width:106px;
+    object-fit:cover;object-position:top center;pointer-events:none;
+    -webkit-mask-image:linear-gradient(90deg,#000 55%,transparent);
+    mask-image:linear-gradient(90deg,#000 55%,transparent)}
+  .mc-id{position:relative;z-index:3;display:flex;flex-direction:column;
+    align-items:flex-start;gap:6px;min-width:0}
+  /* Décalé seulement quand il y a un portrait : sinon le texte reste collé au
+     bord gauche au lieu de flotter derrière un vide. */
+  .mc-hero.art .mc-id{margin-left:90px}
+  .mc-id b{font-size:19px;font-weight:800;letter-spacing:-.01em;line-height:1;color:var(--txt);
+    text-shadow:0 2px 14px rgba(0,0,0,.7);max-width:100%;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mc-map{font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--txt);background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.16);
+    padding:3px 9px;border-radius:999px;white-space:nowrap}
+  .mc-res{position:relative;z-index:3;margin-left:auto;align-self:center;
+    font-family:var(--mono);font-weight:800;font-size:10.5px;letter-spacing:.11em;
+    padding:7px 12px;border-radius:999px;white-space:nowrap;color:#07121b;background:var(--mc)}
+
+  .mc-stats{display:flex;align-items:center;gap:16px;padding:9px 12px 10px;
+    border-top:1px solid var(--line);background:var(--bg2)}
+  .mc-st{display:flex;flex-direction:column;gap:3px;min-width:0}
+  .mc-st i{font-style:normal;font-family:var(--mono);font-size:8.5px;letter-spacing:.13em;
+    text-transform:uppercase;color:var(--dim)}
+  .mc-st b{font-family:var(--mono);font-size:13.5px;font-weight:700;color:var(--txt);
+    font-variant-numeric:tabular-nums;white-space:nowrap}
+  .mc-stats .scorebadge{margin-left:auto;flex:none}
+
+  /* Téléphone étroit : le portrait recule, le libellé « Score » saute avant
+     que quoi que ce soit ne déborde. */
+  @media(max-width:420px){
+    .mc-agent{height:104px;width:92px;left:-10px}
+    .mc-hero.art .mc-id{margin-left:76px}
+    .mc-id b{font-size:17px}
+    .mc-stats{gap:12px}
+    .mc-res{font-size:10px;padding:6px 10px;letter-spacing:.08em}
   }
 
   .sb{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
