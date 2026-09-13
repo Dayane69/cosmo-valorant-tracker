@@ -133,7 +133,7 @@ async function boot() {
 
   let code = readFileSync(join(root, "app.js"), "utf8");
   // Épilogue de test : expose les fonctions + un accès à l'état interne.
-  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, openMatch, closeMatchFacts, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, perfDetail, perfParts, IDX_W, openMatchScore, init, renderStatsCards, setStatsSeason: (v) => { STATS_SEASON = v; }, getState: () => STATE, getRoster: () => ROSTER };";
+  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, openMatch, closeMatchFacts, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, perfDetail, perfParts, IDX_W, openMatchScore, init, renderStatsCards, setStatsSeason: (v) => { STATS_SEASON = v; }, accountInfo, renderPHead, setAccount: (a) => { ACCOUNT = a; }, getState: () => STATE, getRoster: () => ROSTER };";
   vm.runInContext(code, ctx);
   const T = ctx.__t;
   await T.init(); // garantit roster chargé + grille construite
@@ -590,6 +590,58 @@ test("RR gagné/perdu + rang affichés sur les parties classées de l'historique
   // 3 parties affichées mais seulement 2 ont des infos RR
   assert.equal(doc.querySelectorAll("#ml .mrow").length, 3);
   assert.equal(doc.querySelectorAll("#ml .mrr-delta").length, 2);
+});
+
+/* Carte de joueur et niveau de compte : ils arrivent dans /valorant/v2/account,
+   qu'on appelait déjà pour le seul puuid. Les noms de champs sont lus sous
+   plusieurs variantes — c'est exactement ce qui casse en silence au prochain
+   renommage côté HenrikDev. */
+test("le niveau et la carte de joueur sont lus, quelle que soit la variante", async () => {
+  const { T } = await boot();
+  const wide = "https://media.valorant-api.com/playercards/abc/wide.png";
+
+  // L'objet vient du contexte vm : on compare champ par champ, deepStrictEqual
+  // bute sur le prototype d'un autre realm.
+  const info = (d) => { const r = T.accountInfo(d); return r && { level: r.level, card: r.card }; };
+
+  // Forme actuelle.
+  assert.deepEqual(info({ account_level: 213, card: { wide, large: "L", small: "S" } }),
+    { level: 213, card: wide }, "la plus large des tailles est préférée");
+  // Variantes plausibles : autre nom de niveau, carte donnée en chaîne,
+  // ou seulement les tailles secondaires.
+  assert.deepEqual(info({ level: 42, card: wide }), { level: 42, card: wide });
+  assert.equal(info({ account_level: 7, card: { large: "https://x.example/l.png" } }).card,
+    "https://x.example/l.png");
+  // Un niveau seul, ou une carte seule, restent exploitables.
+  assert.deepEqual(info({ account_level: 5 }), { level: 5, card: "" });
+  assert.equal(info({ card: { wide } }).level, null);
+  // Rien d'utilisable -> null, pour que l'en-tête garde son fond sobre.
+  for (const bad of [null, undefined, {}, "texte", 3, { card: {} }]) {
+    assert.equal(T.accountInfo(bad), null, JSON.stringify(bad));
+  }
+});
+
+test("l'en-tête de profil affiche le niveau et la bannière quand on les a", async () => {
+  const { dom, T } = await boot();
+  const doc = dom.window.document;
+  const m = { name: "Yakuza", tag: "2826", agent: "Brimstone", role: "Contrôleur", color: "#e0b24c", uuid: "u1" };
+
+  // Sans infos de compte : pas de bannière, pas de niveau — et surtout pas de trou.
+  T.setAccount(null);
+  T.renderPHead(m);
+  assert.equal(doc.querySelector("#phead .pb-art"), null, "pas de bannière tant qu'on ne l'a pas");
+  assert.equal(doc.querySelector("#phead .pb-lvl"), null);
+  assert.match(doc.querySelector("#phead h1").textContent, /Yakuza/);
+
+  // Avec : la bannière et le niveau apparaissent.
+  T.setAccount({ level: 213, card: "https://media.valorant-api.com/playercards/abc/wide.png" });
+  T.renderPHead(m);
+  const art = doc.querySelector("#phead .pb-art");
+  assert.ok(art, "la bannière est rendue");
+  assert.match(art.getAttribute("style"), /playercards/);
+  assert.match(doc.querySelector("#phead .pb-lvl").textContent, /213/);
+  // Le bouton Rafraîchir reste dans l'en-tête : le câblage des clics en dépend.
+  assert.ok(doc.querySelector("#phead .refresh"), "le bouton Rafraîchir est toujours là");
 });
 
 test("normalizeAny gère le format stored-matches v1 (teams objet) sans crasher", async () => {

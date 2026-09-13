@@ -50,6 +50,8 @@ let TIER_BY_NUM = null;                                 // cache numéro de pali
 let ELO_TIER_OFFSET = 3;                                // numéro de palier = floor(elo/100) + offset (Iron 1 = palier 3, elo 0)
 const ANIM_BUSY = { Trib: false, Prof: false };
 let RANKS_FILLED = false;               // les rangs de l'accueil ont-ils déjà été chargés
+let CURRENT_MEMBER = null;              // membre du roster dont le profil est ouvert
+let ACCOUNT = null;                     // { level, card } du compte Riot affiché
 
 const $ = id => document.getElementById(id);
 const enc = s => encodeURIComponent(s);
@@ -561,7 +563,7 @@ function cacheGetProfile(key){
 function cachePutProfile(key, data){
   const c=cacheLoad();
   c.profiles[String(key).toLowerCase()] = {
-    ts: Date.now(), mmr: data.mmr||null,
+    ts: Date.now(), mmr: data.mmr||null, acc: data.acc||null,
     matches: (data.matches||[]).map(slimMatch),
     rr: data.rr||[],
   };
@@ -1999,7 +2001,15 @@ async function fillRanks(){
   else setFresh('home','ok',{ ts:Date.now() });
 }
 function toggleSheet(){ $('sheet').hidden=!$('sheet').hidden; }
+
+/* Onglet actif de la barre du bas. `null` sur un profil : on y arrive depuis
+   une carte d'accueil, pas depuis un onglet — allumer « Accueil » désignerait
+   un écran qu'on n'est pas en train de regarder. */
+function setTab(id){
+  document.querySelectorAll('#tabbar button').forEach(b => b.classList.toggle('on', b.id === id));
+}
 function showHome(){
+  setTab('btnHome');
   $('profile').hidden = true;
   $('tribunal').hidden = true;
   $('leaderboard').hidden = true;
@@ -2027,20 +2037,43 @@ function relTime(iso){
   const h=Math.round(m/60); if(h<24) return `il y a ${h} h`; return `il y a ${Math.round(h/24)} j`;
 }
 
+/* Anneau de progression dans le palier (0-100 RR), autour de l'icône de rang.
+   Il remplace la barre : à côté du rang, la progression se lit d'un coup d'œil
+   au lieu de demander de relier une barre à un chiffre plus bas. */
+function rrRing(rr){
+  const v = clamp(num(rr,0), 0, 100), R = 34, C = 2*Math.PI*R;
+  return `<svg class="rt-ring" viewBox="0 0 80 80" aria-hidden="true">
+    <circle cx="40" cy="40" r="${R}" fill="none" stroke="var(--line)" stroke-width="5"/>
+    <circle cx="40" cy="40" r="${R}" fill="none" stroke="var(--amber)" stroke-width="5" stroke-linecap="round"
+      transform="rotate(-90 40 40)" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${(C*(1-v/100)).toFixed(1)}"/>
+  </svg>`;
+}
+
+function rankTile(lab, name, icon, sub, ring){
+  const ic = icon ? `<img src="${esc(icon)}" alt="" loading="lazy">` : '<span class="rt-none">—</span>';
+  return `<div class="rtile">
+    <div class="rt-lab">${esc(lab)}</div>
+    <div class="rt-ico">${ring||''}${ic}</div>
+    <div class="rt-name">${esc(name||'Non classé')}</div>
+    <div class="rt-sub mono">${esc(sub||'')}</div>
+  </div>`;
+}
+
+// Rang actuel et plus haut rang atteint, côte à côte.
 function renderRank(mmr,overall){
   const rr=mmr.rr!=null?num(mmr.rr):null;
   const oT=tierOf(overall);
-  const tierInner=mmr.icon
-    ? `<img src="${esc(mmr.icon)}" alt="${esc(mmr.tier||'')}" loading="lazy">`
-    : esc(mmr.tier||'—').replace(' ','<br>');
+  const peak=mmr.peak||'';
+  // Le peak n'a pas d'icône dans la réponse : on la retrouve par son nom.
+  const peakIcon=(peak && TIERS) ? (TIERS[peak.toLowerCase()]||'') : '';
   $('rank').innerHTML=`
-    <div class="rankbox">
-      <div class="tier${mmr.icon?' hasimg':''}">${tierInner}</div>
-      <div class="rankinfo"><div class="big">${esc(mmr.tier||'Non classé')}</div>
-        <div class="bar"><i id="rrbar"></i></div>
-        <div class="meta">${rr!==null?rr+'/100 RR':'RR n/c'}${mmr.elo?' · elo '+esc(mmr.elo):''}${mmr.peak?' · peak '+esc(mmr.peak):''}</div></div></div>
+    <div class="rank2">
+      ${rankTile('Rang actuel', mmr.tier, mmr.icon,
+                 rr!==null ? `${rr} / 100 RR${mmr.elo?' · elo '+mmr.elo:''}` : 'RR n/c',
+                 rr!==null ? rrRing(rr) : '')}
+      ${rankTile('Plus haut atteint', peak, peakIcon, '')}
+    </div>
     <div class="indice">Indice COSMO (8 derniers) <span class="num" style="color:${oT.c}">${overall||'—'}</span><span style="color:${oT.c}">/100 · ${oT.t}</span></div>`;
-  setTimeout(()=>{const b=$('rrbar'); if(b) b.style.width=(rr!==null?rr:0)+'%';},60);
 }
 // "e8a3" -> "E8 · A3" ; sinon le code brut en majuscules.
 function seasonLabel(short){
@@ -2578,6 +2611,22 @@ async function copyShareLink(url, btn){
 
 // Ouvre le profil d'un membre depuis un « pseudo#tag ». Les anciens pseudos sont
 // acceptés : un lien partagé avant un renommage continue de fonctionner.
+/* Niveau de compte et bannière de carte de joueur.
+   Ces deux champs arrivent dans /valorant/v2/account, qu'on appelait déjà pour
+   le seul puuid : ils étaient téléchargés à chaque ouverture de profil, puis
+   jetés. Aucun appel supplémentaire.
+   Les noms de champs sont cherchés sous plusieurs variantes, comme partout
+   ailleurs ici : HenrikDev les renomme au fil des versions, et perdre la
+   bannière sur un renommage serait le défaut le plus probable de ce coin. */
+function accountInfo(d){
+  if(!d || typeof d!=='object') return null;
+  const raw = d.account_level!=null ? d.account_level : (d.level!=null ? d.level : null);
+  const level = (raw!=null && !isNaN(raw)) ? Number(raw) : null;
+  const c = d.card;
+  const card = (typeof c==='string' ? c : (c && (c.wide||c.large||c.small))) || '';
+  return (level!=null || card) ? { level, card } : null;
+}
+
 function openProfileByKey(name, tag){
   const k=String(name+'#'+tag).toLowerCase();
   const i=ROSTER.findIndex(m=>memberKey(m)===k || memberAliases(m).some(a=>memberKey(a)===k));
@@ -3120,18 +3169,12 @@ function openProfile(idx){
   PROFILE_SHOWN = FRESH_SIZE;
   SELECTED_IDX=-1; SELECTED_ID=null;
 
-  const bustSrc = esc(m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`); // bustportrait.png n'existe pas (404) chez valorant-api
-
-  $('phead').innerHTML=`
-    <div class="pbust ${m.customImg?'custom':''}" style="--pc:${esc(m.color)}">
-      <img src="${bustSrc}" alt="${esc(m.agent)}">
-      <div class="mg">${esc(m.agent.slice(0,2))}</div>
-    </div>
-    <div><div class="eb" style="color:${esc(m.color)}">${esc(m.agent)} · ${esc(m.role)}</div><h1>${esc(m.name)}<b>#${esc(m.tag)}</b></h1></div>
-    <div class="ptools"><button class="fresh" id="freshProfile" type="button" hidden></button><button class="btn refresh">Rafraîchir</button></div>`;
-
-  const bust=$('phead').querySelector('.pbust img');
-  if(bust){const pb=bust.closest('.pbust');const f=()=>{bust.style.display='none';if(pb)pb.classList.add('noimg');};bust.addEventListener('error',f);if(bust.complete&&bust.naturalWidth===0)f();}
+  setTab(null);
+  CURRENT_MEMBER = m;
+  ACCOUNT = null;                       // celui du profil précédent ne vaut plus
+  const cached = cacheGetProfile(memberKey(m));
+  if(cached && cached.acc) ACCOUNT = cached.acc;   // bannière tout de suite, comme le reste
+  renderPHead(m);
   $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; if($('comps')) $('comps').hidden=true; $('profile').hidden=false; window.scrollTo(0,0);
 
   CURRENT_MODE = 'all';
@@ -3141,6 +3184,40 @@ function openProfile(idx){
 }
 
 // Peint tout le profil depuis l'état courant, qu'il vienne du cache ou de l'API.
+/* En-tête de profil : bannière de carte de joueur, portrait de l'agent fétiche,
+   pseudo et niveau de compte. Sans carte connue (compte neuf, champ absent, ou
+   données pas encore arrivées), la bannière reste le fond sobre d'avant — rien
+   ne saute aux yeux, ça se remplit quand ça arrive. */
+function renderPHead(m){
+  const host=$('phead');
+  if(!host || !m) return;
+  const art = ACCOUNT ? imgURL(ACCOUNT.card) : '';
+  // bustportrait.png n'existe pas (404) chez valorant-api : c'est fullportrait.
+  const bust = m.customImg || (m.uuid ? `${MEDIA}/${encodeURIComponent(m.uuid)}/fullportrait.png` : '');
+  const lvl = (ACCOUNT && ACCOUNT.level!=null)
+    ? `<span class="pb-lvl" title="Niveau de compte Riot">niv. ${ACCOUNT.level}</span>` : '';
+  host.innerHTML=`
+    <div class="pbanner" style="--pc:${esc(m.color)}">
+      ${art?`<div class="pb-art" style="background-image:url('${art}')"></div>`:''}
+      <div class="pbust ${m.customImg?'custom':''}">
+        <img src="${esc(bust)}" alt="${esc(m.agent)}">
+        <div class="mg">${esc((m.agent||'').slice(0,2))}</div>
+      </div>
+      <div class="pb-id">
+        <div class="eb" style="color:${esc(m.color)}">${esc(m.agent)} · ${esc(m.role)}</div>
+        <h1>${esc(m.name)}<b>#${esc(m.tag)}</b></h1>
+      </div>
+      <div class="pb-side">
+        ${lvl}
+        <div class="ptools"><button class="fresh" id="freshProfile" type="button" hidden></button><button class="btn refresh">Rafraîchir</button></div>
+      </div>
+    </div>`;
+  const img=host.querySelector('.pbust img');
+  if(img){const pb=img.closest('.pbust');const f=()=>{img.style.display='none';if(pb)pb.classList.add('noimg');};
+    img.addEventListener('error',f); if(img.complete&&img.naturalWidth===0)f();}
+  renderFresh();   // le voyant vient d'être recréé avec l'en-tête
+}
+
 function paintProfile(mmr){
   const scored=STATE.matches.slice(0,8).filter(M=>M.me);
   const overall=scored.length?Math.round(scored.reduce((s,M)=>s+M.me.score100,0)/scored.length):0;
@@ -3200,7 +3277,10 @@ async function loadProfile(){
 
   try{
     const acc=await api(`/valorant/v2/account/${n}/${t}`);
-    STATE.puuid=acc.data&&acc.data.puuid;
+    const ad=(acc && acc.data) || {};
+    STATE.puuid=ad.puuid;
+    const info=accountInfo(ad);
+    if(info){ ACCOUNT=info; renderPHead(CURRENT_MEMBER); }
     const [mmrR,histR,matchR,blobR,rrBlobR]=await Promise.allSettled([
       api(`/valorant/v3/mmr/${region}/pc/${n}/${t}`),
       api(`/valorant/v2/mmr-history/${region}/pc/${n}/${t}`),
@@ -3246,7 +3326,7 @@ async function loadProfile(){
 
     // Cache : de quoi repeindre cet écran instantanément la prochaine fois.
     try{
-      cachePutProfile(key, { mmr, matches:STATE.allMatches, rr:rrSeries });
+      cachePutProfile(key, { mmr, matches:STATE.allMatches, rr:rrSeries, acc:ACCOUNT });
       const c=cacheLoad(); if(c.profiles[key]) { c.profiles[key].puuid=STATE.puuid; cacheSave(); }
     }catch(e){}
 
@@ -3505,6 +3585,7 @@ function staleNote(squads){
 }
 
 async function loadTribunal() {
+  setTab('btnTribunal');
   $('home').hidden = true;
   $('profile').hidden = true;
   $('leaderboard').hidden = true;
@@ -3547,6 +3628,7 @@ function statusLb(kind, html) {
 function clearStatusLb() { $('statusLb').className = 'status'; }
 
 async function loadLeaderboard() {
+  setTab('btnLeaderboard');
   $('home').hidden = true;
   $('profile').hidden = true;
   $('tribunal').hidden = true;
@@ -4000,6 +4082,7 @@ function renderComps(){
 
 let COMPS_RENDERING=false;
 async function showComps(){
+  setTab('btnComps');
   $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
   $('leaderboard').hidden=true;
   const rou=$('roulette'); if(rou) rou.hidden=true;
@@ -4255,6 +4338,7 @@ async function runRoulette(){
 }
 
 function showRoulette(){
+  setTab('btnRoulette');
   $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
   $('leaderboard').hidden=true; $('roulette').hidden=false;
   const cmp=$('comps'); if(cmp) cmp.hidden=true;
@@ -4421,6 +4505,7 @@ function wireStatic(){
   if(WIRED) return;   // ne câbler qu'une fois (init peut être rappelé)
   WIRED = true;
   $('btnGear').addEventListener('click',toggleSheet);
+  $('btnHome')?.addEventListener('click',showHome);
   $('btnRanks').addEventListener('click',fillRanks);
   $('btnRefreshNow')?.addEventListener('click', saveAllHistory);
   // Éditeur de roster (⚙ Paramètres)
@@ -4631,6 +4716,8 @@ async function init(){
   document.addEventListener('visibilitychange', ()=>{
     if(document.hidden) stopFreshTicker(); else { renderFresh(); startFreshTicker(); }
   });
+  setTab('btnHome');   // on démarre sur l'accueil (un lien partagé l'écrasera)
+
   // Lien de session partagé : on ouvre directement le profil concerné, et le
   // rapport s'ouvrira dès que les données seront prêtes (cf. refreshSessions).
   const sh=parseShareTarget();

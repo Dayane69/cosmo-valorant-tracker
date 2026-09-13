@@ -109,8 +109,33 @@
   .pwrap{max-width:1040px;margin:0 auto}
   .back{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.06em;margin-bottom:16px}
   .back:hover{color:var(--cyan)}
-  .phead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:20px}
-  .phead>div:nth-child(2){min-width:0;flex:1}
+  .phead{margin-bottom:20px}
+  /* Bannière de profil : la carte de joueur Riot en fond (elle arrive avec
+     /account, qu'on appelait déjà), le portrait de l'agent fétiche par-dessus.
+     Sans carte connue, le fond sobre d'avant reste : rien ne clignote. */
+  .pbanner{position:relative;display:flex;align-items:center;gap:14px;padding:14px 16px;
+    min-height:112px;border:1px solid var(--line);border-radius:16px;overflow:hidden;
+    background:linear-gradient(120deg,var(--panel),#0b1219)}
+  .pb-art{position:absolute;inset:0;z-index:0;background-size:cover;background-position:center;opacity:.8}
+  /* Voile dégradé, pas uniforme : lisible à gauche (portrait + pseudo), et la
+     carte de joueur respire à droite. Un voile plein la rendait invisible. */
+  .pbanner::after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+    background:linear-gradient(90deg,rgba(10,15,21,.88) 0%,rgba(10,15,21,.5) 46%,rgba(10,15,21,.16) 100%)}
+  /* :not(.pb-art) est indispensable — sans lui, ce `position:relative` écrase
+     l'absolute du fond (même spécificité, déclaré après) et la bannière devient
+     un div de hauteur nulle, donc invisible. Même piège que le `.flash` de la
+     roulette, en son temps. */
+  .pbanner>*:not(.pb-art){position:relative;z-index:2}
+  .pb-id{min-width:0;flex:1}
+  .pb-id .eb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* Niveau et actions dans la bannière : hors d'elle, « Rafraîchir » se
+     retrouvait seul sur sa propre ligne, sans rien à quoi se rattacher. */
+  .pb-side{display:flex;flex-direction:column;align-items:flex-end;justify-content:space-between;
+    align-self:stretch;gap:10px;flex:none}
+  .pb-lvl{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;
+    text-transform:uppercase;color:var(--txt);background:rgba(0,0,0,.55);
+    border:1px solid rgba(255,255,255,.18);padding:5px 10px;border-radius:999px;white-space:nowrap}
+  .ptools{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
   .pbust{width:84px;height:84px;border-radius:14px;flex:none;overflow:hidden;position:relative;background:linear-gradient(160deg,var(--panel2),#0a0f14);border:1px solid var(--line)}
   .pbust img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 16%}
   .pbust.custom img{object-position:center}
@@ -119,7 +144,6 @@
   .phead .eb{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase}
   .phead h1{margin:2px 0 0;font-size:23px;font-weight:800;text-transform:uppercase;letter-spacing:-.01em}
   .phead h1 b{color:var(--muted);font-weight:500}
-  .ptools{margin-left:auto;display:flex;gap:8px}
   .btn{background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:9px 14px;font-family:var(--mono);font-size:12px}
   .btn:hover{border-color:var(--amber)}
 
@@ -140,6 +164,20 @@
   .tabs-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
 
   /* ... elements du tracker ... */
+  /* Rang actuel et plus haut rang atteint, côte à côte. L'anneau porte la
+     progression dans le palier : à côté de l'icône, elle se lit d'un coup
+     d'œil, là où la barre obligeait à la relier à un chiffre plus bas. */
+  .rank2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .rtile{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;
+    padding:14px 10px;border:1px solid var(--line);border-radius:14px;background:var(--bg2)}
+  .rt-lab{font-family:var(--mono);font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim)}
+  .rt-ico{position:relative;width:80px;height:80px;display:grid;place-items:center}
+  .rt-ico img{width:50px;height:50px;object-fit:contain;filter:drop-shadow(0 4px 10px rgba(0,0,0,.45))}
+  .rt-ring{position:absolute;inset:0;width:80px;height:80px}
+  .rt-none{font-family:var(--mono);font-size:20px;color:var(--dim)}
+  .rt-name{font-size:16px;font-weight:800;line-height:1.15}
+  .rt-sub{font-size:11.5px;color:var(--muted);min-height:1.3em}
+
   .rankbox{display:flex;align-items:center;gap:15px}
   .tier{width:60px;height:60px;border-radius:13px;flex:none;display:grid;place-items:center;text-align:center;font-family:var(--mono);font-weight:800;font-size:12px;line-height:1.05;background:linear-gradient(155deg,var(--panel2),#0a0f14);border:1px solid var(--line);color:var(--amber);overflow:hidden}
   .tier.hasimg{background:none;border:0;font-size:0;color:transparent}
@@ -960,6 +998,32 @@
     #home,#profile{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
     #profile{padding-bottom:max(60px,env(safe-area-inset-bottom))}
   }
+
+  /* ===================== BARRE D'ONGLETS (PWA) =====================
+     Sous les modales (z-index 50/60) et au-dessus de tout le reste. Au
+     téléphone elle occupe toute la largeur, comme une appli ; sur grand écran
+     elle se resserre en dock centré — pleine largeur sur 1400 px, elle aurait
+     l'air d'un bandeau perdu. */
+  .tabbar{position:fixed;left:0;right:0;bottom:0;z-index:40;
+    display:grid;grid-template-columns:repeat(5,1fr);gap:2px;
+    background:rgba(10,15,21,.93);border-top:1px solid var(--line);
+    -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+    padding:6px 6px calc(6px + env(safe-area-inset-bottom))}
+  .tabbar button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+    min-height:52px;padding:6px 2px;border-radius:11px;color:var(--muted);
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.03em;
+    transition:color .15s ease,background .15s ease}
+  .tabbar .ic{font-size:17px;line-height:1}
+  .tabbar button.on{color:var(--cyan);background:rgba(86,216,201,.12)}
+  .tabbar button:hover{color:var(--txt)}
+  .tabbar button.on:hover{color:var(--cyan)}
+  @media(min-width:760px){
+    .tabbar{left:50%;right:auto;transform:translateX(-50%);bottom:16px;width:min(540px,92vw);
+      border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 40px -18px #000;padding:6px}
+  }
+  /* Rien ne doit passer sous la barre. */
+  #home,#profile,#tribunal,#leaderboard,#roulette,#comps{
+    padding-bottom:calc(88px + env(safe-area-inset-bottom))}
 </style>
 </head>
 <body>
@@ -968,10 +1032,6 @@
 <section id="home">
   <div class="gear">
     <button class="fresh" id="freshHome" type="button" hidden></button>
-    <button id="btnComps" aria-label="Compos par map">🗺<span class="glbl"> Compos</span></button>
-    <button id="btnRoulette" aria-label="Roulette">🎲<span class="glbl"> Roulette</span></button>
-    <button id="btnLeaderboard" aria-label="Leaderboard">🏆<span class="glbl"> Leaderboard</span></button>
-    <button id="btnTribunal" aria-label="Tribunal COSMO">⚖<span class="glbl"> Tribunal COSMO</span></button>
     <button id="btnGear" aria-label="Paramètres">⚙<span class="glbl"> Paramètres</span></button>
   </div>
   <div class="hwrap">
@@ -1337,6 +1397,17 @@
   </div>
 </div>
 
-<script src="app.js?v=20260901a" defer></script>
+<!-- Barre d'onglets : la navigation principale, à portée de pouce. Les
+     identifiants sont ceux d'avant (btnComps, btnRoulette…), le câblage des
+     clics n'a donc pas bougé d'une ligne. -->
+<nav class="tabbar" id="tabbar" aria-label="Navigation principale">
+  <button id="btnHome" type="button"><span class="ic">🏠</span>Accueil</button>
+  <button id="btnComps" type="button"><span class="ic">🗺</span>Compos</button>
+  <button id="btnRoulette" type="button"><span class="ic">🎲</span>Roulette</button>
+  <button id="btnLeaderboard" type="button"><span class="ic">🏆</span>Classement</button>
+  <button id="btnTribunal" type="button"><span class="ic">⚖</span>Tribunal</button>
+</nav>
+
+<script src="app.js?v=20260913a" defer></script>
 </body>
 </html>
