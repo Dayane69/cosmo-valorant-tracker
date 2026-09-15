@@ -79,6 +79,32 @@ test("matchFacts : timeline, first bloods/deaths, multikills, plants et défuses
   assert.equal(f.timeline[1].kills[0].onMe, true, "la mort du round 2 est bien la mienne");
 });
 
+/* Le camp de chaque joueur d'une élimination. Sans lui, le fil des kills est
+   une liste de pseudos où on ne sait pas qui tue qui — c'est toute la question
+   que l'affichage doit trancher. */
+test("chaque élimination porte le camp du tueur ET de la victime", () => {
+  const m = {
+    players: [P("A", "Blue"), P("M", "Blue"), P("E1", "Red"), P("E2", "Red")],
+    rounds: [R("Blue", { stats: [{ p: "A", kills: 1 }] })],
+    kills: [
+      K(0, 3000, "A", "E1"),                                   // moi -> ennemi
+      K(0, 5000, "M", "E2"),                                   // coéquipier -> ennemi
+      K(0, 7000, "E1", "M", { kt: "Red", vt: "Blue" }),         // ennemi -> coéquipier
+    ],
+  };
+  const f = X.matchFacts(m, 1, { puuid: "A", team_id: "Blue", stats: {} });
+  const k = f.timeline[0].kills;
+
+  // [...] recopie dans le realm du test : un tableau né dans le vm n'est jamais
+  // deepStrictEqual à un littéral d'ici, son prototype vient d'ailleurs.
+  const col = (f) => [...k].map(f);
+  assert.deepEqual(col(x => x.killerAlly), [true, true, false]);
+  assert.deepEqual(col(x => x.victimAlly), [false, false, true]);
+  // Et on distingue toujours ce qui me concerne moi, personnellement.
+  assert.deepEqual(col(x => x.mine), [true, false, false]);
+  assert.deepEqual(col(x => x.onMe), [false, false, false]);
+});
+
 test("matchFacts : clutch détecté quand je finis seul contre au moins un ennemi", () => {
   const m = {
     players: [P("A", "Blue"), P("M", "Blue"), P("E1", "Red"), P("E2", "Red")],

@@ -13,9 +13,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
 
 const roster = JSON.parse(readFileSync(join(root, "roster.json"), "utf8"));
-// Le 1er membre du roster : les fixtures s'y accrochent pour ne pas casser
-// au prochain changement de pseudo.
+// Les deux premiers membres du roster : les fixtures s'y accrochent pour ne pas
+// casser au prochain changement de pseudo. MATE joue dans mon équipe.
 const ME = roster.members[0];
+const MATE = roster.members[1];
 
 function rawMatch(id, iso, won = true, mode = "Competitive") {
   return {
@@ -37,13 +38,13 @@ const jsonRes = (obj) => ({ ok: true, status: 200, json: async () => obj });
 
 // Détail complet d'un match (match-by-id) : 3 joueurs -> classement ACS 1er/2e/3e.
 function fullMatchById() {
-  const mk = (puuid, name, team, score) => ({
-    puuid, name, tag: "0", team_id: team, agent: { id: "uuid-x", name: "Sova" },
+  const mk = (puuid, name, team, score, tag = "0") => ({
+    puuid, name, tag, team_id: team, agent: { id: "uuid-x", name: "Sova" },
     stats: { kills: 10, deaths: 10, assists: 5, score, headshots: 10, bodyshots: 20, legshots: 5, damage: { dealt: 2000, received: 2000 } },
   });
   return {
     metadata: { match_id: "m3", started_at: "2026-06-22T10:00:00Z", map: { name: "Ascent" }, queue: { name: "Competitive" } },
-    players: [mk("p1", ME.name, "Blue", 5000), mk("pX", "Mate", "Blue", 4000), mk("pY", "Foe", "Red", 3000)],
+    players: [mk("p1", ME.name, "Blue", 5000), mk("pX", MATE.name, "Blue", 4000, MATE.tag), mk("pY", "Foe", "Red", 3000)],
     teams: [
       { team_id: "Blue", won: true, rounds: { won: 13, lost: 7 } },
       { team_id: "Red", won: false, rounds: { won: 7, lost: 13 } },
@@ -133,7 +134,7 @@ async function boot() {
 
   let code = readFileSync(join(root, "app.js"), "utf8");
   // Épilogue de test : expose les fonctions + un accès à l'état interne.
-  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, openMatch, closeMatchFacts, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, perfDetail, perfParts, IDX_W, openMatchScore, init, renderStatsCards, setStatsSeason: (v) => { STATS_SEASON = v; }, getState: () => STATE, getRoster: () => ROSTER };";
+  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, openMatch, closeMatchFacts, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, perfDetail, perfParts, IDX_W, openMatchScore, init, renderStatsCards, setStatsSeason: (v) => { STATS_SEASON = v; }, accountInfo, renderPHead, setAccount: (a) => { ACCOUNT = a; }, renderMatchModal, setWeapons: (w) => { WEAPONS = w; }, setSquadHist: (h) => { SQUAD_HIST = h; }, getState: () => STATE, getRoster: () => ROSTER };";
   vm.runInContext(code, ctx);
   const T = ctx.__t;
   await T.init(); // garantit roster chargé + grille construite
@@ -273,7 +274,12 @@ function fakeFacts(nRounds = 21) {
     n: i + 1, won: i % 3 !== 0, result: "Elimination", ceremony: i === 4 ? "Ace" : "",
     myKills: 2, myDmg: 300, myScore: 240, weapon: "Vandal", armor: "Heavy",
     loadout: 3900, afk: false, plant: null, defuse: null,
-    kills: [{ killer: "Moi", victim: "Foe", weapon: "Vandal", t: 12000, mine: true, onMe: false, assists: [] }],
+    kills: [
+      { killer: "Moi", victim: "Foe", weapon: "Vandal", t: 12000, mine: true, onMe: false,
+        killerAlly: true, victimAlly: false, assists: [] },
+      { killer: "Ennemi", victim: "Copain", weapon: "Sheriff", t: 26000, mine: false, onMe: false,
+        killerAlly: false, victimAlly: true, assists: [] },
+    ],
   }));
   return { timeline, firstBloods: 4, firstDeaths: 2, multi: { 3: 2, 5: 1 }, clutches: 1,
     clutchKinds: ["1v2"], plants: 3, defuses: 1,
@@ -305,6 +311,94 @@ test("la modale réunit le scoreboard ET tout le détail de la partie", async ()
   assert.match(body, /Duels/, "…les duels");
   assert.match(body, /Lobby/, "…et le lobby");
   assert.equal(doc.getElementById("sb"), null, "l'ancienne carte scoreboard n'existe plus");
+});
+
+/* Le fil des éliminations doit dire d'un coup d'œil qui est de quel camp. */
+test("le fil des kills colore notre camp et celui d'en face", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  T.getState().matches[0].facts = fakeFacts();
+  T.openMatch(0);
+
+  const rows = [...doc.querySelectorAll("#mdRound .mdk")];
+  assert.ok(rows.length >= 2, "les deux éliminations du round sont listées");
+  // 1re ligne : moi (allié) tue un ennemi. 2e : un ennemi tue un coéquipier.
+  assert.ok(rows[0].querySelector(".p.ally"), "le tueur allié est marqué");
+  assert.ok(rows[0].querySelector(".p.foe"), "la victime adverse est marquée");
+  assert.ok(rows[0].querySelector(".p.ally.me"), "et c'est moi, en gras");
+  assert.ok(rows[1].querySelector(".p.foe"), "tueur adverse");
+  assert.ok(rows[1].querySelector(".p.ally"), "victime alliée");
+  assert.equal(rows[1].querySelector(".p.me"), null, "cette ligne ne me concerne pas");
+});
+
+test("l'arme s'affiche en image quand on l'a, en toutes lettres sinon", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  T.getState().matches[0].facts = fakeFacts();
+
+  // Sans table d'armes chargée : le nom, qui reste lisible.
+  T.setWeapons({});
+  T.openMatch(0);
+  assert.equal(doc.querySelector("#mdRound .wpn"), null, "pas d'image sans table");
+  assert.match(doc.querySelector("#mdRound .mdk .w").textContent, /Vandal/);
+
+  // Avec : la silhouette de l'arme remplace le mot.
+  T.setWeapons({ vandal: "https://media.valorant-api.com/weapons/abc/display.png" });
+  T.renderMatchModal(0);
+  const img = doc.querySelector("#mdRound .wpn");
+  assert.ok(img, "l'icône d'arme est rendue");
+  assert.match(img.getAttribute("src"), /weapons/);
+  assert.equal(img.getAttribute("title"), "Vandal", "le nom reste accessible au survol");
+  // Une élimination sans arme connue garde du texte plutôt qu'un trou.
+  assert.ok([...doc.querySelectorAll("#mdRound .mdk .wn")].some((e) => /Sheriff/.test(e.textContent)));
+});
+
+/* ±RR par joueur : il n'existe QUE pour la squad. Le détail d'une partie ne
+   porte le RR de personne ; il vient de l'historique MMR de chaque membre. */
+test("le ±RR n'est affiché que pour les membres de la squad", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+
+  // Le coéquipier du roster a ce match dans son historique, avec son ±RR.
+  T.setSquadHist({ [`${MATE.name}#${MATE.tag}`.toLowerCase()]:
+    [{ id: "m3", rr: { change: -14, tierName: "Gold 2" } }] });
+
+  const idx = T.getState().matches.findIndex((M) => M.id === "m3");
+  T.openMatch(idx);
+  await new Promise((r) => setTimeout(r, 50));   // le détail complet arrive
+
+  const chips = [...doc.querySelectorAll("#matchModalBody .pn-rr")];
+  assert.equal(chips.length, 1, "un seul ±RR : celui du membre de la squad");
+  assert.match(chips[0].textContent, /-14 RR/);
+  assert.ok(chips[0].classList.contains("dn"), "une perte est en rouge");
+  // Et l'écran dit pourquoi les autres n'en ont pas.
+  assert.match(doc.getElementById("matchModalBody").textContent, /n'est affiché que pour la squad/);
+});
+
+test("le pseudo d'un coéquipier mène à son profil, pas celui d'un adversaire", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const idx = T.getState().matches.findIndex((M) => M.id === "m3");
+  T.openMatch(idx);
+  await new Promise((r) => setTimeout(r, 50));
+
+  const links = [...doc.querySelectorAll("#matchModalBody [data-prof]")];
+  assert.deepEqual(links.map((e) => e.dataset.prof), [`${MATE.name}#${MATE.tag}`],
+    "seul le membre du roster est cliquable — ni moi, ni l'adversaire");
+
+  // Le clic ferme la modale et bascule sur son profil.
+  links[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  assert.equal(doc.getElementById("matchModal").hidden, true, "la modale se ferme");
+  assert.match(doc.getElementById("phead").textContent, new RegExp(MATE.name),
+    "on est bien sur le profil du coéquipier");
 });
 
 test("un ace est annoncé dans les faits d'armes", async () => {
@@ -590,6 +684,58 @@ test("RR gagné/perdu + rang affichés sur les parties classées de l'historique
   // 3 parties affichées mais seulement 2 ont des infos RR
   assert.equal(doc.querySelectorAll("#ml .mrow").length, 3);
   assert.equal(doc.querySelectorAll("#ml .mrr-delta").length, 2);
+});
+
+/* Carte de joueur et niveau de compte : ils arrivent dans /valorant/v2/account,
+   qu'on appelait déjà pour le seul puuid. Les noms de champs sont lus sous
+   plusieurs variantes — c'est exactement ce qui casse en silence au prochain
+   renommage côté HenrikDev. */
+test("le niveau et la carte de joueur sont lus, quelle que soit la variante", async () => {
+  const { T } = await boot();
+  const wide = "https://media.valorant-api.com/playercards/abc/wide.png";
+
+  // L'objet vient du contexte vm : on compare champ par champ, deepStrictEqual
+  // bute sur le prototype d'un autre realm.
+  const info = (d) => { const r = T.accountInfo(d); return r && { level: r.level, card: r.card }; };
+
+  // Forme actuelle.
+  assert.deepEqual(info({ account_level: 213, card: { wide, large: "L", small: "S" } }),
+    { level: 213, card: wide }, "la plus large des tailles est préférée");
+  // Variantes plausibles : autre nom de niveau, carte donnée en chaîne,
+  // ou seulement les tailles secondaires.
+  assert.deepEqual(info({ level: 42, card: wide }), { level: 42, card: wide });
+  assert.equal(info({ account_level: 7, card: { large: "https://x.example/l.png" } }).card,
+    "https://x.example/l.png");
+  // Un niveau seul, ou une carte seule, restent exploitables.
+  assert.deepEqual(info({ account_level: 5 }), { level: 5, card: "" });
+  assert.equal(info({ card: { wide } }).level, null);
+  // Rien d'utilisable -> null, pour que l'en-tête garde son fond sobre.
+  for (const bad of [null, undefined, {}, "texte", 3, { card: {} }]) {
+    assert.equal(T.accountInfo(bad), null, JSON.stringify(bad));
+  }
+});
+
+test("l'en-tête de profil affiche le niveau et la bannière quand on les a", async () => {
+  const { dom, T } = await boot();
+  const doc = dom.window.document;
+  const m = { name: "Yakuza", tag: "2826", agent: "Brimstone", role: "Contrôleur", color: "#e0b24c", uuid: "u1" };
+
+  // Sans infos de compte : pas de bannière, pas de niveau — et surtout pas de trou.
+  T.setAccount(null);
+  T.renderPHead(m);
+  assert.equal(doc.querySelector("#phead .pb-art"), null, "pas de bannière tant qu'on ne l'a pas");
+  assert.equal(doc.querySelector("#phead .pb-lvl"), null);
+  assert.match(doc.querySelector("#phead h1").textContent, /Yakuza/);
+
+  // Avec : la bannière et le niveau apparaissent.
+  T.setAccount({ level: 213, card: "https://media.valorant-api.com/playercards/abc/wide.png" });
+  T.renderPHead(m);
+  const art = doc.querySelector("#phead .pb-art");
+  assert.ok(art, "la bannière est rendue");
+  assert.match(art.getAttribute("style"), /playercards/);
+  assert.match(doc.querySelector("#phead .pb-lvl").textContent, /213/);
+  // Le bouton Rafraîchir reste dans l'en-tête : le câblage des clics en dépend.
+  assert.ok(doc.querySelector("#phead .refresh"), "le bouton Rafraîchir est toujours là");
 });
 
 test("normalizeAny gère le format stored-matches v1 (teams objet) sans crasher", async () => {
