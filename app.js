@@ -46,6 +46,7 @@ let MAPS = null;                                        // cache nom de map -> i
 let AGENTS = null;                                      // cache nom d'agent -> icône (tête)
 let AGENT_LIST = [];                                    // liste complète {name, role, icon, portrait}
 let TIERS = null;                                       // cache nom de palier -> icône de rang
+let WEAPONS = null;                                     // cache nom d'arme -> icône
 let TIER_BY_NUM = null;                                 // cache numéro de palier -> {name,color,icon} (lignes de rang du graphe)
 let ELO_TIER_OFFSET = 3;                                // numéro de palier = floor(elo/100) + offset (Iron 1 = palier 3, elo 0)
 const ANIM_BUSY = { Trib: false, Prof: false };
@@ -617,6 +618,32 @@ async function ensureAgents(){
   }catch(e){ /* pas d'icônes d'agent, on garde les initiales */ }
   return AGENTS || {};
 }
+// Armes : nom -> icône. Sert au fil des éliminations, où « Vandal » écrit en
+// toutes lettres est moins lisible d'un coup d'œil que la silhouette de l'arme.
+async function ensureWeapons(){
+  if(WEAPONS) return WEAPONS;
+  try{
+    const r = await fetch('https://valorant-api.com/v1/weapons');
+    if(r.ok){
+      const d = await r.json(), map = {};
+      (d.data||[]).forEach(w=>{ if(w && w.displayName && w.displayIcon) map[w.displayName.toLowerCase()] = w.displayIcon; });
+      WEAPONS = map;
+    }
+  }catch(e){ /* pas d'icônes d'arme : on garde les noms, c'est lisible aussi */ }
+  return WEAPONS || {};
+}
+
+/* L'arme en image quand on l'a, son nom sinon. Toutes les éliminations n'ont
+   pas d'arme : une compétence, la spike ou une chute n'ont pas d'icône, et le
+   texte reste alors la bonne réponse — plutôt qu'un trou. */
+function weaponTag(name){
+  const n = String(name||'').trim();
+  if(!n) return '<span class="wn">—</span>';
+  const ic = WEAPONS && WEAPONS[n.toLowerCase()];
+  return ic ? `<img class="wpn" src="${esc(ic)}" alt="${esc(n)}" title="${esc(n)}" loading="lazy">`
+            : `<span class="wn">${esc(n)}</span>`;
+}
+
 // Paliers compétitifs : nom -> icône de rang. Repli quand HenrikDev ne donne pas l'image.
 async function ensureTiers(){
   if(TIERS) return TIERS;
@@ -770,9 +797,12 @@ function matchFacts(m, roundsCount, me){
       loadout:num(eco.loadout_value), afk:!!mst.was_afk,
       plant: pl?{ site:pl.site||'', by:(pl.player&&pl.player.name)||'', mine:!!(pl.player&&pl.player.puuid===mp) }:null,
       defuse: df?{ by:(df.player&&df.player.name)||'', mine:!!(df.player&&df.player.puuid===mp) }:null,
+      // Le CAMP de chacun, pas seulement son nom : sans lui, le fil des
+      // éliminations est une liste de pseudos où on ne sait pas qui tue qui.
       kills: ks.map(k=>({ killer:(k.killer&&k.killer.name)||'?', victim:(k.victim&&k.victim.name)||'?',
         weapon:(k.weapon&&k.weapon.name)||'', t:num(k.time_in_round_in_ms),
         mine:!!(k.killer&&k.killer.puuid===mp), onMe:!!(k.victim&&k.victim.puuid===mp),
+        killerAlly:!!(k.killer&&k.killer.team===myTeam), victimAlly:!!(k.victim&&k.victim.team===myTeam),
         assists:(k.assistants||[]).map(a=>a&&a.name).filter(Boolean) })),
     };
   });
@@ -2691,8 +2721,11 @@ function openSessionReport(key){
       <th>Joueur</th><th>N</th><th>V-D</th><th>Indice</th><th>ACS</th><th>K/D</th><th>RR</th>
     </tr></thead><tbody>${squad.map(r=>{
       const rt=tierOf(Math.round(r.st.index||0));
+      // Même geste que dans le scoreboard : un membre du roster mène à son profil.
+      const mate = r.self || r.guest ? null : rosterMemberOf(r.name, r.tag);
+      const link = mate ? ` class="link" data-prof="${esc(mate.name+'#'+mate.tag)}" title="Ouvrir le profil de ${esc(mate.name)}"` : '';
       return `<tr${r.self?' class="sx-self"':''}>
-        <td><b>${esc(r.name)}</b>${r.self?' <em>(toi)</em>':(r.guest?' <em>(invité)</em>':'')}</td>
+        <td><b${link}>${esc(r.name)}</b>${r.self?' <em>(toi)</em>':(r.guest?' <em>(invité)</em>':'')}</td>
         <td>${r.n}</td>
         <td><b class="w">${r.st.wins}</b>-<b class="l">${r.st.losses}</b></td>
         <td class="scell" style="color:${rt.c}">${Math.round(r.st.index||0)}</td>
@@ -2882,10 +2915,16 @@ function renderRoundDetail(n){
   const r=FACTS_CUR.timeline.find(x=>x.n===n); if(!r) return;
   document.querySelectorAll('#mdTimeline .rchip').forEach(b=>b.classList.toggle('sel', +b.dataset.round===n));
   const secs = ms => (ms/1000).toFixed(0)+'s';
+  // Cyan = notre camp, rouge = en face. Le gras marque la ligne où on est
+  // soi-même impliqué.
+  const who = (name, ally, isMe) =>
+    `<span class="p ${ally?'ally':'foe'}${isMe?' me':''}">${esc(name)}</span>`;
   const kills = r.kills.length
     ? r.kills.map(k=>`<div class="mdk${k.mine?' mine':''}${k.onMe?' onme':''}">
         <span class="t">${esc(secs(k.t))}</span>
-        <span class="p">${esc(k.killer)}</span><span class="w">${esc(k.weapon||'—')}</span><span class="p">${esc(k.victim)}</span>
+        ${who(k.killer, k.killerAlly, k.mine)}
+        <span class="w">${weaponTag(k.weapon)}</span>
+        ${who(k.victim, k.victimAlly, k.onMe)}
         ${k.assists.length?`<span class="a">+ ${esc(k.assists.join(', '))}</span>`:''}
       </div>`).join('')
     : `<div class="mdk"><span class="a">Aucune élimination sur ce round.</span></div>`;
@@ -2898,7 +2937,7 @@ function renderRoundDetail(n){
     </div>
     <div class="md-rmeta mono">
       ${r.myKills} kill${r.myKills>1?'s':''} · ${r.myDmg} dégâts · ${r.myScore} score
-      · achat ${r.loadout} cr${r.weapon?` (${esc(r.weapon)}${r.armor?' + '+esc(r.armor):''})`:''}
+      · achat ${r.loadout} cr${r.weapon?` <span class="w">${weaponTag(r.weapon)}</span>${r.armor?' + '+esc(r.armor):''}`:''}
       ${r.plant?` · spike posée site ${esc(r.plant.site)} par ${esc(r.plant.by)}`:''}
       ${r.defuse?` · désamorcée par ${esc(r.defuse.by)}`:''}
       ${r.afk?' · ⚠️ AFK':''}
@@ -2910,6 +2949,28 @@ function renderRoundDetail(n){
    Scoreboard + détail complet au même endroit : cliquer une partie de la liste
    ouvre tout d'un coup, au lieu d'un scoreboard en bas de page et d'un second
    bouton pour les détails. */
+
+/* Le membre du roster (ou l'invité) derrière une ligne de scoreboard.
+   Les anciens pseudos comptent : un membre renommé reste reconnu. */
+function rosterMemberOf(name, tag){
+  const k = memberKey({ name, tag });
+  return sessionRoster().find(m => memberKey(m) === k || memberAliases(m).some(a => memberKey(a) === k)) || null;
+}
+
+/* ±RR d'un membre COSMO sur une partie donnée.
+   CE QU'ON NE PEUT PAS FAIRE, et pourquoi. Le détail d'une partie ne porte le
+   RR d'aucun joueur : ni HenrikDev ni Riot ne l'exposent. Ce qu'on a, c'est
+   l'historique MMR de chaque membre du roster, accumulé dans son blob, où la
+   partie se retrouve par son id. Donc : chiffre pour la squad, RIEN pour les
+   cinq d'en face et pour un coéquipier hors roster. On ne le devine pas — un
+   ±RR inventé serait pire que pas de ±RR du tout. */
+function memberRR(m, matchId){
+  if(!m || !matchId || !SQUAD_HIST) return null;
+  const list = SQUAD_HIST[memberKey(m)];
+  if(!Array.isArray(list)) return null;
+  const M = list.find(x => x && x.id === matchId);
+  return (M && M.rr && M.rr.change != null) ? M.rr : null;
+}
 
 // Scoreboard d'une partie. Renvoie aussi la version « détaillée » utilisée, car
 // une partie compacte du blob peut avoir son détail complet chargé entre-temps.
@@ -2924,6 +2985,7 @@ function scoreboardHTML(M){
   [...all].sort((a,b)=>b.acs-a.acs).forEach((s,idx)=>{ s.acsRank=idx+1; });
   SB_LINES=all;   // pour ouvrir le détail du calcul au clic sur un indice
   const blue=all.filter(s=>s.team===detail.myTeamId), red=all.filter(s=>s.team!==detail.myTeamId);
+  let rrShown = false;
   const sbRows = rows => rows.map(s=>{
     const me=s.name.toLowerCase()===STATE.name.toLowerCase()&&s.tag.toLowerCase()===STATE.tag.toLowerCase();
     const t=tierOf(s.score100);
@@ -2940,10 +3002,19 @@ function scoreboardHTML(M){
     const posCell = partialNow
       ? `<td class="pos">—</td>`
       : `<td class="pos${s.acsRank===1?' top':''}">${ordinalFr(s.acsRank)}</td>`;
+    // ±RR : connu pour la squad seulement (cf. memberRR).
+    const mem = rosterMemberOf(s.name, s.tag);
+    const rr = memberRR(mem, detail.id);
+    if(rr) rrShown = true;
+    const rrTag = rr
+      ? `<span class="pn-rr ${rr.change>=0?'up':'dn'}" title="${esc(rr.tierName||'')}">${rr.change>=0?'+':''}${rr.change} RR</span>`
+      : '';
+    // Un membre du roster (hors soi-même) mène à son profil d'un clic.
+    const prof = (mem && !mem.guest && !me) ? ` data-prof="${esc(mem.name+'#'+mem.tag)}" title="Ouvrir le profil de ${esc(mem.name)}"` : '';
     return `<tr class="${me?'me':''}">
       ${posCell}
       <td class="pcol"><div class="agent">${agCell}
-        <div class="pn"><b>${esc(s.name)}</b> <span>#${esc(s.tag)}</span></div></div></td>
+        <div class="pn${prof?' pnlink':''}"${prof}><b${prof?' class="link"':''}>${esc(s.name)}</b> <span>#${esc(s.tag)}</span>${rrTag}</div></div></td>
       <td class="scell sd" style="color:${t.c}" data-sb="${all.indexOf(s)}" title="Voir le détail du calcul">${s.score100}</td>
       <td style="color:${sc((s.acs-130)/2)}"><b>${s.acs}</b></td>
       <td><b style="color:${sc((s.kd-0.6)*100)}">${s.k}</b>/${s.d}/${s.a}</td>
@@ -2959,9 +3030,14 @@ function scoreboardHTML(M){
       ? `<div class="sbnote">Scoreboard complet indisponible pour cette partie (trop ancienne ou hors API).</div>`
       : `<div class="sbnote">Chargement du scoreboard complet…</div>`;
   }
+  // sbRows() renseigne rrShown : il faut donc l'appeler avant de composer la note.
+  const body = `<tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
+    <tr><td colspan="8" class="teamlabel red">Adverse — ${detail.oppScore} rounds</td></tr>${sbRows(red)}</tbody>`;
+  const rrNote = rrShown
+    ? `<div class="md-none">Le <b>±RR</b> n'est affiché que pour la squad : le détail d'une partie ne porte le RR d'aucun joueur, il vient de l'historique MMR accumulé de chaque membre. Pour les autres, personne ne le publie.</div>`
+    : '';
   const html=`<div class="sx-tablewrap"><table class="sb"><thead><tr><th>#</th><th class="pcol">Joueur</th><th>Indice</th><th>ACS</th><th>K/D/A</th><th>+/–</th><th>HS%</th><th>ADR</th></tr></thead>
-    <tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
-    <tr><td colspan="8" class="teamlabel red">Adverse — ${detail.oppScore} rounds</td></tr>${sbRows(red)}</tbody></table></div>${note}`;
+    ${body}</table></div>${note}${rrNote}`;
   return { html, detail, partialNow };
 }
 
@@ -3131,6 +3207,16 @@ function openMatch(i){
 }
 function closeMatchFacts(){ modalClose('matchModal'); }
 
+/* Ouvre le profil d'un « Pseudo#tag » depuis une modale : on ferme d'abord,
+   sinon le profil se charge derrière une fenêtre restée ouverte. */
+function openProfileFrom(idStr){
+  const i=String(idStr||'').lastIndexOf('#');
+  if(i<1) return false;
+  const name=String(idStr).slice(0,i), tag=String(idStr).slice(i+1);
+  closeMatchFacts(); closeScoreDetail(); closeSessionReport();
+  return openProfileByKey(name, tag);
+}
+
 // Ouvre le détail pour une partie de la liste (le joueur du profil).
 function openMatchScore(i){
   const M=STATE.matches[i]; if(!M||!M.me) return;
@@ -3293,7 +3379,7 @@ async function loadProfile(){
     if(allDown) throw (matchR.reason || histR.reason || mmrR.reason || new Error('indisponible'));
 
     // Caches médias : têtes d'agents (scoreboard), icônes de rang et fonds de map
-    await Promise.all([ensureTiers(), ensureAgents(), ensureMaps()]);
+    await Promise.all([ensureTiers(), ensureAgents(), ensureMaps(), ensureWeapons()]);
 
     let mmr={tier:'',rr:null,elo:null,peak:'',icon:null};
     if(mmrR.status==='fulfilled'){ const d=mmrR.value.data||{}; const cur=d.current||d.current_data||{};
@@ -4582,6 +4668,9 @@ function wireStatic(){
   $('matchModal')?.addEventListener('click',e=>{
     if(e.target.closest('#matchModalX')||e.target.classList.contains('modal-back')){ closeMatchFacts(); return; }
     const rc=e.target.closest('.rchip'); if(rc){ renderRoundDetail(+rc.dataset.round); return; }
+    // Nom d'un membre du roster : on bascule sur son profil.
+    const pf=e.target.closest('[data-prof]');
+    if(pf){ openProfileFrom(pf.dataset.prof); return; }
     // Indice d'un joueur du scoreboard, ou badge du bandeau : détail du calcul.
     const c=e.target.closest('[data-sb]');
     if(c){
@@ -4611,7 +4700,8 @@ function wireStatic(){
     renderRecords();
   });
   $('sessionModalBody')?.addEventListener('click',e=>{
-    const b=e.target.closest('#sxShareBtn'); if(b) copyShareLink(b.dataset.url, b);
+    const b=e.target.closest('#sxShareBtn'); if(b){ copyShareLink(b.dataset.url, b); return; }
+    const pf=e.target.closest('[data-prof]'); if(pf) openProfileFrom(pf.dataset.prof);
   });
   $('sessionModalBody')?.addEventListener('focus',e=>{
     if(e.target && e.target.id==='sxShareUrl') e.target.select();   // copie manuelle facile

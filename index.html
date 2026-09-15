@@ -337,6 +337,20 @@
   }
 
   .sb{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+  /* ±RR d'un membre, sous son pseudo dans le scoreboard. */
+  .pn-rr{display:inline-block;margin-left:6px;font-family:var(--mono);font-size:10px;font-weight:800;
+    padding:1px 5px;border-radius:999px;border:1px solid transparent}
+  .pn-rr.up{color:var(--win);border-color:rgba(86,216,201,.35);background:rgba(86,216,201,.10)}
+  .pn-rr.dn{color:var(--loss);border-color:rgba(255,93,93,.35);background:rgba(255,93,93,.10)}
+  /* Un pseudo qui mène quelque part doit en avoir l'air. Le trait ne court que
+     sous le PSEUDO, pas sous le tag ni sous la pastille de RR ; la cible
+     tactile, elle, reste toute la cellule. */
+  .link{cursor:pointer;text-decoration:underline;text-decoration-style:dotted;
+    text-underline-offset:3px;text-decoration-color:var(--dim)}
+  .link:hover{text-decoration-color:var(--cyan);color:var(--cyan)}
+  .pnlink{cursor:pointer}
+  .pnlink:hover .link{text-decoration-color:var(--cyan);color:var(--cyan)}
+
   .sb th{text-align:right;color:var(--dim);font-weight:600;font-size:10px;letter-spacing:.07em;text-transform:uppercase;padding:6px 7px;border-bottom:1px solid var(--line)}
   .sb th:first-child,.sb td:first-child{text-align:left}
   .sb th.pcol,.sb td.pcol{text-align:left}
@@ -375,10 +389,21 @@
   .md-kills{margin-top:10px;display:flex;flex-direction:column;gap:4px}
   .mdk{display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:11px;color:var(--muted);flex-wrap:wrap}
   .mdk .t{color:var(--dim);min-width:26px;text-align:right}
-  .mdk .p{color:var(--txt)} .mdk .w{color:var(--dim);font-size:10px}
+  .mdk .p{color:var(--txt)}
+  /* Qui est de quel camp : cyan chez nous, rouge en face. C'est la même langue
+     que partout ailleurs dans l'app (victoire/défaite), donc rien à apprendre. */
+  .mdk .p.ally{color:var(--win)}
+  .mdk .p.foe{color:var(--loss)}
+  .mdk .p.me{font-weight:800}
+  /* La ligne où on est impliqué se détache du fil, sans crier. */
+  .mdk.mine,.mdk.onme{padding:2px 6px;margin-left:-6px;border-radius:7px}
+  .mdk.mine{background:rgba(86,216,201,.07)}
+  .mdk.onme{background:rgba(255,93,93,.07)}
+  .mdk .w{display:inline-flex;align-items:center;justify-content:center;min-width:54px}
+  .mdk .wn{color:var(--dim);font-size:10px}
+  .wpn{height:15px;max-width:66px;object-fit:contain;vertical-align:middle}
+  .md-rmeta .w{display:inline-flex;align-items:center;min-width:0}
   .mdk .a{color:var(--dim);font-size:10px}
-  .mdk.mine .p:first-of-type{color:var(--win);font-weight:700}
-  .mdk.onme .p:last-of-type{color:var(--loss);font-weight:700}
   /* faits d'armes */
   .md-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:8px}
   .md-tile{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:11px 9px;text-align:center}
