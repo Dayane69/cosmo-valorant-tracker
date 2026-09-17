@@ -134,7 +134,7 @@ async function boot() {
 
   let code = readFileSync(join(root, "app.js"), "utf8");
   // Épilogue de test : expose les fonctions + un accès à l'état interne.
-  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, openMatch, closeMatchFacts, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, perfDetail, perfParts, IDX_W, openMatchScore, init, renderStatsCards, setStatsSeason: (v) => { STATS_SEASON = v; }, accountInfo, renderPHead, setAccount: (a) => { ACCOUNT = a; }, renderMatchModal, setWeapons: (w) => { WEAPONS = w; }, setSquadHist: (h) => { SQUAD_HIST = h; }, getState: () => STATE, getRoster: () => ROSTER };";
+  code += "\nglobalThis.__t = { combineMatches, normalizeAny, computeVerdict, openProfile, loadProfile, loadSquadMatches, openMatch, closeMatchFacts, fetchMatchDetail, saveAllHistory, setSaveSpacing: (ms) => { SAVE_SPACING_MS = ms; }, renderCurvePeriod, setRRState: (full, period) => { RR_FULL = full; RR_PERIOD = period; }, computeEloTierOffset, tierFromElo, setEloOffset: (o) => { ELO_TIER_OFFSET = o; }, perfDetail, perfParts, IDX_W, openMatchScore, init, renderStatsCards, setStatsSeason: (v) => { STATS_SEASON = v; }, accountInfo, renderPHead, setAccount: (a) => { ACCOUNT = a; }, rrIndexFromSeries, renderActCard, renderMatchModal, setWeapons: (w) => { WEAPONS = w; }, setSquadHist: (h) => { SQUAD_HIST = h; }, getState: () => STATE, getRoster: () => ROSTER };";
   vm.runInContext(code, ctx);
   const T = ctx.__t;
   await T.init(); // garantit roster chargé + grille construite
@@ -535,8 +535,10 @@ test("clic sur l'indice : la modale détaille le calcul et se ferme", async () =
   const modal = doc.getElementById("scoreModal");
   assert.equal(modal.hidden, true, "modale fermée au départ");
 
-  // clic sur le badge du dernier match
-  doc.getElementById("heroScore").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  // Clic sur le badge de la dernière partie, dans la liste. La tuile du haut
+  // ne porte plus l'indice d'UNE partie mais la moyenne de l'acte : son détail
+  // de calcul n'existe pas, et la liste est désormais le seul chemin.
+  doc.querySelector("#ml .mrow [data-sd]").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   assert.equal(modal.hidden, false, "la modale s'ouvre");
   const body = doc.getElementById("scoreModalBody").textContent;
   ["ACS", "KDA", "Δ Dégâts", "ADR", "Survie", "HS%", "Indice COSMO"].forEach(k =>
@@ -559,6 +561,77 @@ test("clic sur un indice de la liste des matchs ouvre son détail", async () => 
   badge.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   assert.equal(doc.getElementById("scoreModal").hidden, false);
   assert.match(doc.getElementById("scoreModalBody").textContent, /Indice COSMO/);
+});
+
+/* Montée / descente de palier. Sans ce repère, un « +21 » suivi d'un RR qui
+   CHUTE (90 -> 11) ressemble à une erreur alors que c'est une promotion. */
+test("une montée ou une descente de palier est repérée dans la série RR", async () => {
+  const { T } = await boot();
+  const idx = T.rrIndexFromSeries([
+    { id: "a", change: 20, rr: 80, tier: { id: 13, name: "Gold 2" } },
+    { id: "b", change: 21, rr: 11, tier: { id: 14, name: "Gold 3" } },   // montée
+    { id: "c", change: -18, rr: 93, tier: { id: 13, name: "Gold 2" } },  // descente
+    { id: "d", change: 10, rr: 100, tier: { id: 13, name: "Gold 2" } },  // même palier
+  ]);
+  assert.equal(idx.a.promo, 0, "la première partie n'a rien à quoi se comparer");
+  assert.equal(idx.b.promo, 1);
+  assert.equal(idx.c.promo, -1);
+  assert.equal(idx.d.promo, 0);
+  // Le RR atteint dans le palier est conservé : c'est lui qui s'affiche en gris.
+  assert.equal(idx.b.rr, 11);
+});
+
+test("une entrée sans match_id fait quand même avancer le palier de référence", async () => {
+  const { T } = await boot();
+  // Sans ça, « c » se comparerait à « a » (13) et serait annoncé en montée,
+  // alors que la promotion a déjà eu lieu sur l'entrée sans identifiant.
+  const idx = T.rrIndexFromSeries([
+    { id: "a", tier: { id: 13, name: "Gold 2" } },
+    { tier: { id: 14, name: "Gold 3" } },
+    { id: "c", tier: { id: 14, name: "Gold 3" } },
+  ]);
+  assert.equal(idx.c.promo, 0);
+});
+
+test("la carte de partie montre le RR atteint dans le palier, cerclé", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const card = doc.querySelector("#ml .mrow");
+  assert.match(card.querySelector(".mrr-delta").textContent, /\+18/, "le ±RR de la partie");
+  assert.match(card.querySelector(".mc-rrnow").textContent, /42/, "…et le RR atteint dans le palier");
+  assert.ok(card.querySelector(".mc-ringsvg"), "l'anneau de progression entoure l'icône de rang");
+});
+
+/* La tuile du haut ne montre plus la dernière partie — elle est déjà la
+   première carte de la liste, en plus grand. */
+test("la tuile de l'acte remplace celle du dernier match", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+  const v = doc.getElementById("verdict");
+
+  assert.equal(v.querySelector(".reschip"), null, "plus de pastille VICTOIRE/DÉFAITE d'une partie");
+  assert.match(v.querySelector(".act-lab").textContent, /E8 · A3/, "l'acte est nommé");
+  assert.match(v.querySelector(".act-lab").textContent, /2 parties classées/, "m3 n'a pas d'acte connu");
+  assert.equal(v.querySelectorAll(".sx-bar").length, 2, "une barre par partie de l'acte");
+  assert.match(v.textContent, /ACS/);
+});
+
+test("sans acte connu, on élargit ET on le dit", async () => {
+  const { dom, T } = await boot();
+  T.openProfile(0);
+  await T.loadProfile();
+  const doc = dom.window.document;
+
+  // Plus aucune série RR : aucun acte n'est identifiable.
+  T.setRRState([], 50);
+  T.renderActCard();
+  const lab = doc.querySelector("#verdict .act-lab").textContent;
+  assert.match(lab, /Tout l'historique classé/, "le libellé change, il ne ment pas");
+  assert.match(lab, /3 parties/, "les trois classées, actes connus ou non");
 });
 
 test("peak par acte : un bloc par acte avec le meilleur rang atteint", async () => {

@@ -970,11 +970,21 @@ function normalizeAny(raw, targetState = STATE, opts){
 // change = RR gagné/perdu sur la game, tierName/icon = rang du joueur à ce moment-là.
 function rrIndexFromSeries(series){
   const idx={};
+  let prevTier=null;
   (series||[]).forEach(e=>{
-    if(!e || !e.id) return;
-    const tierName = (e.tier&&e.tier.name) || '';
-    const icon = (tierName && TIERS) ? (TIERS[tierName.toLowerCase()]||null) : null;
-    idx[e.id]={ change:e.change, tierName, icon, rr:e.rr, season:e.season||null };
+    const tid = (e && e.tier && e.tier.id!=null && !isNaN(e.tier.id)) ? Number(e.tier.id) : null;
+    if(e && e.id){
+      const tierName = (e.tier&&e.tier.name) || '';
+      const icon = (tierName && TIERS) ? (TIERS[tierName.toLowerCase()]||null) : null;
+      // Montée ou descente de palier : le palier de CETTE partie comparé à celui
+      // de la précédente. La série est triée chronologiquement (mergeRRclient),
+      // donc « précédente » veut bien dire quelque chose.
+      const promo = (tid!=null && prevTier!=null && tid!==prevTier) ? (tid>prevTier ? 1 : -1) : 0;
+      idx[e.id]={ change:e.change, tierName, icon, rr:e.rr, season:e.season||null, promo };
+    }
+    // Hors du `if` : une entrée sans match_id fait quand même avancer le palier
+    // de référence, sinon une comparaison sauterait par-dessus.
+    if(tid!=null) prevTier=tid;
   });
   return idx;
 }
@@ -2070,11 +2080,11 @@ function relTime(iso){
 /* Anneau de progression dans le palier (0-100 RR), autour de l'icône de rang.
    Il remplace la barre : à côté du rang, la progression se lit d'un coup d'œil
    au lieu de demander de relier une barre à un chiffre plus bas. */
-function rrRing(rr){
-  const v = clamp(num(rr,0), 0, 100), R = 34, C = 2*Math.PI*R;
-  return `<svg class="rt-ring" viewBox="0 0 80 80" aria-hidden="true">
-    <circle cx="40" cy="40" r="${R}" fill="none" stroke="var(--line)" stroke-width="5"/>
-    <circle cx="40" cy="40" r="${R}" fill="none" stroke="var(--amber)" stroke-width="5" stroke-linecap="round"
+function rrRing(rr, cls, stroke){
+  const v = clamp(num(rr,0), 0, 100), R = 34, C = 2*Math.PI*R, sw = stroke || 5;
+  return `<svg class="${cls||'rt-ring'}" viewBox="0 0 80 80" aria-hidden="true">
+    <circle cx="40" cy="40" r="${R}" fill="none" stroke="var(--line)" stroke-width="${sw}"/>
+    <circle cx="40" cy="40" r="${R}" fill="none" stroke="var(--amber)" stroke-width="${sw}" stroke-linecap="round"
       transform="rotate(-90 40 40)" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${(C*(1-v/100)).toFixed(1)}"/>
   </svg>`;
 }
@@ -2427,12 +2437,24 @@ function renderPeakActs(){
 // Puce « RR gagné/perdu + rang au moment de la partie », en haut de la carte.
 // Rien n'est rendu quand la partie n'est pas dans l'historique MMR (non classée,
 // ou trop ancienne) : une place vide ne sert plus à aligner quoi que ce soit.
+/* Le ±RR de la partie, le RR ATTEINT dans le palier juste en dessous, et
+   l'icône de rang cerclée de cette progression. Les trois chiffres racontent
+   la même chose à trois échelles : ce que la partie a rapporté, où on en est
+   dans le palier, et quel palier.
+   Une montée ou une descente de palier est signalée par un chevron : sans lui,
+   un « +21 » suivi d'un RR qui CHUTE (90 -> 11) ressemble à une erreur alors
+   que c'est une promotion. */
 function rrChip(rr){
   if(!rr || rr.change==null) return '';
   const c=rr.change, sign=c>0?'+':'';
   const icon=rr.icon?`<img class="mrr-icon" src="${esc(rr.icon)}" alt="" loading="lazy">`:'';
-  return `<span class="mc-rr" title="${esc(rr.tierName||'')}${rr.rr!=null?' · '+rr.rr+' RR':''}">
-    <span class="mrr-delta ${c>=0?'up':'dn'}">${sign}${c}</span>${icon}
+  const ring=rr.rr!=null ? rrRing(rr.rr, 'mc-ringsvg', 8) : '';
+  const now=rr.rr!=null ? `<span class="mc-rrnow">${num(rr.rr)}</span>` : '';
+  const promo=rr.promo ? `<span class="mc-promo ${rr.promo>0?'up':'dn'}" aria-hidden="true">${rr.promo>0?'▲':'▼'}</span>` : '';
+  const promoTxt=rr.promo ? (rr.promo>0?' · palier gagné':' · palier perdu') : '';
+  return `<span class="mc-rr" title="${esc(rr.tierName||'')}${rr.rr!=null?' · '+rr.rr+' RR dans le palier':''}${promoTxt}">
+    <span class="mc-rrv"><span class="mrr-delta ${c>=0?'up':'dn'}">${sign}${c}</span>${now}</span>
+    <span class="mc-ring">${ring}${icon}${promo}</span>
   </span>`;
 }
 
@@ -3312,26 +3334,75 @@ function paintProfile(mmr){
   populateStatsSeasonFilter();
   populateCompareFilter();
   renderRank(mmr, overall); renderCurvePeriod(); renderPeakActs(); refreshSessions();
-  if(STATE.matches.length){
-    const s=STATE.matches[0].me;
-    if(s){
-      const tc=tierOf(s.score100);
-      $('vcard').style.setProperty('--sc', tc.c);
-      $('verdict').innerHTML = `
-       <div class="vh-grid">
-         <div class="vh-score"><div class="scorebadge score-hero flair-${flair(s.kd)} sd" id="heroScore" title="Voir le détail du calcul" style="--sc:${tc.c}">${s.score100}<span class="out">/100</span>${flairHTML(flair(s.kd))}</div><div class="sd-cta mono">détail du calcul</div></div>
-         <div class="vh-body">
-           <div class="vh-top"><span class="reschip ${STATE.matches[0].result}">${STATE.matches[0].result==='w'?'VICTOIRE':'DÉFAITE'}</span>
-             <span class="map">${esc(STATE.matches[0].map)}</span><span class="mode">${esc(STATE.matches[0].mode)}</span></div>
-           <div class="vh-line">${esc(s.agent)} · <b>${s.k}/${s.d}/${s.a}</b> · ${s.acs} ACS · ${s.hs}% HS</div>
-         </div>
-       </div>`;
-    }
-    renderList();
-  } else {
-    $('verdict').innerHTML='<div class="vh-line">Aucun match récent.</div>';
-  }
+  renderActCard();
+  if(STATE.matches.length) renderList();
   updateMoreBtn();
+}
+
+// L'acte le plus récent connu, d'après la série RR (seule source des actes).
+function currentAct(){
+  for(let i=(RR_FULL||[]).length-1; i>=0; i--){
+    const sn = RR_FULL[i] && RR_FULL[i].season;
+    if(sn) return sn;
+  }
+  return null;
+}
+
+/* L'ACTE EN COURS — la tuile qui remplace « Dernier match ».
+   Pourquoi le changement. La dernière partie est déjà la PREMIÈRE CARTE de la
+   liste juste en dessous, en plus grand, avec sa map et son ±RR : cette tuile
+   n'en était qu'un doublon plus pauvre. L'acte, lui, n'était nulle part —
+   et c'est le compagnon naturel des deux tuiles de rang, à sa gauche.
+
+   L'acte d'une partie vient de l'historique RR, qui ne couvre que le classé.
+   Sans acte connu, on ne bricole pas : on élargit à tout l'historique classé
+   ET on change le libellé, pour ne jamais présenter l'un pour l'autre. */
+const ACT_BARS = 14;
+function renderActCard(){
+  const host=$('verdict'); if(!host) return;
+  const act=currentAct();
+  const ranked=rankedOnly(STATE.allMatches||[]).filter(M=>M && M.me);
+  const list=act ? ranked.filter(M=>M.season===act) : ranked;
+
+  if(!list.length){
+    host.innerHTML='<div class="vh-line">Aucune partie classée dans l\'historique — rien à résumer pour l\'instant.</div>';
+    return;
+  }
+
+  const st=sessionStats(list);
+  const idx=Math.round(st.index||0), t=tierOf(idx);
+  const card=$('vcard'); if(card) card.style.setProperty('--sc', t.c);
+
+  // Les dernières parties, de la plus ancienne à la plus récente : on lit la
+  // forme de gauche à droite, comme le graphe de session.
+  const bars=list.slice(0, ACT_BARS).reverse().map(M=>{
+    const v=M.me.score100, h=Math.max(6, Math.round(v));
+    return `<div class="sx-bar ${M.result}" style="height:${h}%" title="${esc(M.map)} · indice ${v}${M.rr&&M.rr.change!=null?' · '+signed(M.rr.change)+' RR':''}"></div>`;
+  }).join('');
+
+  const label=act ? `${esc(seasonLabel(act))} · ${st.n} partie${st.n>1?'s':''} classée${st.n>1?'s':''}`
+                  : `Tout l'historique classé · ${st.n} partie${st.n>1?'s':''}`;
+  const rr=st.rrNet!=null
+    ? `<span class="act-rr ${st.rrNet>=0?'up':'dn'}">${signed(st.rrNet)} RR</span>`
+    : '<span class="act-rr flat">RR n/c</span>';
+
+  host.innerHTML=`
+    <div class="vh-grid">
+      <div class="vh-score">
+        <div class="scorebadge score-hero" style="--sc:${t.c}">${idx}<span class="out">/100</span></div>
+        <div class="sd-cta mono">indice moyen</div>
+      </div>
+      <div class="vh-body">
+        <div class="act-lab mono">${label}</div>
+        <div class="act-wl"><b class="w">${st.wins}</b>V · <b class="l">${st.losses}</b>D
+          <span class="act-wr">${st.winrate!=null?Math.round(st.winrate)+'%':'—'}</span>${rr}</div>
+        <div class="vh-line">K/D <b>${(st.kd||0).toFixed(2)}</b> · <b>${Math.round(st.acs||0)}</b> ACS ·
+          <b>${Math.round(st.hs||0)}%</b> HS${st.kast!=null?` · <b>${Math.round(st.kast)}%</b> KAST`:''}</div>
+      </div>
+    </div>
+    <div class="sx-chart act-chart">${bars}</div>
+    <div class="md-legend"><span class="sx-dot w"></span> victoire <span class="sx-dot l"></span> défaite ·
+      hauteur = indice · ${Math.min(list.length, ACT_BARS)} dernières classées</div>`;
 }
 
 /* Charge un profil en deux temps :
@@ -4659,7 +4730,6 @@ function wireStatic(){
     const r=e.target.closest('.mrow'); if(r) openMatch(+r.dataset.idx);
   });
   // Détail du calcul : badge du dernier match + indices du scoreboard
-  $('verdict')?.addEventListener('click',e=>{ if(e.target.closest('#heroScore')) openMatchScore(0); });
 
   $('scoreModal')?.addEventListener('click',e=>{
     if(e.target.closest('#scoreModalX')||e.target.classList.contains('modal-back')) closeScoreDetail();

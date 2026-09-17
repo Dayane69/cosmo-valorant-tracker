@@ -203,6 +203,20 @@
   .reschip.w{background:rgba(86,216,201,.13);color:var(--win)} .reschip.l{background:rgba(255,93,93,.13);color:var(--loss)}
   .vh-top .map{font-weight:700;font-size:16px} .vh-top .mode{font-family:var(--mono);font-size:12px;color:var(--dim)}
   .vh-line{font-family:var(--mono);font-size:13.5px;color:var(--muted);margin-bottom:9px} .vh-line b{color:var(--txt)}
+  /* Bilan de l'acte */
+  .act-lab{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--cyan);margin-bottom:7px}
+  .act-wl{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;font-family:var(--mono);
+    font-size:15px;color:var(--muted);margin-bottom:8px}
+  .act-wl b{font-size:19px;font-weight:800} .act-wl b.w{color:var(--win)} .act-wl b.l{color:var(--loss)}
+  .act-wr{color:var(--txt);font-weight:700}
+  .act-rr{font-weight:800;font-size:13.5px}
+  .act-rr.up{color:var(--win)} .act-rr.dn{color:var(--loss)} .act-rr.flat{color:var(--dim)}
+  /* Plus court que le graphe d'une session : ici c'est une vignette de forme,
+     pas le sujet de l'écran. Préfixé par #verdict à dessein : .sx-chart est
+     déclaré PLUS BAS dans cette feuille et l'emporterait à spécificité égale. */
+  #verdict .act-chart{height:72px;margin-top:10px;gap:4px}
+  #verdict .act-chart .sx-bar{flex:1 0 12px;min-width:12px}
+  #verdict .md-legend{margin-top:6px}
   .vh-verdict{font-size:17px;font-weight:800;line-height:1.25}
   .vh-verdict.good{color:var(--amber)} .vh-verdict.bad{color:var(--red)} .vh-verdict.mid{color:var(--txt)}
   .vh-react{flex:none;margin-left:auto;text-align:center;align-self:center}
@@ -282,10 +296,21 @@
     font-family:var(--mono);font-size:11.5px;line-height:1.2;min-height:36px}
   .mc-mode{color:var(--txt);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .mc-when{color:var(--dim);white-space:nowrap}
-  .mc-rr{margin-left:auto;display:inline-flex;align-items:center;gap:7px}
-  .mrr-icon{width:22px;height:22px;object-fit:contain}
+  /* ±RR de la partie, RR atteint dans le palier, et l'icône de rang cerclée de
+     cette progression : la même information à trois échelles. */
+  .mc-rr{margin-left:auto;display:inline-flex;align-items:center;gap:8px}
+  .mc-rrv{display:flex;flex-direction:column;align-items:flex-end;line-height:1.2}
   .mrr-delta{font-family:var(--mono);font-size:13px;font-weight:800;letter-spacing:.01em}
   .mrr-delta.up{color:var(--win)} .mrr-delta.dn{color:var(--loss)}
+  .mc-rrnow{font-family:var(--mono);font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .mc-ring{position:relative;width:32px;height:32px;flex:none;display:grid;place-items:center}
+  .mc-ringsvg{position:absolute;inset:0;width:32px;height:32px}
+  .mrr-icon{position:relative;width:21px;height:21px;object-fit:contain}
+  /* Sans ce chevron, un « +21 » suivi d'un RR qui chute (90 -> 11) passe pour
+     une erreur alors que c'est une montée de palier. */
+  .mc-promo{position:absolute;top:-3px;left:50%;transform:translateX(-50%);
+    font-size:8px;line-height:1;padding:1px 3px;border-radius:4px;background:var(--bg)}
+  .mc-promo.up{color:var(--win)} .mc-promo.dn{color:var(--loss)}
 
   /* Le héros : splash en fond, dégradé pour rendre le texte lisible, portrait
      de l'agent qui déborde à gauche et s'efface en fondu. */
@@ -1111,7 +1136,7 @@
     <div id="app" hidden>
       <div class="hero">
         <div class="card"><h2>Rang <em>mmr · history</em></h2><div id="rank"></div></div>
-        <div class="card verdict-hero" id="vcard"><h2>Dernier match <em>indice + verdict</em></h2><div id="verdict"></div></div>
+        <div class="card verdict-hero" id="vcard"><h2>L'acte en cours <em>indice · bilan · forme</em></h2><div id="verdict"></div></div>
       </div>
       
       <div class="card full">
