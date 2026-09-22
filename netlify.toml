@@ -31,6 +31,25 @@
   [headers.values]
     cache-control = "public, max-age=0, must-revalidate"
 
+# Vérification Riot. Le portail affiche l'URL du fichier avec une DOUBLE barre
+# (il colle l'URL du produit, qui finit déjà par « / », avec « /riot.txt »).
+# Par défaut Netlify répond une redirection sur ce chemin ; si leur robot de
+# vérification ne suit pas les redirections, la vérification échouerait pour
+# une raison qui n'a rien à voir avec le fichier. On sert donc le fichier
+# DIRECTEMENT (status 200, pas 301) sur le chemin à double barre aussi.
+[[redirects]]
+  from = "//riot.txt"
+  to = "/riot.txt"
+  status = 200
+
+# Et on ne laisse rien mettre ce fichier en cache : si une 404 a été servie
+# avant que le fichier existe, elle ne doit pas survivre au déploiement.
+[[headers]]
+  for = "/riot.txt"
+  [headers.values]
+    cache-control = "public, max-age=0, must-revalidate"
+    content-type = "text/plain; charset=utf-8"
+
 # Fonction planifiée : le cron est déclaré en inline dans
 # netlify/functions/refresh-matches.mjs (export const config = { schedule }).
 # Il tourne tous les jours à 04:00 UTC pour faire grossir l'historique stocké.
