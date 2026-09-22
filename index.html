@@ -109,8 +109,33 @@
   .pwrap{max-width:1040px;margin:0 auto}
   .back{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.06em;margin-bottom:16px}
   .back:hover{color:var(--cyan)}
-  .phead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:20px}
-  .phead>div:nth-child(2){min-width:0;flex:1}
+  .phead{margin-bottom:20px}
+  /* Bannière de profil : la carte de joueur Riot en fond (elle arrive avec
+     /account, qu'on appelait déjà), le portrait de l'agent fétiche par-dessus.
+     Sans carte connue, le fond sobre d'avant reste : rien ne clignote. */
+  .pbanner{position:relative;display:flex;align-items:center;gap:14px;padding:14px 16px;
+    min-height:112px;border:1px solid var(--line);border-radius:16px;overflow:hidden;
+    background:linear-gradient(120deg,var(--panel),#0b1219)}
+  .pb-art{position:absolute;inset:0;z-index:0;background-size:cover;background-position:center;opacity:.8}
+  /* Voile dégradé, pas uniforme : lisible à gauche (portrait + pseudo), et la
+     carte de joueur respire à droite. Un voile plein la rendait invisible. */
+  .pbanner::after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+    background:linear-gradient(90deg,rgba(10,15,21,.88) 0%,rgba(10,15,21,.5) 46%,rgba(10,15,21,.16) 100%)}
+  /* :not(.pb-art) est indispensable — sans lui, ce `position:relative` écrase
+     l'absolute du fond (même spécificité, déclaré après) et la bannière devient
+     un div de hauteur nulle, donc invisible. Même piège que le `.flash` de la
+     roulette, en son temps. */
+  .pbanner>*:not(.pb-art){position:relative;z-index:2}
+  .pb-id{min-width:0;flex:1}
+  .pb-id .eb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* Niveau et actions dans la bannière : hors d'elle, « Rafraîchir » se
+     retrouvait seul sur sa propre ligne, sans rien à quoi se rattacher. */
+  .pb-side{display:flex;flex-direction:column;align-items:flex-end;justify-content:space-between;
+    align-self:stretch;gap:10px;flex:none}
+  .pb-lvl{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;
+    text-transform:uppercase;color:var(--txt);background:rgba(0,0,0,.55);
+    border:1px solid rgba(255,255,255,.18);padding:5px 10px;border-radius:999px;white-space:nowrap}
+  .ptools{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
   .pbust{width:84px;height:84px;border-radius:14px;flex:none;overflow:hidden;position:relative;background:linear-gradient(160deg,var(--panel2),#0a0f14);border:1px solid var(--line)}
   .pbust img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 16%}
   .pbust.custom img{object-position:center}
@@ -119,7 +144,6 @@
   .phead .eb{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase}
   .phead h1{margin:2px 0 0;font-size:23px;font-weight:800;text-transform:uppercase;letter-spacing:-.01em}
   .phead h1 b{color:var(--muted);font-weight:500}
-  .ptools{margin-left:auto;display:flex;gap:8px}
   .btn{background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:9px 14px;font-family:var(--mono);font-size:12px}
   .btn:hover{border-color:var(--amber)}
 
@@ -140,6 +164,20 @@
   .tabs-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
 
   /* ... elements du tracker ... */
+  /* Rang actuel et plus haut rang atteint, côte à côte. L'anneau porte la
+     progression dans le palier : à côté de l'icône, elle se lit d'un coup
+     d'œil, là où la barre obligeait à la relier à un chiffre plus bas. */
+  .rank2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .rtile{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;
+    padding:14px 10px;border:1px solid var(--line);border-radius:14px;background:var(--bg2)}
+  .rt-lab{font-family:var(--mono);font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim)}
+  .rt-ico{position:relative;width:80px;height:80px;display:grid;place-items:center}
+  .rt-ico img{width:50px;height:50px;object-fit:contain;filter:drop-shadow(0 4px 10px rgba(0,0,0,.45))}
+  .rt-ring{position:absolute;inset:0;width:80px;height:80px}
+  .rt-none{font-family:var(--mono);font-size:20px;color:var(--dim)}
+  .rt-name{font-size:16px;font-weight:800;line-height:1.15}
+  .rt-sub{font-size:11.5px;color:var(--muted);min-height:1.3em}
+
   .rankbox{display:flex;align-items:center;gap:15px}
   .tier{width:60px;height:60px;border-radius:13px;flex:none;display:grid;place-items:center;text-align:center;font-family:var(--mono);font-weight:800;font-size:12px;line-height:1.05;background:linear-gradient(155deg,var(--panel2),#0a0f14);border:1px solid var(--line);color:var(--amber);overflow:hidden}
   .tier.hasimg{background:none;border:0;font-size:0;color:transparent}
@@ -165,6 +203,20 @@
   .reschip.w{background:rgba(86,216,201,.13);color:var(--win)} .reschip.l{background:rgba(255,93,93,.13);color:var(--loss)}
   .vh-top .map{font-weight:700;font-size:16px} .vh-top .mode{font-family:var(--mono);font-size:12px;color:var(--dim)}
   .vh-line{font-family:var(--mono);font-size:13.5px;color:var(--muted);margin-bottom:9px} .vh-line b{color:var(--txt)}
+  /* Bilan de l'acte */
+  .act-lab{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--cyan);margin-bottom:7px}
+  .act-wl{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;font-family:var(--mono);
+    font-size:15px;color:var(--muted);margin-bottom:8px}
+  .act-wl b{font-size:19px;font-weight:800} .act-wl b.w{color:var(--win)} .act-wl b.l{color:var(--loss)}
+  .act-wr{color:var(--txt);font-weight:700}
+  .act-rr{font-weight:800;font-size:13.5px}
+  .act-rr.up{color:var(--win)} .act-rr.dn{color:var(--loss)} .act-rr.flat{color:var(--dim)}
+  /* Plus court que le graphe d'une session : ici c'est une vignette de forme,
+     pas le sujet de l'écran. Préfixé par #verdict à dessein : .sx-chart est
+     déclaré PLUS BAS dans cette feuille et l'emporterait à spécificité égale. */
+  #verdict .act-chart{height:72px;margin-top:10px;gap:4px}
+  #verdict .act-chart .sx-bar{flex:1 0 12px;min-width:12px}
+  #verdict .md-legend{margin-top:6px}
   .vh-verdict{font-size:17px;font-weight:800;line-height:1.25}
   .vh-verdict.good{color:var(--amber)} .vh-verdict.bad{color:var(--red)} .vh-verdict.mid{color:var(--txt)}
   .vh-react{flex:none;margin-left:auto;text-align:center;align-self:center}
@@ -220,28 +272,110 @@
   .rrtip span{display:block;color:var(--muted)}
   .rrtip .d{font-weight:700;margin-top:2px} .rrtip .d.up{color:var(--win)} .rrtip .d.dn{color:var(--loss)}
 
-  .mrow{position:relative;overflow:hidden;display:grid;grid-template-columns:34px 1fr auto auto auto;gap:12px;align-items:center;padding:11px 9px;border-top:1px solid var(--line);cursor:pointer;border-radius:9px}
-  .mrow:first-of-type{border-top:0}
-  .mrow:hover,.mrow.sel{background:var(--panel2)}
-  .mrow > *:not(.mbg){position:relative;z-index:1}
-  .mbg{position:absolute;inset:0;z-index:0;background-size:cover;background-position:center 30%;opacity:.16;pointer-events:none;
-    -webkit-mask-image:linear-gradient(90deg,transparent,#000 22%,#000 78%,transparent);mask-image:linear-gradient(90deg,transparent,#000 22%,#000 78%,transparent)}
-  .mrow:hover .mbg,.mrow.sel .mbg{opacity:.30}
-  .res{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;font-family:var(--mono);font-weight:800;font-size:12px}
-  .res.w{background:rgba(86,216,201,.12);color:var(--win)} .res.l{background:rgba(255,93,93,.12);color:var(--loss)}
-  .minfo b{font-size:14px} .minfo span{display:block;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
-  .mscore{font-family:var(--mono);font-weight:700;font-size:15px}
-  /* Rang au moment de la partie + RR gagné/perdu */
-  .mrr{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-width:40px;font-family:var(--mono)}
-  .mrr-icon{width:26px;height:26px;object-fit:contain}
-  .mrr-delta{font-size:12.5px;font-weight:800;letter-spacing:.01em}
+  /* ---- Carte de partie ------------------------------------------------------
+     Une partie = une carte. Le splash de la map et le portrait de l'agent
+     portent l'image ; en bas, TROIS chiffres seulement, chacun avec son
+     libellé. C'est le point où la densité se décide : au-delà, on ne lit plus
+     rien au doigt. L'indice COSMO garde sa place à droite — c'est la seule
+     note qui n'existe nulle part ailleurs.
+     La couleur du résultat est portée par --mc, une seule fois, et réutilisée
+     par la bordure, l'ombre de sélection et la pastille. */
+  .mrow{--mc:var(--muted);
+    position:relative;display:block;border:1px solid var(--line);border-radius:14px;
+    overflow:hidden;background:var(--panel);cursor:pointer;
+    transition:border-color .18s ease,box-shadow .18s ease}
+  .mrow.w{--mc:var(--win)}
+  .mrow.l{--mc:var(--loss)}
+  /* Une colonne au téléphone, deux ou trois dès qu'il y a la place : étirée sur
+     toute la largeur d'un écran large, la carte se vidait en son milieu. */
+  #ml{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:10px}
+  .mrow:hover,.mrow.sel{border-color:color-mix(in srgb,var(--mc) 55%,var(--line))}
+  .mrow.sel{box-shadow:0 0 0 1px color-mix(in srgb,var(--mc) 40%,transparent)}
+
+  .mc-top{display:flex;align-items:center;gap:9px;padding:9px 12px 8px;
+    font-family:var(--mono);font-size:11.5px;line-height:1.2;min-height:36px}
+  .mc-mode{color:var(--txt);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mc-when{color:var(--dim);white-space:nowrap}
+  /* ±RR de la partie, RR atteint dans le palier, et l'icône de rang cerclée de
+     cette progression : la même information à trois échelles. */
+  .mc-rr{margin-left:auto;display:inline-flex;align-items:center;gap:8px}
+  .mc-rrv{display:flex;flex-direction:column;align-items:flex-end;line-height:1.2}
+  .mrr-delta{font-family:var(--mono);font-size:13px;font-weight:800;letter-spacing:.01em}
   .mrr-delta.up{color:var(--win)} .mrr-delta.dn{color:var(--loss)}
-  @media(max-width:560px){
-    .mrow{grid-template-columns:30px 1fr auto auto;gap:9px}
-    .mrow .mscore{display:none}
+  .mc-rrnow{font-family:var(--mono);font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .mc-ring{position:relative;width:32px;height:32px;flex:none;display:grid;place-items:center}
+  .mc-ringsvg{position:absolute;inset:0;width:32px;height:32px}
+  .mrr-icon{position:relative;width:21px;height:21px;object-fit:contain}
+  /* Sans ce chevron, un « +21 » suivi d'un RR qui chute (90 -> 11) passe pour
+     une erreur alors que c'est une montée de palier. */
+  .mc-promo{position:absolute;top:-3px;left:50%;transform:translateX(-50%);
+    font-size:8px;line-height:1;padding:1px 3px;border-radius:4px;background:var(--bg)}
+  .mc-promo.up{color:var(--win)} .mc-promo.dn{color:var(--loss)}
+
+  /* Le héros : splash en fond, dégradé pour rendre le texte lisible, portrait
+     de l'agent qui déborde à gauche et s'efface en fondu. */
+  .mc-hero{position:relative;min-height:86px;display:flex;align-items:flex-end;padding:10px 12px}
+  /* Le splash reste LISIBLE : c'est lui qui donne son identité à la carte. Le
+     voile ne sert qu'à rendre le texte lisible, et il est donc dégradé de la
+     gauche (où se trouvent portrait et texte) vers la droite (où l'image
+     respire). Un voile uniforme rendait la map méconnaissable. */
+  .mbg{position:absolute;inset:0;z-index:0;background-size:cover;background-position:center 32%;
+    opacity:.9;pointer-events:none}
+  .mc-hero::after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+    background:linear-gradient(90deg,rgba(10,15,21,.92) 0%,rgba(10,15,21,.72) 34%,rgba(10,15,21,.34) 68%,rgba(10,15,21,.18) 100%)}
+  .mc-agent{position:absolute;left:-8px;bottom:0;z-index:2;height:112px;width:106px;
+    object-fit:cover;object-position:top center;pointer-events:none;
+    -webkit-mask-image:linear-gradient(90deg,#000 55%,transparent);
+    mask-image:linear-gradient(90deg,#000 55%,transparent)}
+  .mc-id{position:relative;z-index:3;display:flex;flex-direction:column;
+    align-items:flex-start;gap:6px;min-width:0}
+  /* Décalé seulement quand il y a un portrait : sinon le texte reste collé au
+     bord gauche au lieu de flotter derrière un vide. */
+  .mc-hero.art .mc-id{margin-left:90px}
+  .mc-id b{font-size:19px;font-weight:800;letter-spacing:-.01em;line-height:1;color:var(--txt);
+    text-shadow:0 2px 14px rgba(0,0,0,.7);max-width:100%;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mc-map{font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--txt);background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.16);
+    padding:3px 9px;border-radius:999px;white-space:nowrap}
+  .mc-res{position:relative;z-index:3;margin-left:auto;align-self:center;
+    font-family:var(--mono);font-weight:800;font-size:10.5px;letter-spacing:.11em;
+    padding:7px 12px;border-radius:999px;white-space:nowrap;color:#07121b;background:var(--mc)}
+
+  .mc-stats{display:flex;align-items:center;gap:16px;padding:9px 12px 10px;
+    border-top:1px solid var(--line);background:var(--bg2)}
+  .mc-st{display:flex;flex-direction:column;gap:3px;min-width:0}
+  .mc-st i{font-style:normal;font-family:var(--mono);font-size:8.5px;letter-spacing:.13em;
+    text-transform:uppercase;color:var(--dim)}
+  .mc-st b{font-family:var(--mono);font-size:13.5px;font-weight:700;color:var(--txt);
+    font-variant-numeric:tabular-nums;white-space:nowrap}
+  .mc-stats .scorebadge{margin-left:auto;flex:none}
+
+  /* Téléphone étroit : le portrait recule, le libellé « Score » saute avant
+     que quoi que ce soit ne déborde. */
+  @media(max-width:420px){
+    .mc-agent{height:104px;width:92px;left:-10px}
+    .mc-hero.art .mc-id{margin-left:76px}
+    .mc-id b{font-size:17px}
+    .mc-stats{gap:12px}
+    .mc-res{font-size:10px;padding:6px 10px;letter-spacing:.08em}
   }
 
   .sb{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+  /* ±RR d'un membre, sous son pseudo dans le scoreboard. */
+  .pn-rr{display:inline-block;margin-left:6px;font-family:var(--mono);font-size:10px;font-weight:800;
+    padding:1px 5px;border-radius:999px;border:1px solid transparent}
+  .pn-rr.up{color:var(--win);border-color:rgba(86,216,201,.35);background:rgba(86,216,201,.10)}
+  .pn-rr.dn{color:var(--loss);border-color:rgba(255,93,93,.35);background:rgba(255,93,93,.10)}
+  /* Un pseudo qui mène quelque part doit en avoir l'air. Le trait ne court que
+     sous le PSEUDO, pas sous le tag ni sous la pastille de RR ; la cible
+     tactile, elle, reste toute la cellule. */
+  .link{cursor:pointer;text-decoration:underline;text-decoration-style:dotted;
+    text-underline-offset:3px;text-decoration-color:var(--dim)}
+  .link:hover{text-decoration-color:var(--cyan);color:var(--cyan)}
+  .pnlink{cursor:pointer}
+  .pnlink:hover .link{text-decoration-color:var(--cyan);color:var(--cyan)}
+
   .sb th{text-align:right;color:var(--dim);font-weight:600;font-size:10px;letter-spacing:.07em;text-transform:uppercase;padding:6px 7px;border-bottom:1px solid var(--line)}
   .sb th:first-child,.sb td:first-child{text-align:left}
   .sb th.pcol,.sb td.pcol{text-align:left}
@@ -280,10 +414,21 @@
   .md-kills{margin-top:10px;display:flex;flex-direction:column;gap:4px}
   .mdk{display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:11px;color:var(--muted);flex-wrap:wrap}
   .mdk .t{color:var(--dim);min-width:26px;text-align:right}
-  .mdk .p{color:var(--txt)} .mdk .w{color:var(--dim);font-size:10px}
+  .mdk .p{color:var(--txt)}
+  /* Qui est de quel camp : cyan chez nous, rouge en face. C'est la même langue
+     que partout ailleurs dans l'app (victoire/défaite), donc rien à apprendre. */
+  .mdk .p.ally{color:var(--win)}
+  .mdk .p.foe{color:var(--loss)}
+  .mdk .p.me{font-weight:800}
+  /* La ligne où on est impliqué se détache du fil, sans crier. */
+  .mdk.mine,.mdk.onme{padding:2px 6px;margin-left:-6px;border-radius:7px}
+  .mdk.mine{background:rgba(86,216,201,.07)}
+  .mdk.onme{background:rgba(255,93,93,.07)}
+  .mdk .w{display:inline-flex;align-items:center;justify-content:center;min-width:54px}
+  .mdk .wn{color:var(--dim);font-size:10px}
+  .wpn{height:15px;max-width:66px;object-fit:contain;vertical-align:middle}
+  .md-rmeta .w{display:inline-flex;align-items:center;min-width:0}
   .mdk .a{color:var(--dim);font-size:10px}
-  .mdk.mine .p:first-of-type{color:var(--win);font-weight:700}
-  .mdk.onme .p:last-of-type{color:var(--loss);font-weight:700}
   /* faits d'armes */
   .md-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:8px}
   .md-tile{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:11px 9px;text-align:center}
@@ -903,6 +1048,32 @@
     #home,#profile{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
     #profile{padding-bottom:max(60px,env(safe-area-inset-bottom))}
   }
+
+  /* ===================== BARRE D'ONGLETS (PWA) =====================
+     Sous les modales (z-index 50/60) et au-dessus de tout le reste. Au
+     téléphone elle occupe toute la largeur, comme une appli ; sur grand écran
+     elle se resserre en dock centré — pleine largeur sur 1400 px, elle aurait
+     l'air d'un bandeau perdu. */
+  .tabbar{position:fixed;left:0;right:0;bottom:0;z-index:40;
+    display:grid;grid-template-columns:repeat(5,1fr);gap:2px;
+    background:rgba(10,15,21,.93);border-top:1px solid var(--line);
+    -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+    padding:6px 6px calc(6px + env(safe-area-inset-bottom))}
+  .tabbar button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+    min-height:52px;padding:6px 2px;border-radius:11px;color:var(--muted);
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.03em;
+    transition:color .15s ease,background .15s ease}
+  .tabbar .ic{font-size:17px;line-height:1}
+  .tabbar button.on{color:var(--cyan);background:rgba(86,216,201,.12)}
+  .tabbar button:hover{color:var(--txt)}
+  .tabbar button.on:hover{color:var(--cyan)}
+  @media(min-width:760px){
+    .tabbar{left:50%;right:auto;transform:translateX(-50%);bottom:16px;width:min(540px,92vw);
+      border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 40px -18px #000;padding:6px}
+  }
+  /* Rien ne doit passer sous la barre. */
+  #home,#profile,#tribunal,#leaderboard,#roulette,#comps{
+    padding-bottom:calc(88px + env(safe-area-inset-bottom))}
 </style>
 </head>
 <body>
@@ -911,10 +1082,6 @@
 <section id="home">
   <div class="gear">
     <button class="fresh" id="freshHome" type="button" hidden></button>
-    <button id="btnComps" aria-label="Compos par map">🗺<span class="glbl"> Compos</span></button>
-    <button id="btnRoulette" aria-label="Roulette">🎲<span class="glbl"> Roulette</span></button>
-    <button id="btnLeaderboard" aria-label="Leaderboard">🏆<span class="glbl"> Leaderboard</span></button>
-    <button id="btnTribunal" aria-label="Tribunal COSMO">⚖<span class="glbl"> Tribunal COSMO</span></button>
     <button id="btnGear" aria-label="Paramètres">⚙<span class="glbl"> Paramètres</span></button>
   </div>
   <div class="hwrap">
@@ -969,7 +1136,7 @@
     <div id="app" hidden>
       <div class="hero">
         <div class="card"><h2>Rang <em>mmr · history</em></h2><div id="rank"></div></div>
-        <div class="card verdict-hero" id="vcard"><h2>Dernier match <em>indice + verdict</em></h2><div id="verdict"></div></div>
+        <div class="card verdict-hero" id="vcard"><h2>L'acte en cours <em>indice · bilan · forme</em></h2><div id="verdict"></div></div>
       </div>
       
       <div class="card full">
@@ -1280,6 +1447,17 @@
   </div>
 </div>
 
-<script src="app.js?v=20260901a" defer></script>
+<!-- Barre d'onglets : la navigation principale, à portée de pouce. Les
+     identifiants sont ceux d'avant (btnComps, btnRoulette…), le câblage des
+     clics n'a donc pas bougé d'une ligne. -->
+<nav class="tabbar" id="tabbar" aria-label="Navigation principale">
+  <button id="btnHome" type="button"><span class="ic">🏠</span>Accueil</button>
+  <button id="btnComps" type="button"><span class="ic">🗺</span>Compos</button>
+  <button id="btnRoulette" type="button"><span class="ic">🎲</span>Roulette</button>
+  <button id="btnLeaderboard" type="button"><span class="ic">🏆</span>Classement</button>
+  <button id="btnTribunal" type="button"><span class="ic">⚖</span>Tribunal</button>
+</nav>
+
+<script src="app.js?v=20260913a" defer></script>
 </body>
 </html>

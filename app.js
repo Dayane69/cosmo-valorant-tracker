@@ -46,10 +46,13 @@ let MAPS = null;                                        // cache nom de map -> i
 let AGENTS = null;                                      // cache nom d'agent -> icône (tête)
 let AGENT_LIST = [];                                    // liste complète {name, role, icon, portrait}
 let TIERS = null;                                       // cache nom de palier -> icône de rang
+let WEAPONS = null;                                     // cache nom d'arme -> icône
 let TIER_BY_NUM = null;                                 // cache numéro de palier -> {name,color,icon} (lignes de rang du graphe)
 let ELO_TIER_OFFSET = 3;                                // numéro de palier = floor(elo/100) + offset (Iron 1 = palier 3, elo 0)
 const ANIM_BUSY = { Trib: false, Prof: false };
 let RANKS_FILLED = false;               // les rangs de l'accueil ont-ils déjà été chargés
+let CURRENT_MEMBER = null;              // membre du roster dont le profil est ouvert
+let ACCOUNT = null;                     // { level, card } du compte Riot affiché
 
 const $ = id => document.getElementById(id);
 const enc = s => encodeURIComponent(s);
@@ -58,8 +61,10 @@ const num = (v,f=0)=>(v===undefined||v===null||isNaN(v))?f:Number(v);
 const clamp = (x, a=0, b=100) => Math.max(a, Math.min(b, x));
 const ESC_MAP = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ESC_MAP[c]);
-// Une URL d'image, validée au lieu d'être échappée. `esc()` ne protège PAS un
-// contexte CSS : le parseur HTML décode &#39; avant que CSS ne lise la valeur,
+// Une URL d'image destinée à une FEUILLE DE STYLE, validée au lieu d'être
+// échappée. La règle : `imgURL()` pour un url(...) en CSS, `esc()` pour un
+// attribut src — dans un attribut, l'échappement suffit.
+// `esc()` ne protège PAS un contexte CSS : le parseur HTML décode &#39; avant que CSS ne lise la valeur,
 // donc une apostrophe ressort intacte dans url('…'). On exige donc la forme
 // d'une URL https sans guillemet, parenthèse, espace ni antislash — ce que
 // valorant-api renvoie — et on ne rend rien sinon.
@@ -559,7 +564,7 @@ function cacheGetProfile(key){
 function cachePutProfile(key, data){
   const c=cacheLoad();
   c.profiles[String(key).toLowerCase()] = {
-    ts: Date.now(), mmr: data.mmr||null,
+    ts: Date.now(), mmr: data.mmr||null, acc: data.acc||null,
     matches: (data.matches||[]).map(slimMatch),
     rr: data.rr||[],
   };
@@ -613,6 +618,32 @@ async function ensureAgents(){
   }catch(e){ /* pas d'icônes d'agent, on garde les initiales */ }
   return AGENTS || {};
 }
+// Armes : nom -> icône. Sert au fil des éliminations, où « Vandal » écrit en
+// toutes lettres est moins lisible d'un coup d'œil que la silhouette de l'arme.
+async function ensureWeapons(){
+  if(WEAPONS) return WEAPONS;
+  try{
+    const r = await fetch('https://valorant-api.com/v1/weapons');
+    if(r.ok){
+      const d = await r.json(), map = {};
+      (d.data||[]).forEach(w=>{ if(w && w.displayName && w.displayIcon) map[w.displayName.toLowerCase()] = w.displayIcon; });
+      WEAPONS = map;
+    }
+  }catch(e){ /* pas d'icônes d'arme : on garde les noms, c'est lisible aussi */ }
+  return WEAPONS || {};
+}
+
+/* L'arme en image quand on l'a, son nom sinon. Toutes les éliminations n'ont
+   pas d'arme : une compétence, la spike ou une chute n'ont pas d'icône, et le
+   texte reste alors la bonne réponse — plutôt qu'un trou. */
+function weaponTag(name){
+  const n = String(name||'').trim();
+  if(!n) return '<span class="wn">—</span>';
+  const ic = WEAPONS && WEAPONS[n.toLowerCase()];
+  return ic ? `<img class="wpn" src="${esc(ic)}" alt="${esc(n)}" title="${esc(n)}" loading="lazy">`
+            : `<span class="wn">${esc(n)}</span>`;
+}
+
 // Paliers compétitifs : nom -> icône de rang. Repli quand HenrikDev ne donne pas l'image.
 async function ensureTiers(){
   if(TIERS) return TIERS;
@@ -766,9 +797,12 @@ function matchFacts(m, roundsCount, me){
       loadout:num(eco.loadout_value), afk:!!mst.was_afk,
       plant: pl?{ site:pl.site||'', by:(pl.player&&pl.player.name)||'', mine:!!(pl.player&&pl.player.puuid===mp) }:null,
       defuse: df?{ by:(df.player&&df.player.name)||'', mine:!!(df.player&&df.player.puuid===mp) }:null,
+      // Le CAMP de chacun, pas seulement son nom : sans lui, le fil des
+      // éliminations est une liste de pseudos où on ne sait pas qui tue qui.
       kills: ks.map(k=>({ killer:(k.killer&&k.killer.name)||'?', victim:(k.victim&&k.victim.name)||'?',
         weapon:(k.weapon&&k.weapon.name)||'', t:num(k.time_in_round_in_ms),
         mine:!!(k.killer&&k.killer.puuid===mp), onMe:!!(k.victim&&k.victim.puuid===mp),
+        killerAlly:!!(k.killer&&k.killer.team===myTeam), victimAlly:!!(k.victim&&k.victim.team===myTeam),
         assists:(k.assistants||[]).map(a=>a&&a.name).filter(Boolean) })),
     };
   });
@@ -936,11 +970,21 @@ function normalizeAny(raw, targetState = STATE, opts){
 // change = RR gagné/perdu sur la game, tierName/icon = rang du joueur à ce moment-là.
 function rrIndexFromSeries(series){
   const idx={};
+  let prevTier=null;
   (series||[]).forEach(e=>{
-    if(!e || !e.id) return;
-    const tierName = (e.tier&&e.tier.name) || '';
-    const icon = (tierName && TIERS) ? (TIERS[tierName.toLowerCase()]||null) : null;
-    idx[e.id]={ change:e.change, tierName, icon, rr:e.rr, season:e.season||null };
+    const tid = (e && e.tier && e.tier.id!=null && !isNaN(e.tier.id)) ? Number(e.tier.id) : null;
+    if(e && e.id){
+      const tierName = (e.tier&&e.tier.name) || '';
+      const icon = (tierName && TIERS) ? (TIERS[tierName.toLowerCase()]||null) : null;
+      // Montée ou descente de palier : le palier de CETTE partie comparé à celui
+      // de la précédente. La série est triée chronologiquement (mergeRRclient),
+      // donc « précédente » veut bien dire quelque chose.
+      const promo = (tid!=null && prevTier!=null && tid!==prevTier) ? (tid>prevTier ? 1 : -1) : 0;
+      idx[e.id]={ change:e.change, tierName, icon, rr:e.rr, season:e.season||null, promo };
+    }
+    // Hors du `if` : une entrée sans match_id fait quand même avancer le palier
+    // de référence, sinon une comparaison sauterait par-dessus.
+    if(tid!=null) prevTier=tid;
   });
   return idx;
 }
@@ -954,6 +998,7 @@ function rrIndexFromSeries(series){
 */
 let SESSION_GAP_MIN = 120;               // écart (minutes) qui coupe une session
 const BASELINE_MIN = 6;                  // parties hors session nécessaires pour comparer
+const ANALYSIS_MAX = 5;                  // constats gardés par rubrique, les plus lourds d'abord
 const STACK_LABEL = {1:'Solo', 2:'Duo', 3:'Trio', 4:'Quatuor', 5:'5-stack'};
 const RANKED_RE = /competitive|class[ée]|comp[ée]titif/;
 const isRanked = M => RANKED_RE.test(String((M&&M.mode)||'').toLowerCase());
@@ -1030,22 +1075,46 @@ function sessionStats(list){
 function sessionFacts(list){
   const F=(list||[]).filter(M=>M && M.facts);
   if(!F.length) return null;
-  const f={ n:F.length, firstBloods:0, firstDeaths:0, clutches:0, plants:0, defuses:0,
-            multi:0, aces:0, ecoN:0, ecoWon:0, fullN:0, fullWon:0 };
-  const loads=[];
+  const f={ n:F.length, rounds:0, firstBloods:0, firstDeaths:0, clutches:0, plants:0, defuses:0,
+            multi:0, aces:0, k3plus:0, ecoN:0, ecoWon:0, halfN:0, halfWon:0, fullN:0, fullWon:0,
+            head:0, body:0, leg:0, util:0, ult:0, afk:0 };
+  const loads=[], wc={};
   F.forEach(M=>{
     const x=M.facts;
+    const tl=Array.isArray(x.timeline)?x.timeline:[];
+    f.rounds+=tl.length;
+    f.afk+=tl.filter(r=>r && r.afk).length;
     f.firstBloods+=num(x.firstBloods); f.firstDeaths+=num(x.firstDeaths);
     f.clutches+=num(x.clutches); f.plants+=num(x.plants); f.defuses+=num(x.defuses);
-    Object.keys(x.multi||{}).forEach(k=>{ f.multi+=num(x.multi[k]); if(num(k)>=5) f.aces+=num(x.multi[k]); });
+    Object.keys(x.multi||{}).forEach(k=>{
+      const n=num(x.multi[k]); f.multi+=n;
+      if(num(k)>=5) f.aces+=n;
+      if(num(k)>=3) f.k3plus+=n;       // 3k et plus : les rounds qu'on fait basculer seul
+    });
     const b=(x.economy&&x.economy.buckets)||{};
     if(b.eco){ f.ecoN+=num(b.eco.n); f.ecoWon+=num(b.eco.won); }
+    if(b.half){ f.halfN+=num(b.half.n); f.halfWon+=num(b.half.won); }   // le demi-achat était ignoré
     if(b.full){ f.fullN+=num(b.full.n); f.fullWon+=num(b.full.won); }
     if(x.economy&&x.economy.avgLoadout) loads.push(x.economy.avgLoadout);
+    // Précision, utilitaire et armes : tout ça était déjà extrait de chaque
+    // partie, et personne ne l'agrégeait — donc aucune règle ne pouvait le lire.
+    const p=x.precision||{}; f.head+=num(p.head); f.body+=num(p.body); f.leg+=num(p.leg);
+    const ab=x.abilities||{}; f.util+=num(ab.total); f.ult+=num(ab.ult);
+    (Array.isArray(x.weapons)?x.weapons:[]).forEach(w=>{
+      if(w && w.name) wc[w.name]=(wc[w.name]||0)+num(w.kills);
+    });
   });
   f.avgLoadout=loads.length?Math.round(mean(loads)):null;
   f.ecoWR=f.ecoN?f.ecoWon/f.ecoN*100:null;
+  f.halfWR=f.halfN?f.halfWon/f.halfN*100:null;
   f.fullWR=f.fullN?f.fullWon/f.fullN*100:null;
+  f.shots=f.head+f.body+f.leg;
+  f.legPct=f.shots?f.leg/f.shots*100:null;
+  f.utilPerRound=f.rounds?f.util/f.rounds:null;
+  f.ultPerGame=f.n?f.ult/f.n:null;
+  const ws=Object.entries(wc).sort((a,b)=>b[1]-a[1]);
+  f.kills=ws.reduce((sum,[,v])=>sum+v,0);
+  f.topWeapon=ws.length?{ name:ws[0][0], kills:ws[0][1], share:f.kills?ws[0][1]/f.kills*100:0 }:null;
   return f;
 }
 
@@ -1159,9 +1228,11 @@ function analyzeSession(session, ctx){
   const bf=base&&base.facts||null;
   const trend=sessionTrend(ms);
   const good=[], bad=[], tips=[];
-  const G=(t,x)=>good.push({title:t,text:x});
-  const B=(t,x)=>bad.push({title:t,text:x});
-  const T=(t,x)=>tips.push({title:t,text:x});
+  // Le poids hiérarchise : à la fin on garde les plus significatifs, sinon un
+  // rapport de neuf parties devient un mur qu'on ne lit plus.
+  const G=(t,x,w)=>good.push({title:t,text:x,w:w||50});
+  const B=(t,x,w)=>bad.push({title:t,text:x,w:w||50});
+  const T=(t,x,w)=>tips.push({title:t,text:x,w:w||50});
   const one=v=>Math.round(v*100)/100;
   const sign=v=>(v>0?'+':'')+v;
   const d=(a,b)=>(a==null||b==null)?null:a-b;
@@ -1172,32 +1243,32 @@ function analyzeSession(session, ctx){
   const dKast=(st.kast!=null&&base&&base.kast!=null)?st.kast-base.kast:null;
 
   // --- Performance globale vs ta référence
-  if(dIdx!=null && dIdx>=6)  G('Au-dessus de ton niveau', `Indice moyen ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude (${sign(Math.round(dIdx))}).`);
-  if(dIdx!=null && dIdx<=-6) B('En dessous de ton niveau', `Indice moyen ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude (${sign(Math.round(dIdx))}).`);
+  if(dIdx!=null && dIdx>=6)  G('Au-dessus de ton niveau', `Indice moyen ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude (${sign(Math.round(dIdx))}).`, 95);
+  if(dIdx!=null && dIdx<=-6) B('En dessous de ton niveau', `Indice moyen ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude (${sign(Math.round(dIdx))}).`, 95);
 
   // --- Impact
-  if(dAcs!=null && dAcs>=15)  G('Impact en hausse', `${Math.round(st.acs)} ACS contre ${Math.round(base.acs)} en moyenne.`);
-  if(dAcs!=null && dAcs<=-15) B('Impact en baisse', `${Math.round(st.acs)} ACS contre ${Math.round(base.acs)} en moyenne.`);
+  if(dAcs!=null && dAcs>=15)  G('Impact en hausse', `${Math.round(st.acs)} ACS contre ${Math.round(base.acs)} en moyenne.`, 80);
+  if(dAcs!=null && dAcs<=-15) B('Impact en baisse', `${Math.round(st.acs)} ACS contre ${Math.round(base.acs)} en moyenne.`, 80);
   if(dAdr!=null && dAdr<=-12){
-    B('Moins de dégâts', `${Math.round(st.adr)} ADR contre ${Math.round(base.adr)} d'habitude.`);
+    B('Moins de dégâts', `${Math.round(st.adr)} ADR contre ${Math.round(base.adr)} d'habitude.`, 76);
     T('Cherche le dégât, pas le kill', 'Tire sur tout ce qui dépasse : un adversaire à 40 PV, c\'est un round gagné par ton équipe même si tu ne le finis pas.');
   }
 
   // --- Duels & survie
-  if(dKd!=null && dKd>=0.25)  G('Duels gagnés', `K/D ${one(st.kd)} contre ${one(base.kd)} d'habitude.`);
-  if(dKd!=null && dKd<=-0.25) B('Duels perdus', `K/D ${one(st.kd)} contre ${one(base.kd)} d'habitude.`);
+  if(dKd!=null && dKd>=0.25)  G('Duels gagnés', `K/D ${one(st.kd)} contre ${one(base.kd)} d'habitude.`, 80);
+  if(dKd!=null && dKd<=-0.25) B('Duels perdus', `K/D ${one(st.kd)} contre ${one(base.kd)} d'habitude.`, 80);
   if(dDpr!=null && dDpr>=0.06){
-    B('Tu meurs plus souvent', `${one(st.dpr)} mort par round contre ${one(base.dpr)} d'habitude.`);
+    B('Tu meurs plus souvent', `${one(st.dpr)} mort par round contre ${one(base.dpr)} d'habitude.`, 82);
     T('Prends moins de duels gratuits', 'Attends l\'utilitaire et le trade de ton coéquipier avant d\'ouvrir. Une mort en début de round coûte le round entier.');
   }
-  if(dKast!=null && dKast>=6)  G('Toujours dans le coup', `KAST ${Math.round(st.kast)}% contre ${Math.round(base.kast)}% d'habitude.`);
+  if(dKast!=null && dKast>=6)  G('Toujours dans le coup', `KAST ${Math.round(st.kast)}% contre ${Math.round(base.kast)}% d'habitude.`, 78);
   if(dKast!=null && dKast<=-6){
     B('Souvent hors du coup', `KAST ${Math.round(st.kast)}% contre ${Math.round(base.kast)}% d'habitude : beaucoup de rounds sans kill, sans assist, sans survie et sans trade.`);
     T('Joue plus proche de ton équipe', 'Le KAST monte tout seul quand tu es tradable : reste à portée d\'un coéquipier au lieu de tenir un angle isolé.');
   }
 
   // --- Visée
-  if(dHs!=null && dHs>=4)  G('Visée au-dessus de ton niveau', `${Math.round(st.hs)}% de headshots contre ${Math.round(base.hs)}% d'habitude.`);
+  if(dHs!=null && dHs>=4)  G('Visée au-dessus de ton niveau', `${Math.round(st.hs)}% de headshots contre ${Math.round(base.hs)}% d'habitude.`, 68);
   if(dHs!=null && dHs<=-4){
     B('Visée en dessous', `${Math.round(st.hs)}% de headshots contre ${Math.round(base.hs)}% d'habitude.`);
     T('Échauffe-toi avant de lancer', '10 minutes de Range ou un deathmatch avant la première classée : la première partie d\'une session est presque toujours la moins précise.');
@@ -1210,11 +1281,11 @@ function analyzeSession(session, ctx){
       T('Ne rentre pas en premier sans info', 'Laisse partir un flash, un drone ou un coéquipier avant de prendre l\'angle. Sinon ton équipe joue le round à 4 contre 5.');
     }
     if(facts.firstBloods>=4 && facts.firstBloods>=facts.firstDeaths*1.5)
-      G('Tu ouvres bien les rounds', `${facts.firstBloods} premiers sangs pour seulement ${facts.firstDeaths} premières morts.`);
-    if(facts.clutches>=2) G('Clutch', `${facts.clutches} rounds gagnés en dernier survivant.`);
-    if(facts.aces>=1) G('Ace', `${facts.aces} ace${facts.aces>1?'s':''} dans la session.`);
+      G('Tu ouvres bien les rounds', `${facts.firstBloods} premiers sangs pour seulement ${facts.firstDeaths} premières morts.`, 74);
+    if(facts.clutches>=2) G('Clutch', `${facts.clutches} rounds gagnés en dernier survivant.`, 70);
+    if(facts.aces>=1) G('Ace', `${facts.aces} ace${facts.aces>1?'s':''} dans la session.`, 76);
     if(facts.ecoWR!=null && facts.ecoN>=5 && facts.ecoWR>=35)
-      G('Bons rounds d\'eco', `${Math.round(facts.ecoWR)}% de rounds gagnés en eco (${facts.ecoN} rounds).`);
+      G('Bons rounds d\'eco', `${Math.round(facts.ecoWR)}% de rounds gagnés en eco (${facts.ecoN} rounds).`, 58);
     if(facts.fullWR!=null && facts.fullN>=8 && facts.fullWR<=40){
       B('Full buys gâchés', `Seulement ${Math.round(facts.fullWR)}% de rounds gagnés en full buy (${facts.fullN} rounds).`);
       T('Le problème n\'est pas l\'argent', 'Avec l\'arme il reste l\'exécution : jouez les rounds ensemble, avec un plan de prise de site, plutôt qu\'en solo.');
@@ -1223,7 +1294,7 @@ function analyzeSession(session, ctx){
 
   // --- Tilt / durée de session
   if(trend){
-    if(trend.delta>=8) G('Montée en régime', `Indice ${trend.first} sur la première moitié, ${trend.last} sur la seconde (${sign(trend.delta)}).`);
+    if(trend.delta>=8) G('Montée en régime', `Indice ${trend.first} sur la première moitié, ${trend.last} sur la seconde (${sign(trend.delta)}).`, 80);
     if(trend.delta<=-8){
       B('Tu baisses en cours de session', `Indice ${trend.first} sur la première moitié, ${trend.last} sur la seconde (${sign(trend.delta)}).`);
       T('Coupe plus tôt', `Sur cette session, tes meilleures parties sont les premières. Au-delà de ${Math.ceil(trend.n/2)} parties d'affilée, une pause vaut mieux qu'une partie de plus.`);
@@ -1232,11 +1303,115 @@ function analyzeSession(session, ctx){
   if(st.n>=8 && (!trend || trend.delta<0))
     T('Session longue', `${st.n} parties d'affilée, sans progression sur la fin. Découpe en deux sessions avec une vraie coupure.`);
 
+  /* --- CE QUI SE LIT SANS RÉFÉRENCE ------------------------------------------
+     Jusqu'ici tout se jouait en écart à SES habitudes. Conséquence : une
+     session « dans ses eaux » ne produisait rien, alors que c'est le cas le
+     plus fréquent. Les repères ci-dessous sont absolus, et ce ne sont pas des
+     chiffres inventés : ce sont ceux sur lesquels l'indice COSMO lui-même est
+     calibré (cf. perfParts — 200 ACS, 140 ADR, 70 % KAST, 20 % HS, 0,65 mort
+     par round valent « moyen en ranked »). */
+  if(st.n>=3){
+    // Le constat le plus actionnable qui existe : présent dans les rounds, mais
+    // perdant ses duels. Le KAST dit qu'on contribue, le K/D dit qu'on meurt.
+    if(st.kast!=null && st.kast>=62 && st.kd<=0.90){
+      B('Présent partout, mais tu perds tes duels',
+        `KAST ${Math.round(st.kast)}% — tu es dans le coup sur la plupart des rounds — pour un K/D de ${one(st.kd)}. Tu apportes, mais tu sors perdant des échanges.`, 92);
+      T('Cherche le second contact',
+        `Laisse un coéquipier prendre le duel en premier et arrive en soutien pour le trade. À KAST égal, c'est ce qui fait remonter un K/D comme le tien (${one(st.kd)}) sans rien changer à ta visée.`, 92);
+    }
+    if(st.kast!=null && st.kast>=74)
+      G('Présent dans presque tous les rounds', `KAST ${Math.round(st.kast)}% : très peu de rounds où tu n'apportes rien.`, 72);
+    if(st.dpr!=null && st.dpr>=0.80){
+      B('Tu meurs presque à chaque round', `${one(st.dpr)} mort par round (0.65 est la moyenne en ranked).`, 86);
+      T('Choisis tes duels', 'Sur un round perdu d\'avance, garde ton arme et ta vie : une mort gratuite en fin de round coûte aussi le round suivant.', 86);
+    }
+    // Repli absolu : l'écart à l'habitude n'a rien dit, mais le niveau, lui, parle.
+    if(st.adr!=null && st.adr<=120 && !(dAdr!=null && dAdr<=-12)){
+      B('Peu de dégâts par round', `${Math.round(st.adr)} ADR (140 est la moyenne en ranked).`, 78);
+      T('Tire sur tout ce qui dépasse', 'Un adversaire laissé à 40 PV est un round à moitié gagné pour ton équipe. Le dégât compte même sans le kill.', 78);
+    }
+    if(st.adr!=null && st.adr>=165)
+      G('Tu pèses sur chaque round', `${Math.round(st.adr)} ADR, bien au-dessus de la moyenne en ranked.`, 66);
+    if(st.hs!=null && st.hs<=13 && !(dHs!=null && dHs<=-4)){
+      B('Visée basse', `${Math.round(st.hs)}% de headshots (20 % est la moyenne en ranked).`, 64);
+      T('Travaille la hauteur de crosshair', 'Garde le viseur à hauteur de tête en te déplaçant : la plupart des headshots manqués sont des visées trop basses au moment du contact.', 64);
+    }
+  }
+
+  /* --- CE QUE LE DÉTAIL DES ROUNDS DIT ET QU'ON N'ÉCOUTAIT PAS ---------------
+     L'utilitaire, la précision, les demi-achats, les plants et les multikills
+     étaient extraits de chaque partie et agrégés… sans qu'aucune règle ne les
+     lise. C'est là que se trouvaient les conseils les plus concrets. */
+  if(facts && facts.n>=3){
+    if(facts.utilPerRound!=null && facts.rounds>=40 && facts.utilPerRound<=0.7){
+      B('Ton kit reste dans la poche', `${one(facts.utilPerRound)} compétence par round sur ${facts.rounds} rounds.`, 84);
+      T('Dépense ton utilitaire chaque round', 'Une compétence non utilisée vaut zéro. Elles se rechargent : joue-les tôt, même imparfaitement, plutôt que de les garder pour un moment parfait qui n\'arrive pas.', 84);
+    }
+    if(facts.utilPerRound!=null && facts.rounds>=40 && facts.utilPerRound>=1.4)
+      G('Tu joues ton kit', `${one(facts.utilPerRound)} compétence par round : l\'utilitaire part au bon rythme.`, 62);
+    if(facts.ultPerGame!=null && facts.n>=4 && facts.ultPerGame<=0.8){
+      B('Tes ultimes finissent inutilisés', `${one(facts.ultPerGame)} ultime par partie en moyenne.`, 70);
+      T('Un ultime gardé est un ultime perdu', 'Utilise-le sur le round où il change quelque chose, pas sur le round parfait. À la fin de la partie il ne vaut plus rien.', 70);
+    }
+    if(facts.legPct!=null && facts.shots>=150 && facts.legPct>=12){
+      B('Beaucoup de balles dans les jambes', `${Math.round(facts.legPct)}% de tes tirs touchés partent dans les jambes.`, 66);
+      T('Contrôle la descente du recul', 'Tire par rafales courtes et redescends le viseur entre deux : les balles dans les jambes sont presque toujours une rafale trop longue.', 66);
+    }
+    if(facts.k3plus>=3)
+      G('Tu fais basculer des rounds seul', `${facts.k3plus} rounds à 3 éliminations ou plus.`, 68);
+    if(facts.plants+facts.defuses>=8)
+      G('Tu joues l\'objectif', `${facts.plants} spike${facts.plants>1?'s':''} posée${facts.plants>1?'s':''} et ${facts.defuses} désamorçage${facts.defuses>1?'s':''}.`, 60);
+    if(facts.halfWR!=null && facts.halfN>=10 && facts.halfWR<=30){
+      B('Les demi-achats ne passent pas', `${Math.round(facts.halfWR)}% de rounds gagnés en demi-achat (${facts.halfN} rounds).`, 62);
+      T('Décidez l\'achat ensemble', 'Un demi-achat en ordre dispersé est le pire des deux mondes. Soit toute l\'équipe achète, soit toute l\'équipe économise.', 62);
+    }
+    if(facts.afk>0)
+      B('Rounds joués en AFK', `${facts.afk} round${facts.afk>1?'s':''} où tu es marqué absent — à 4 contre 5, le round est perdu d\'avance.`, 58);
+    // L'arme seule ne dit rien ; couplée à des rounds pauvres, elle dit quelque chose.
+    if(facts.topWeapon && facts.kills>=50 && facts.topWeapon.share>=75
+       && ((facts.ecoWR!=null && facts.ecoWR<=20) || (facts.halfWR!=null && facts.halfN>=10 && facts.halfWR<=30)))
+      T('Travaille une deuxième arme', `${Math.round(facts.topWeapon.share)}% de tes éliminations sont au ${facts.topWeapon.name}. Les rounds d\'eco et de demi-achat se gagnent avec les autres — Sheriff, Spectre, Bulldog.`, 56);
+  }
+
+  /* --- COMPARAISON AUX FAITS D'ARMES HABITUELS ------------------------------
+     `base.facts` était calculé puis jamais lu. */
+  if(facts && bf && facts.n>=3 && bf.n>=6){
+    const fdNow=facts.firstDeaths/facts.n, fdBase=bf.firstDeaths/bf.n;
+    if(fdNow>=fdBase+0.8 && facts.firstDeaths>=3){
+      B('Tu meurs en premier plus que d\'habitude',
+        `${one(fdNow)} première mort par partie contre ${one(fdBase)} d\'habitude.`, 80);
+      T('Ralentis les entrées', 'Sur cette session tu prends le premier contact plus souvent que d\'ordinaire. Laisse l\'info venir avant de prendre l\'angle.', 80);
+    }
+    const utilNow=facts.utilPerRound, utilBase=bf.utilPerRound;
+    if(utilNow!=null && utilBase!=null && utilNow<=utilBase-0.25 && facts.rounds>=40)
+      B('Tu utilises moins ton kit que d\'habitude', `${one(utilNow)} compétence par round contre ${one(utilBase)} d\'ordinaire.`, 72);
+  }
+
   // --- Bilan
-  if(st.n>=3 && st.winrate>=70) G('Série gagnante', `${st.wins} victoires sur ${st.n} parties.`);
-  if(st.n>=3 && st.winrate<=30) B('Série perdante', `${st.losses} défaites sur ${st.n} parties.`);
-  if(st.rrNet!=null && st.rrNet>=30) G('RR bien remonté', `${sign(st.rrNet)} RR sur ${st.rrGames} partie${st.rrGames>1?'s':''} classée${st.rrGames>1?'s':''}.`);
-  if(st.rrNet!=null && st.rrNet<=-30) B('RR lâché', `${st.rrNet} RR sur ${st.rrGames} partie${st.rrGames>1?'s':''} classée${st.rrGames>1?'s':''}.`);
+  if(st.n>=3 && st.winrate>=70) G('Série gagnante', `${st.wins} victoires sur ${st.n} parties.`, 72);
+  if(st.n>=3 && st.winrate<=30) B('Série perdante', `${st.losses} défaites sur ${st.n} parties.`, 72);
+  if(st.rrNet!=null && st.rrNet>=30) G('RR bien remonté', `${sign(st.rrNet)} RR sur ${st.rrGames} partie${st.rrGames>1?'s':''} classée${st.rrGames>1?'s':''}.`, 74);
+  if(st.rrNet!=null && st.rrNet<=-30) B('RR lâché', `${st.rrNet} RR sur ${st.rrGames} partie${st.rrGames>1?'s':''} classée${st.rrGames>1?'s':''}.`, 74);
+
+  /* --- NUANCES -------------------------------------------------------------
+     Entre « rien à signaler » et « constat net » il y a une zone où quelque
+     chose bouge quand même. Ces règles ne se déclenchent QUE si la règle forte
+     correspondante n'a rien dit, et elles le disent avec les mots qui vont :
+     « légèrement », « un peu ». Poids faible : elles passent en dernier. */
+  if(dIdx!=null && dIdx>=3 && dIdx<6)
+    G('Légèrement au-dessus de tes standards', `Indice ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude.`, 40);
+  if(dIdx!=null && dIdx<=-3 && dIdx>-6)
+    B('Légèrement en dessous de tes standards', `Indice ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude.`, 40);
+  if(dKast!=null && dKast<=-3 && dKast>-6)
+    B('Un peu moins dans le coup', `KAST ${Math.round(st.kast)}% contre ${Math.round(base.kast)}% d'habitude.`, 38);
+  if(trend){
+    if(trend.delta>=4 && trend.delta<8)
+      G('Tu as redressé la barre', `Indice ${trend.first} sur la première moitié, ${trend.last} sur la seconde (${sign(trend.delta)}) : la session s'est terminée mieux qu'elle n'a commencé.`, 46);
+    if(trend.delta<=-4 && trend.delta>-8){
+      B('Tu t\'effrites en fin de session', `Indice ${trend.first} puis ${trend.last} (${sign(trend.delta)}).`, 46);
+      T('Une pause avant la partie de trop', `La baisse est légère mais elle est là. Après ${Math.ceil(trend.n/2)} parties, dix minutes debout valent mieux qu'une relance immédiate.`, 46);
+    }
+  }
 
   // --- Divergence perf / résultat : le constat le plus utile de tous.
   if(dIdx!=null){
@@ -1249,20 +1424,63 @@ function analyzeSession(session, ctx){
   // --- Maps & agents de la session
   const maps=bestWorst(ms, M=>M.map, 2);
   if(maps && maps.best.index-maps.worst.index>=10){
-    G('Ta map de la session', `${maps.best.key} — indice ${maps.best.index} sur ${maps.best.n} partie${maps.best.n>1?'s':''}.`);
-    B('Ta map compliquée', `${maps.worst.key} — indice ${maps.worst.index} sur ${maps.worst.n} partie${maps.worst.n>1?'s':''}.`);
+    G('Ta map de la session', `${maps.best.key} — indice ${maps.best.index} sur ${maps.best.n} partie${maps.best.n>1?'s':''}.`, 60);
+    B('Ta map compliquée', `${maps.worst.key} — indice ${maps.worst.index} sur ${maps.worst.n} partie${maps.worst.n>1?'s':''}.`, 60);
   }
   const ags=bestWorst(ms, M=>M.me.agent, 2);
   if(ags && ags.best.index-ags.worst.index>=10)
-    T('Choix d\'agent', `${ags.best.key} t'a bien réussi (indice ${ags.best.index}) là où ${ags.worst.key} a moins marché (${ags.worst.index}). À garder en tête au prochain agent select.`);
+    T('Choix d\'agent', `${ags.best.key} t'a bien réussi (indice ${ags.best.index}) là où ${ags.worst.key} a moins marché (${ags.worst.index}). À garder en tête au prochain agent select.`, 60);
+  // Une map nettement en dessous du reste de la session mérite d'être nommée,
+  // même quand l'écart avec la meilleure ne suffit pas à faire une paire.
+  if(maps && maps.rows.length>=2 && st.index!=null && maps.worst.index<=st.index-8 && !(maps.best.index-maps.worst.index>=10))
+    T('Une map à retravailler', `${maps.worst.key} : indice ${maps.worst.index} sur ${maps.worst.n} partie${maps.worst.n>1?'s':''}, contre ${Math.round(st.index)} sur l'ensemble de la session.`, 52);
 
   if(st.forfeits>0)
     T('Parties écourtées', `${st.forfeits} partie${st.forfeits>1?'s':''} coupée${st.forfeits>1?'s':''} par forfait : l'échantillon est trop court pour juger, l'indice a été rapproché de la moyenne.`);
 
-  if(!base) T('Pas encore de référence', `Il faut au moins ${BASELINE_MIN} autres parties dans les mêmes modes pour comparer cette session à tes habitudes. Reviens quand l'historique aura grossi.`);
+  /* --- PLANCHER ------------------------------------------------------------
+     Après neuf parties, repartir sans un seul angle de travail n'aide personne.
+     On n'invente rien pour autant : on nomme le point RÉELLEMENT le plus faible
+     de la session, et on dit explicitement qu'il reste dans les eaux du joueur.
+     Le classement se fait en fraction du seuil auquel la règle forte se serait
+     déclenchée — c'est ce qui rend comparables des unités qui ne le sont pas
+     (un ACS et un K/D ne se soustraient pas). */
+  if(!tips.length && st.n>=3){
+    const rel=[
+      { lab:'ton indice',  cur:Math.round(st.index||0),        ref:base&&Math.round(base.index||0),  d:dIdx,  seuil:6 },
+      { lab:'ton ACS',     cur:Math.round(st.acs||0),          ref:base&&Math.round(base.acs||0),    d:dAcs,  seuil:15 },
+      { lab:'ton ADR',     cur:Math.round(st.adr||0),          ref:base&&Math.round(base.adr||0),    d:dAdr,  seuil:12 },
+      { lab:'ton K/D',     cur:one(st.kd||0),                  ref:base&&one(base.kd||0),            d:dKd,   seuil:0.25 },
+      { lab:'ton HS%',     cur:Math.round(st.hs||0)+'%',       ref:base&&(Math.round(base.hs||0)+'%'), d:dHs, seuil:4 },
+      { lab:'ton KAST',    cur:(st.kast!=null?Math.round(st.kast)+'%':null), ref:base&&base.kast!=null?Math.round(base.kast)+'%':null, d:dKast, seuil:6 },
+    ].filter(x=>x.d!=null && x.cur!=null && x.ref!=null)
+     .map(x=>({ ...x, ratio:x.d/x.seuil }))
+     .sort((a,b)=>a.ratio-b.ratio)[0];
 
+    if(rel && rel.ratio<0){
+      T('Rien ne ressort — mais si tu veux un angle',
+        `Tout est resté dans tes eaux sur cette session. Le point le plus faible est ${rel.lab} : ${rel.cur} contre ${rel.ref} d'habitude. Ce n'est pas un problème, c'est juste là qu'il y a le plus à gagner.`, 30);
+    }else if(!base){
+      // Sans référence, l'écart à la moyenne ranked reste mesurable.
+      const abs=[
+        { lab:'ton ACS',  cur:Math.round(st.acs||0),     ratio:((st.acs||0)-200)/200 },
+        { lab:'ton ADR',  cur:Math.round(st.adr||0),     ratio:((st.adr||0)-140)/140 },
+        { lab:'ton HS%',  cur:Math.round(st.hs||0)+'%',  ratio:((st.hs||0)-20)/20 },
+      ].sort((a,b)=>a.ratio-b.ratio)[0];
+      if(abs && abs.ratio<0)
+        T('Un angle de travail, à défaut de référence',
+          `Sans historique pour te comparer, le repère reste la moyenne en ranked : ${abs.lab} est à ${abs.cur}, en dessous. C'est là qu'il y a le plus à gagner.`, 30);
+    }
+  }
+
+  if(!base) T('Pas encore de référence', `Il faut au moins ${BASELINE_MIN} autres parties dans les mêmes modes pour comparer cette session à tes habitudes. Reviens quand l'historique aura grossi.`, 100);
+
+  /* Trop de constats tue le constat. On garde les plus significatifs, du plus
+     au moins important — le poids est fixé à chaque règle, jamais au hasard. */
+  const top=(arr,n)=>arr.slice().sort((a,b)=>(b.w||0)-(a.w||0)).slice(0,n);
   return { st, facts, base, trend, maps, ags,
-           verdict:sessionVerdict(st, base, trend), good, bad, tips };
+           verdict:sessionVerdict(st, base, trend),
+           good:top(good, ANALYSIS_MAX), bad:top(bad, ANALYSIS_MAX), tips:top(tips, ANALYSIS_MAX) };
 }
 
 // Rapport COMMUN : chaque membre COSMO présent dans la session, avec ses
@@ -1997,7 +2215,15 @@ async function fillRanks(){
   else setFresh('home','ok',{ ts:Date.now() });
 }
 function toggleSheet(){ $('sheet').hidden=!$('sheet').hidden; }
+
+/* Onglet actif de la barre du bas. `null` sur un profil : on y arrive depuis
+   une carte d'accueil, pas depuis un onglet — allumer « Accueil » désignerait
+   un écran qu'on n'est pas en train de regarder. */
+function setTab(id){
+  document.querySelectorAll('#tabbar button').forEach(b => b.classList.toggle('on', b.id === id));
+}
 function showHome(){
+  setTab('btnHome');
   $('profile').hidden = true;
   $('tribunal').hidden = true;
   $('leaderboard').hidden = true;
@@ -2025,20 +2251,43 @@ function relTime(iso){
   const h=Math.round(m/60); if(h<24) return `il y a ${h} h`; return `il y a ${Math.round(h/24)} j`;
 }
 
+/* Anneau de progression dans le palier (0-100 RR), autour de l'icône de rang.
+   Il remplace la barre : à côté du rang, la progression se lit d'un coup d'œil
+   au lieu de demander de relier une barre à un chiffre plus bas. */
+function rrRing(rr, cls, stroke){
+  const v = clamp(num(rr,0), 0, 100), R = 34, C = 2*Math.PI*R, sw = stroke || 5;
+  return `<svg class="${cls||'rt-ring'}" viewBox="0 0 80 80" aria-hidden="true">
+    <circle cx="40" cy="40" r="${R}" fill="none" stroke="var(--line)" stroke-width="${sw}"/>
+    <circle cx="40" cy="40" r="${R}" fill="none" stroke="var(--amber)" stroke-width="${sw}" stroke-linecap="round"
+      transform="rotate(-90 40 40)" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${(C*(1-v/100)).toFixed(1)}"/>
+  </svg>`;
+}
+
+function rankTile(lab, name, icon, sub, ring){
+  const ic = icon ? `<img src="${esc(icon)}" alt="" loading="lazy">` : '<span class="rt-none">—</span>';
+  return `<div class="rtile">
+    <div class="rt-lab">${esc(lab)}</div>
+    <div class="rt-ico">${ring||''}${ic}</div>
+    <div class="rt-name">${esc(name||'Non classé')}</div>
+    <div class="rt-sub mono">${esc(sub||'')}</div>
+  </div>`;
+}
+
+// Rang actuel et plus haut rang atteint, côte à côte.
 function renderRank(mmr,overall){
   const rr=mmr.rr!=null?num(mmr.rr):null;
   const oT=tierOf(overall);
-  const tierInner=mmr.icon
-    ? `<img src="${esc(mmr.icon)}" alt="${esc(mmr.tier||'')}" loading="lazy">`
-    : esc(mmr.tier||'—').replace(' ','<br>');
+  const peak=mmr.peak||'';
+  // Le peak n'a pas d'icône dans la réponse : on la retrouve par son nom.
+  const peakIcon=(peak && TIERS) ? (TIERS[peak.toLowerCase()]||'') : '';
   $('rank').innerHTML=`
-    <div class="rankbox">
-      <div class="tier${mmr.icon?' hasimg':''}">${tierInner}</div>
-      <div class="rankinfo"><div class="big">${esc(mmr.tier||'Non classé')}</div>
-        <div class="bar"><i id="rrbar"></i></div>
-        <div class="meta">${rr!==null?rr+'/100 RR':'RR n/c'}${mmr.elo?' · elo '+esc(mmr.elo):''}${mmr.peak?' · peak '+esc(mmr.peak):''}</div></div></div>
+    <div class="rank2">
+      ${rankTile('Rang actuel', mmr.tier, mmr.icon,
+                 rr!==null ? `${rr} / 100 RR${mmr.elo?' · elo '+mmr.elo:''}` : 'RR n/c',
+                 rr!==null ? rrRing(rr) : '')}
+      ${rankTile('Plus haut atteint', peak, peakIcon, '')}
+    </div>
     <div class="indice">Indice COSMO (8 derniers) <span class="num" style="color:${oT.c}">${overall||'—'}</span><span style="color:${oT.c}">/100 · ${oT.t}</span></div>`;
-  setTimeout(()=>{const b=$('rrbar'); if(b) b.style.width=(rr!==null?rr:0)+'%';},60);
 }
 // "e8a3" -> "E8 · A3" ; sinon le code brut en majuscules.
 function seasonLabel(short){
@@ -2359,16 +2608,40 @@ function renderPeakActs(){
     }).join('') + `</div>`;
 }
 
-// Cellule "rang au moment de la partie + RR gagné/perdu" pour une ligne d'historique.
-// Toujours rendue (même vide) pour garder l'alignement de la grille ; remplie quand
-// la partie est présente dans l'historique MMR (ranked récent).
-function rrCell(rr){
-  if(!rr || rr.change==null) return '<div class="mrr"></div>';
+// Puce « RR gagné/perdu + rang au moment de la partie », en haut de la carte.
+// Rien n'est rendu quand la partie n'est pas dans l'historique MMR (non classée,
+// ou trop ancienne) : une place vide ne sert plus à aligner quoi que ce soit.
+/* Le ±RR de la partie, le RR ATTEINT dans le palier juste en dessous, et
+   l'icône de rang cerclée de cette progression. Les trois chiffres racontent
+   la même chose à trois échelles : ce que la partie a rapporté, où on en est
+   dans le palier, et quel palier.
+   Une montée ou une descente de palier est signalée par un chevron : sans lui,
+   un « +21 » suivi d'un RR qui CHUTE (90 -> 11) ressemble à une erreur alors
+   que c'est une promotion. */
+function rrChip(rr){
+  if(!rr || rr.change==null) return '';
   const c=rr.change, sign=c>0?'+':'';
-  const icon=rr.icon?`<img class="mrr-icon" src="${esc(rr.icon)}" alt="${esc(rr.tierName||'')}" title="${esc(rr.tierName||'')}" loading="lazy">`:'';
-  return `<div class="mrr" title="${esc(rr.tierName||'')}${rr.rr!=null?' · '+rr.rr+' RR':''}">
-    ${icon}<span class="mrr-delta ${c>=0?'up':'dn'}">${sign}${c}</span>
-  </div>`;
+  const icon=rr.icon?`<img class="mrr-icon" src="${esc(rr.icon)}" alt="" loading="lazy">`:'';
+  const ring=rr.rr!=null ? rrRing(rr.rr, 'mc-ringsvg', 8) : '';
+  const now=rr.rr!=null ? `<span class="mc-rrnow">${num(rr.rr)}</span>` : '';
+  const promo=rr.promo ? `<span class="mc-promo ${rr.promo>0?'up':'dn'}" aria-hidden="true">${rr.promo>0?'▲':'▼'}</span>` : '';
+  const promoTxt=rr.promo ? (rr.promo>0?' · palier gagné':' · palier perdu') : '';
+  return `<span class="mc-rr" title="${esc(rr.tierName||'')}${rr.rr!=null?' · '+rr.rr+' RR dans le palier':''}${promoTxt}">
+    <span class="mc-rrv"><span class="mrr-delta ${c>=0?'up':'dn'}">${sign}${c}</span>${now}</span>
+    <span class="mc-ring">${ring}${icon}${promo}</span>
+  </span>`;
+}
+
+// Portrait plein de l'agent — le même que sur les cartes d'accueil. L'uuid vient
+// de la partie ; sans lui on cherche par nom dans la liste valorant-api, et en
+// dernier recours on prend la tête, qui est toujours en cache.
+// Peu d'images distinctes en pratique (une squad tourne sur quelques agents),
+// donc le navigateur les sert depuis son cache dès la deuxième carte.
+function agentArt(s){
+  if(!s) return '';
+  if(s.agentId) return `${MEDIA}/${encodeURIComponent(s.agentId)}/fullportrait.png`;
+  const a = AGENT_LIST.find(x => x.name === s.agent);
+  return (a && a.portrait) || (AGENTS && AGENTS[(s.agent||'').toLowerCase()]) || '';
 }
 
 function renderList(){
@@ -2384,13 +2657,29 @@ function renderList(){
     const i = STATE.matches.indexOf(M);
     const s = M.me, sc100 = s ? s.score100 : 0, t = tierOf(sc100), f = s ? flair(s.kd) : '';
     const splash = imgURL(MAPS && MAPS[(M.map||'').toLowerCase()]);
-    const bg = splash ? `<div class="mbg" style="background-image:url('${splash}')"></div>` : '';
-    return `<div class="mrow" data-idx="${i}">${bg}
-      <div class="res ${M.result}">${M.result==='w'?'V':'D'}</div>
-      <div class="minfo"><b>${esc(M.map)}</b><span>${esc(M.mode)} · ${s?esc(s.agent):'—'} · ${s?s.k+'/'+s.d+'/'+s.a:''} · ${relTime(M.started)}</span></div>
-      <div class="mscore" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${M.myScore}–${M.oppScore}</div>
-      ${rrCell(M.rr)}
-      <div class="scorebadge score-mini flair-${f} sd" style="--sc:${t.c}" data-sd="${i}" title="Voir le détail du calcul">${s?sc100:'—'}${flairHTML(f)}</div>
+    const art = agentArt(s);
+    const won = M.result === 'w';
+    return `<div class="mrow ${M.result}" data-idx="${i}">
+      <div class="mc-top">
+        <span class="mc-mode">${esc(M.mode)}</span>
+        <span class="mc-when">${esc(relTime(M.started))}</span>
+        ${rrChip(M.rr)}
+      </div>
+      <div class="mc-hero${art ? ' art' : ''}">
+        ${splash ? `<div class="mbg" style="background-image:url('${splash}')"></div>` : ''}
+        ${art ? `<img class="mc-agent" src="${esc(art)}" alt="" loading="lazy">` : ''}
+        <div class="mc-id">
+          <b>${s ? esc(s.agent) : '—'}</b>
+          <span class="mc-map">${esc(M.map)}</span>
+        </div>
+        <span class="mc-res">${won ? 'VICTOIRE' : 'DÉFAITE'}</span>
+      </div>
+      <div class="mc-stats">
+        <span class="mc-st"><i>K / D / A</i><b>${s ? s.k+' / '+s.d+' / '+s.a : '—'}</b></span>
+        <span class="mc-st"><i>ACS</i><b>${s ? s.acs : '—'}</b></span>
+        <span class="mc-st"><i>Score</i><b>${M.myScore}–${M.oppScore}</b></span>
+        <div class="scorebadge score-mini flair-${f} sd" style="--sc:${t.c}" data-sd="${i}" title="Voir le détail du calcul">${s?sc100:'—'}${flairHTML(f)}</div>
+      </div>
     </div>`;
   }).join('');
   
@@ -2548,6 +2837,22 @@ async function copyShareLink(url, btn){
 
 // Ouvre le profil d'un membre depuis un « pseudo#tag ». Les anciens pseudos sont
 // acceptés : un lien partagé avant un renommage continue de fonctionner.
+/* Niveau de compte et bannière de carte de joueur.
+   Ces deux champs arrivent dans /valorant/v2/account, qu'on appelait déjà pour
+   le seul puuid : ils étaient téléchargés à chaque ouverture de profil, puis
+   jetés. Aucun appel supplémentaire.
+   Les noms de champs sont cherchés sous plusieurs variantes, comme partout
+   ailleurs ici : HenrikDev les renomme au fil des versions, et perdre la
+   bannière sur un renommage serait le défaut le plus probable de ce coin. */
+function accountInfo(d){
+  if(!d || typeof d!=='object') return null;
+  const raw = d.account_level!=null ? d.account_level : (d.level!=null ? d.level : null);
+  const level = (raw!=null && !isNaN(raw)) ? Number(raw) : null;
+  const c = d.card;
+  const card = (typeof c==='string' ? c : (c && (c.wide||c.large||c.small))) || '';
+  return (level!=null || card) ? { level, card } : null;
+}
+
 function openProfileByKey(name, tag){
   const k=String(name+'#'+tag).toLowerCase();
   const i=ROSTER.findIndex(m=>memberKey(m)===k || memberAliases(m).some(a=>memberKey(a)===k));
@@ -2612,8 +2917,11 @@ function openSessionReport(key){
       <th>Joueur</th><th>N</th><th>V-D</th><th>Indice</th><th>ACS</th><th>K/D</th><th>RR</th>
     </tr></thead><tbody>${squad.map(r=>{
       const rt=tierOf(Math.round(r.st.index||0));
+      // Même geste que dans le scoreboard : un membre du roster mène à son profil.
+      const mate = r.self || r.guest ? null : rosterMemberOf(r.name, r.tag);
+      const link = mate ? ` class="link" data-prof="${esc(mate.name+'#'+mate.tag)}" title="Ouvrir le profil de ${esc(mate.name)}"` : '';
       return `<tr${r.self?' class="sx-self"':''}>
-        <td><b>${esc(r.name)}</b>${r.self?' <em>(toi)</em>':(r.guest?' <em>(invité)</em>':'')}</td>
+        <td><b${link}>${esc(r.name)}</b>${r.self?' <em>(toi)</em>':(r.guest?' <em>(invité)</em>':'')}</td>
         <td>${r.n}</td>
         <td><b class="w">${r.st.wins}</b>-<b class="l">${r.st.losses}</b></td>
         <td class="scell" style="color:${rt.c}">${Math.round(r.st.index||0)}</td>
@@ -2803,10 +3111,16 @@ function renderRoundDetail(n){
   const r=FACTS_CUR.timeline.find(x=>x.n===n); if(!r) return;
   document.querySelectorAll('#mdTimeline .rchip').forEach(b=>b.classList.toggle('sel', +b.dataset.round===n));
   const secs = ms => (ms/1000).toFixed(0)+'s';
+  // Cyan = notre camp, rouge = en face. Le gras marque la ligne où on est
+  // soi-même impliqué.
+  const who = (name, ally, isMe) =>
+    `<span class="p ${ally?'ally':'foe'}${isMe?' me':''}">${esc(name)}</span>`;
   const kills = r.kills.length
     ? r.kills.map(k=>`<div class="mdk${k.mine?' mine':''}${k.onMe?' onme':''}">
         <span class="t">${esc(secs(k.t))}</span>
-        <span class="p">${esc(k.killer)}</span><span class="w">${esc(k.weapon||'—')}</span><span class="p">${esc(k.victim)}</span>
+        ${who(k.killer, k.killerAlly, k.mine)}
+        <span class="w">${weaponTag(k.weapon)}</span>
+        ${who(k.victim, k.victimAlly, k.onMe)}
         ${k.assists.length?`<span class="a">+ ${esc(k.assists.join(', '))}</span>`:''}
       </div>`).join('')
     : `<div class="mdk"><span class="a">Aucune élimination sur ce round.</span></div>`;
@@ -2819,7 +3133,7 @@ function renderRoundDetail(n){
     </div>
     <div class="md-rmeta mono">
       ${r.myKills} kill${r.myKills>1?'s':''} · ${r.myDmg} dégâts · ${r.myScore} score
-      · achat ${r.loadout} cr${r.weapon?` (${esc(r.weapon)}${r.armor?' + '+esc(r.armor):''})`:''}
+      · achat ${r.loadout} cr${r.weapon?` <span class="w">${weaponTag(r.weapon)}</span>${r.armor?' + '+esc(r.armor):''}`:''}
       ${r.plant?` · spike posée site ${esc(r.plant.site)} par ${esc(r.plant.by)}`:''}
       ${r.defuse?` · désamorcée par ${esc(r.defuse.by)}`:''}
       ${r.afk?' · ⚠️ AFK':''}
@@ -2831,6 +3145,28 @@ function renderRoundDetail(n){
    Scoreboard + détail complet au même endroit : cliquer une partie de la liste
    ouvre tout d'un coup, au lieu d'un scoreboard en bas de page et d'un second
    bouton pour les détails. */
+
+/* Le membre du roster (ou l'invité) derrière une ligne de scoreboard.
+   Les anciens pseudos comptent : un membre renommé reste reconnu. */
+function rosterMemberOf(name, tag){
+  const k = memberKey({ name, tag });
+  return sessionRoster().find(m => memberKey(m) === k || memberAliases(m).some(a => memberKey(a) === k)) || null;
+}
+
+/* ±RR d'un membre COSMO sur une partie donnée.
+   CE QU'ON NE PEUT PAS FAIRE, et pourquoi. Le détail d'une partie ne porte le
+   RR d'aucun joueur : ni HenrikDev ni Riot ne l'exposent. Ce qu'on a, c'est
+   l'historique MMR de chaque membre du roster, accumulé dans son blob, où la
+   partie se retrouve par son id. Donc : chiffre pour la squad, RIEN pour les
+   cinq d'en face et pour un coéquipier hors roster. On ne le devine pas — un
+   ±RR inventé serait pire que pas de ±RR du tout. */
+function memberRR(m, matchId){
+  if(!m || !matchId || !SQUAD_HIST) return null;
+  const list = SQUAD_HIST[memberKey(m)];
+  if(!Array.isArray(list)) return null;
+  const M = list.find(x => x && x.id === matchId);
+  return (M && M.rr && M.rr.change != null) ? M.rr : null;
+}
 
 // Scoreboard d'une partie. Renvoie aussi la version « détaillée » utilisée, car
 // une partie compacte du blob peut avoir son détail complet chargé entre-temps.
@@ -2845,6 +3181,7 @@ function scoreboardHTML(M){
   [...all].sort((a,b)=>b.acs-a.acs).forEach((s,idx)=>{ s.acsRank=idx+1; });
   SB_LINES=all;   // pour ouvrir le détail du calcul au clic sur un indice
   const blue=all.filter(s=>s.team===detail.myTeamId), red=all.filter(s=>s.team!==detail.myTeamId);
+  let rrShown = false;
   const sbRows = rows => rows.map(s=>{
     const me=s.name.toLowerCase()===STATE.name.toLowerCase()&&s.tag.toLowerCase()===STATE.tag.toLowerCase();
     const t=tierOf(s.score100);
@@ -2861,10 +3198,19 @@ function scoreboardHTML(M){
     const posCell = partialNow
       ? `<td class="pos">—</td>`
       : `<td class="pos${s.acsRank===1?' top':''}">${ordinalFr(s.acsRank)}</td>`;
+    // ±RR : connu pour la squad seulement (cf. memberRR).
+    const mem = rosterMemberOf(s.name, s.tag);
+    const rr = memberRR(mem, detail.id);
+    if(rr) rrShown = true;
+    const rrTag = rr
+      ? `<span class="pn-rr ${rr.change>=0?'up':'dn'}" title="${esc(rr.tierName||'')}">${rr.change>=0?'+':''}${rr.change} RR</span>`
+      : '';
+    // Un membre du roster (hors soi-même) mène à son profil d'un clic.
+    const prof = (mem && !mem.guest && !me) ? ` data-prof="${esc(mem.name+'#'+mem.tag)}" title="Ouvrir le profil de ${esc(mem.name)}"` : '';
     return `<tr class="${me?'me':''}">
       ${posCell}
       <td class="pcol"><div class="agent">${agCell}
-        <div class="pn"><b>${esc(s.name)}</b> <span>#${esc(s.tag)}</span></div></div></td>
+        <div class="pn${prof?' pnlink':''}"${prof}><b${prof?' class="link"':''}>${esc(s.name)}</b> <span>#${esc(s.tag)}</span>${rrTag}</div></div></td>
       <td class="scell sd" style="color:${t.c}" data-sb="${all.indexOf(s)}" title="Voir le détail du calcul">${s.score100}</td>
       <td style="color:${sc((s.acs-130)/2)}"><b>${s.acs}</b></td>
       <td><b style="color:${sc((s.kd-0.6)*100)}">${s.k}</b>/${s.d}/${s.a}</td>
@@ -2880,9 +3226,14 @@ function scoreboardHTML(M){
       ? `<div class="sbnote">Scoreboard complet indisponible pour cette partie (trop ancienne ou hors API).</div>`
       : `<div class="sbnote">Chargement du scoreboard complet…</div>`;
   }
+  // sbRows() renseigne rrShown : il faut donc l'appeler avant de composer la note.
+  const body = `<tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
+    <tr><td colspan="8" class="teamlabel red">Adverse — ${detail.oppScore} rounds</td></tr>${sbRows(red)}</tbody>`;
+  const rrNote = rrShown
+    ? `<div class="md-none">Le <b>±RR</b> n'est affiché que pour la squad : le détail d'une partie ne porte le RR d'aucun joueur, il vient de l'historique MMR accumulé de chaque membre. Pour les autres, personne ne le publie.</div>`
+    : '';
   const html=`<div class="sx-tablewrap"><table class="sb"><thead><tr><th>#</th><th class="pcol">Joueur</th><th>Indice</th><th>ACS</th><th>K/D/A</th><th>+/–</th><th>HS%</th><th>ADR</th></tr></thead>
-    <tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
-    <tr><td colspan="8" class="teamlabel red">Adverse — ${detail.oppScore} rounds</td></tr>${sbRows(red)}</tbody></table></div>${note}`;
+    ${body}</table></div>${note}${rrNote}`;
   return { html, detail, partialNow };
 }
 
@@ -3052,6 +3403,16 @@ function openMatch(i){
 }
 function closeMatchFacts(){ modalClose('matchModal'); }
 
+/* Ouvre le profil d'un « Pseudo#tag » depuis une modale : on ferme d'abord,
+   sinon le profil se charge derrière une fenêtre restée ouverte. */
+function openProfileFrom(idStr){
+  const i=String(idStr||'').lastIndexOf('#');
+  if(i<1) return false;
+  const name=String(idStr).slice(0,i), tag=String(idStr).slice(i+1);
+  closeMatchFacts(); closeScoreDetail(); closeSessionReport();
+  return openProfileByKey(name, tag);
+}
+
 // Ouvre le détail pour une partie de la liste (le joueur du profil).
 function openMatchScore(i){
   const M=STATE.matches[i]; if(!M||!M.me) return;
@@ -3090,18 +3451,12 @@ function openProfile(idx){
   PROFILE_SHOWN = FRESH_SIZE;
   SELECTED_IDX=-1; SELECTED_ID=null;
 
-  const bustSrc = esc(m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`); // bustportrait.png n'existe pas (404) chez valorant-api
-
-  $('phead').innerHTML=`
-    <div class="pbust ${m.customImg?'custom':''}" style="--pc:${esc(m.color)}">
-      <img src="${bustSrc}" alt="${esc(m.agent)}">
-      <div class="mg">${esc(m.agent.slice(0,2))}</div>
-    </div>
-    <div><div class="eb" style="color:${esc(m.color)}">${esc(m.agent)} · ${esc(m.role)}</div><h1>${esc(m.name)}<b>#${esc(m.tag)}</b></h1></div>
-    <div class="ptools"><button class="fresh" id="freshProfile" type="button" hidden></button><button class="btn refresh">Rafraîchir</button></div>`;
-
-  const bust=$('phead').querySelector('.pbust img');
-  if(bust){const pb=bust.closest('.pbust');const f=()=>{bust.style.display='none';if(pb)pb.classList.add('noimg');};bust.addEventListener('error',f);if(bust.complete&&bust.naturalWidth===0)f();}
+  setTab(null);
+  CURRENT_MEMBER = m;
+  ACCOUNT = null;                       // celui du profil précédent ne vaut plus
+  const cached = cacheGetProfile(memberKey(m));
+  if(cached && cached.acc) ACCOUNT = cached.acc;   // bannière tout de suite, comme le reste
+  renderPHead(m);
   $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; if($('comps')) $('comps').hidden=true; $('profile').hidden=false; window.scrollTo(0,0);
 
   CURRENT_MODE = 'all';
@@ -3111,6 +3466,40 @@ function openProfile(idx){
 }
 
 // Peint tout le profil depuis l'état courant, qu'il vienne du cache ou de l'API.
+/* En-tête de profil : bannière de carte de joueur, portrait de l'agent fétiche,
+   pseudo et niveau de compte. Sans carte connue (compte neuf, champ absent, ou
+   données pas encore arrivées), la bannière reste le fond sobre d'avant — rien
+   ne saute aux yeux, ça se remplit quand ça arrive. */
+function renderPHead(m){
+  const host=$('phead');
+  if(!host || !m) return;
+  const art = ACCOUNT ? imgURL(ACCOUNT.card) : '';
+  // bustportrait.png n'existe pas (404) chez valorant-api : c'est fullportrait.
+  const bust = m.customImg || (m.uuid ? `${MEDIA}/${encodeURIComponent(m.uuid)}/fullportrait.png` : '');
+  const lvl = (ACCOUNT && ACCOUNT.level!=null)
+    ? `<span class="pb-lvl" title="Niveau de compte Riot">niv. ${ACCOUNT.level}</span>` : '';
+  host.innerHTML=`
+    <div class="pbanner" style="--pc:${esc(m.color)}">
+      ${art?`<div class="pb-art" style="background-image:url('${art}')"></div>`:''}
+      <div class="pbust ${m.customImg?'custom':''}">
+        <img src="${esc(bust)}" alt="${esc(m.agent)}">
+        <div class="mg">${esc((m.agent||'').slice(0,2))}</div>
+      </div>
+      <div class="pb-id">
+        <div class="eb" style="color:${esc(m.color)}">${esc(m.agent)} · ${esc(m.role)}</div>
+        <h1>${esc(m.name)}<b>#${esc(m.tag)}</b></h1>
+      </div>
+      <div class="pb-side">
+        ${lvl}
+        <div class="ptools"><button class="fresh" id="freshProfile" type="button" hidden></button><button class="btn refresh">Rafraîchir</button></div>
+      </div>
+    </div>`;
+  const img=host.querySelector('.pbust img');
+  if(img){const pb=img.closest('.pbust');const f=()=>{img.style.display='none';if(pb)pb.classList.add('noimg');};
+    img.addEventListener('error',f); if(img.complete&&img.naturalWidth===0)f();}
+  renderFresh();   // le voyant vient d'être recréé avec l'en-tête
+}
+
 function paintProfile(mmr){
   const scored=STATE.matches.slice(0,8).filter(M=>M.me);
   const overall=scored.length?Math.round(scored.reduce((s,M)=>s+M.me.score100,0)/scored.length):0;
@@ -3119,26 +3508,75 @@ function paintProfile(mmr){
   populateStatsSeasonFilter();
   populateCompareFilter();
   renderRank(mmr, overall); renderCurvePeriod(); renderPeakActs(); refreshSessions();
-  if(STATE.matches.length){
-    const s=STATE.matches[0].me;
-    if(s){
-      const tc=tierOf(s.score100);
-      $('vcard').style.setProperty('--sc', tc.c);
-      $('verdict').innerHTML = `
-       <div class="vh-grid">
-         <div class="vh-score"><div class="scorebadge score-hero flair-${flair(s.kd)} sd" id="heroScore" title="Voir le détail du calcul" style="--sc:${tc.c}">${s.score100}<span class="out">/100</span>${flairHTML(flair(s.kd))}</div><div class="sd-cta mono">détail du calcul</div></div>
-         <div class="vh-body">
-           <div class="vh-top"><span class="reschip ${STATE.matches[0].result}">${STATE.matches[0].result==='w'?'VICTOIRE':'DÉFAITE'}</span>
-             <span class="map">${esc(STATE.matches[0].map)}</span><span class="mode">${esc(STATE.matches[0].mode)}</span></div>
-           <div class="vh-line">${esc(s.agent)} · <b>${s.k}/${s.d}/${s.a}</b> · ${s.acs} ACS · ${s.hs}% HS</div>
-         </div>
-       </div>`;
-    }
-    renderList();
-  } else {
-    $('verdict').innerHTML='<div class="vh-line">Aucun match récent.</div>';
-  }
+  renderActCard();
+  if(STATE.matches.length) renderList();
   updateMoreBtn();
+}
+
+// L'acte le plus récent connu, d'après la série RR (seule source des actes).
+function currentAct(){
+  for(let i=(RR_FULL||[]).length-1; i>=0; i--){
+    const sn = RR_FULL[i] && RR_FULL[i].season;
+    if(sn) return sn;
+  }
+  return null;
+}
+
+/* L'ACTE EN COURS — la tuile qui remplace « Dernier match ».
+   Pourquoi le changement. La dernière partie est déjà la PREMIÈRE CARTE de la
+   liste juste en dessous, en plus grand, avec sa map et son ±RR : cette tuile
+   n'en était qu'un doublon plus pauvre. L'acte, lui, n'était nulle part —
+   et c'est le compagnon naturel des deux tuiles de rang, à sa gauche.
+
+   L'acte d'une partie vient de l'historique RR, qui ne couvre que le classé.
+   Sans acte connu, on ne bricole pas : on élargit à tout l'historique classé
+   ET on change le libellé, pour ne jamais présenter l'un pour l'autre. */
+const ACT_BARS = 14;
+function renderActCard(){
+  const host=$('verdict'); if(!host) return;
+  const act=currentAct();
+  const ranked=rankedOnly(STATE.allMatches||[]).filter(M=>M && M.me);
+  const list=act ? ranked.filter(M=>M.season===act) : ranked;
+
+  if(!list.length){
+    host.innerHTML='<div class="vh-line">Aucune partie classée dans l\'historique — rien à résumer pour l\'instant.</div>';
+    return;
+  }
+
+  const st=sessionStats(list);
+  const idx=Math.round(st.index||0), t=tierOf(idx);
+  const card=$('vcard'); if(card) card.style.setProperty('--sc', t.c);
+
+  // Les dernières parties, de la plus ancienne à la plus récente : on lit la
+  // forme de gauche à droite, comme le graphe de session.
+  const bars=list.slice(0, ACT_BARS).reverse().map(M=>{
+    const v=M.me.score100, h=Math.max(6, Math.round(v));
+    return `<div class="sx-bar ${M.result}" style="height:${h}%" title="${esc(M.map)} · indice ${v}${M.rr&&M.rr.change!=null?' · '+signed(M.rr.change)+' RR':''}"></div>`;
+  }).join('');
+
+  const label=act ? `${esc(seasonLabel(act))} · ${st.n} partie${st.n>1?'s':''} classée${st.n>1?'s':''}`
+                  : `Tout l'historique classé · ${st.n} partie${st.n>1?'s':''}`;
+  const rr=st.rrNet!=null
+    ? `<span class="act-rr ${st.rrNet>=0?'up':'dn'}">${signed(st.rrNet)} RR</span>`
+    : '<span class="act-rr flat">RR n/c</span>';
+
+  host.innerHTML=`
+    <div class="vh-grid">
+      <div class="vh-score">
+        <div class="scorebadge score-hero" style="--sc:${t.c}">${idx}<span class="out">/100</span></div>
+        <div class="sd-cta mono">indice moyen</div>
+      </div>
+      <div class="vh-body">
+        <div class="act-lab mono">${label}</div>
+        <div class="act-wl"><b class="w">${st.wins}</b>V · <b class="l">${st.losses}</b>D
+          <span class="act-wr">${st.winrate!=null?Math.round(st.winrate)+'%':'—'}</span>${rr}</div>
+        <div class="vh-line">K/D <b>${(st.kd||0).toFixed(2)}</b> · <b>${Math.round(st.acs||0)}</b> ACS ·
+          <b>${Math.round(st.hs||0)}%</b> HS${st.kast!=null?` · <b>${Math.round(st.kast)}%</b> KAST`:''}</div>
+      </div>
+    </div>
+    <div class="sx-chart act-chart">${bars}</div>
+    <div class="md-legend"><span class="sx-dot w"></span> victoire <span class="sx-dot l"></span> défaite ·
+      hauteur = indice · ${Math.min(list.length, ACT_BARS)} dernières classées</div>`;
 }
 
 /* Charge un profil en deux temps :
@@ -3170,7 +3608,10 @@ async function loadProfile(){
 
   try{
     const acc=await api(`/valorant/v2/account/${n}/${t}`);
-    STATE.puuid=acc.data&&acc.data.puuid;
+    const ad=(acc && acc.data) || {};
+    STATE.puuid=ad.puuid;
+    const info=accountInfo(ad);
+    if(info){ ACCOUNT=info; renderPHead(CURRENT_MEMBER); }
     const [mmrR,histR,matchR,blobR,rrBlobR]=await Promise.allSettled([
       api(`/valorant/v3/mmr/${region}/pc/${n}/${t}`),
       api(`/valorant/v2/mmr-history/${region}/pc/${n}/${t}`),
@@ -3183,7 +3624,7 @@ async function loadProfile(){
     if(allDown) throw (matchR.reason || histR.reason || mmrR.reason || new Error('indisponible'));
 
     // Caches médias : têtes d'agents (scoreboard), icônes de rang et fonds de map
-    await Promise.all([ensureTiers(), ensureAgents(), ensureMaps()]);
+    await Promise.all([ensureTiers(), ensureAgents(), ensureMaps(), ensureWeapons()]);
 
     let mmr={tier:'',rr:null,elo:null,peak:'',icon:null};
     if(mmrR.status==='fulfilled'){ const d=mmrR.value.data||{}; const cur=d.current||d.current_data||{};
@@ -3216,7 +3657,7 @@ async function loadProfile(){
 
     // Cache : de quoi repeindre cet écran instantanément la prochaine fois.
     try{
-      cachePutProfile(key, { mmr, matches:STATE.allMatches, rr:rrSeries });
+      cachePutProfile(key, { mmr, matches:STATE.allMatches, rr:rrSeries, acc:ACCOUNT });
       const c=cacheLoad(); if(c.profiles[key]) { c.profiles[key].puuid=STATE.puuid; cacheSave(); }
     }catch(e){}
 
@@ -3475,6 +3916,7 @@ function staleNote(squads){
 }
 
 async function loadTribunal() {
+  setTab('btnTribunal');
   $('home').hidden = true;
   $('profile').hidden = true;
   $('leaderboard').hidden = true;
@@ -3517,6 +3959,7 @@ function statusLb(kind, html) {
 function clearStatusLb() { $('statusLb').className = 'status'; }
 
 async function loadLeaderboard() {
+  setTab('btnLeaderboard');
   $('home').hidden = true;
   $('profile').hidden = true;
   $('tribunal').hidden = true;
@@ -3970,6 +4413,7 @@ function renderComps(){
 
 let COMPS_RENDERING=false;
 async function showComps(){
+  setTab('btnComps');
   $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
   $('leaderboard').hidden=true;
   const rou=$('roulette'); if(rou) rou.hidden=true;
@@ -4225,6 +4669,7 @@ async function runRoulette(){
 }
 
 function showRoulette(){
+  setTab('btnRoulette');
   $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
   $('leaderboard').hidden=true; $('roulette').hidden=false;
   const cmp=$('comps'); if(cmp) cmp.hidden=true;
@@ -4391,6 +4836,7 @@ function wireStatic(){
   if(WIRED) return;   // ne câbler qu'une fois (init peut être rappelé)
   WIRED = true;
   $('btnGear').addEventListener('click',toggleSheet);
+  $('btnHome')?.addEventListener('click',showHome);
   $('btnRanks').addEventListener('click',fillRanks);
   $('btnRefreshNow')?.addEventListener('click', saveAllHistory);
   // Éditeur de roster (⚙ Paramètres)
@@ -4458,7 +4904,6 @@ function wireStatic(){
     const r=e.target.closest('.mrow'); if(r) openMatch(+r.dataset.idx);
   });
   // Détail du calcul : badge du dernier match + indices du scoreboard
-  $('verdict')?.addEventListener('click',e=>{ if(e.target.closest('#heroScore')) openMatchScore(0); });
 
   $('scoreModal')?.addEventListener('click',e=>{
     if(e.target.closest('#scoreModalX')||e.target.classList.contains('modal-back')) closeScoreDetail();
@@ -4467,6 +4912,9 @@ function wireStatic(){
   $('matchModal')?.addEventListener('click',e=>{
     if(e.target.closest('#matchModalX')||e.target.classList.contains('modal-back')){ closeMatchFacts(); return; }
     const rc=e.target.closest('.rchip'); if(rc){ renderRoundDetail(+rc.dataset.round); return; }
+    // Nom d'un membre du roster : on bascule sur son profil.
+    const pf=e.target.closest('[data-prof]');
+    if(pf){ openProfileFrom(pf.dataset.prof); return; }
     // Indice d'un joueur du scoreboard, ou badge du bandeau : détail du calcul.
     const c=e.target.closest('[data-sb]');
     if(c){
@@ -4496,7 +4944,8 @@ function wireStatic(){
     renderRecords();
   });
   $('sessionModalBody')?.addEventListener('click',e=>{
-    const b=e.target.closest('#sxShareBtn'); if(b) copyShareLink(b.dataset.url, b);
+    const b=e.target.closest('#sxShareBtn'); if(b){ copyShareLink(b.dataset.url, b); return; }
+    const pf=e.target.closest('[data-prof]'); if(pf) openProfileFrom(pf.dataset.prof);
   });
   $('sessionModalBody')?.addEventListener('focus',e=>{
     if(e.target && e.target.id==='sxShareUrl') e.target.select();   // copie manuelle facile
@@ -4601,6 +5050,8 @@ async function init(){
   document.addEventListener('visibilitychange', ()=>{
     if(document.hidden) stopFreshTicker(); else { renderFresh(); startFreshTicker(); }
   });
+  setTab('btnHome');   // on démarre sur l'accueil (un lien partagé l'écrasera)
+
   // Lien de session partagé : on ouvre directement le profil concerné, et le
   // rapport s'ouvrira dès que les données seront prêtes (cf. refreshSessions).
   const sh=parseShareTarget();
