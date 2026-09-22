@@ -998,6 +998,7 @@ function rrIndexFromSeries(series){
 */
 let SESSION_GAP_MIN = 120;               // écart (minutes) qui coupe une session
 const BASELINE_MIN = 6;                  // parties hors session nécessaires pour comparer
+const ANALYSIS_MAX = 5;                  // constats gardés par rubrique, les plus lourds d'abord
 const STACK_LABEL = {1:'Solo', 2:'Duo', 3:'Trio', 4:'Quatuor', 5:'5-stack'};
 const RANKED_RE = /competitive|class[ée]|comp[ée]titif/;
 const isRanked = M => RANKED_RE.test(String((M&&M.mode)||'').toLowerCase());
@@ -1074,22 +1075,46 @@ function sessionStats(list){
 function sessionFacts(list){
   const F=(list||[]).filter(M=>M && M.facts);
   if(!F.length) return null;
-  const f={ n:F.length, firstBloods:0, firstDeaths:0, clutches:0, plants:0, defuses:0,
-            multi:0, aces:0, ecoN:0, ecoWon:0, fullN:0, fullWon:0 };
-  const loads=[];
+  const f={ n:F.length, rounds:0, firstBloods:0, firstDeaths:0, clutches:0, plants:0, defuses:0,
+            multi:0, aces:0, k3plus:0, ecoN:0, ecoWon:0, halfN:0, halfWon:0, fullN:0, fullWon:0,
+            head:0, body:0, leg:0, util:0, ult:0, afk:0 };
+  const loads=[], wc={};
   F.forEach(M=>{
     const x=M.facts;
+    const tl=Array.isArray(x.timeline)?x.timeline:[];
+    f.rounds+=tl.length;
+    f.afk+=tl.filter(r=>r && r.afk).length;
     f.firstBloods+=num(x.firstBloods); f.firstDeaths+=num(x.firstDeaths);
     f.clutches+=num(x.clutches); f.plants+=num(x.plants); f.defuses+=num(x.defuses);
-    Object.keys(x.multi||{}).forEach(k=>{ f.multi+=num(x.multi[k]); if(num(k)>=5) f.aces+=num(x.multi[k]); });
+    Object.keys(x.multi||{}).forEach(k=>{
+      const n=num(x.multi[k]); f.multi+=n;
+      if(num(k)>=5) f.aces+=n;
+      if(num(k)>=3) f.k3plus+=n;       // 3k et plus : les rounds qu'on fait basculer seul
+    });
     const b=(x.economy&&x.economy.buckets)||{};
     if(b.eco){ f.ecoN+=num(b.eco.n); f.ecoWon+=num(b.eco.won); }
+    if(b.half){ f.halfN+=num(b.half.n); f.halfWon+=num(b.half.won); }   // le demi-achat était ignoré
     if(b.full){ f.fullN+=num(b.full.n); f.fullWon+=num(b.full.won); }
     if(x.economy&&x.economy.avgLoadout) loads.push(x.economy.avgLoadout);
+    // Précision, utilitaire et armes : tout ça était déjà extrait de chaque
+    // partie, et personne ne l'agrégeait — donc aucune règle ne pouvait le lire.
+    const p=x.precision||{}; f.head+=num(p.head); f.body+=num(p.body); f.leg+=num(p.leg);
+    const ab=x.abilities||{}; f.util+=num(ab.total); f.ult+=num(ab.ult);
+    (Array.isArray(x.weapons)?x.weapons:[]).forEach(w=>{
+      if(w && w.name) wc[w.name]=(wc[w.name]||0)+num(w.kills);
+    });
   });
   f.avgLoadout=loads.length?Math.round(mean(loads)):null;
   f.ecoWR=f.ecoN?f.ecoWon/f.ecoN*100:null;
+  f.halfWR=f.halfN?f.halfWon/f.halfN*100:null;
   f.fullWR=f.fullN?f.fullWon/f.fullN*100:null;
+  f.shots=f.head+f.body+f.leg;
+  f.legPct=f.shots?f.leg/f.shots*100:null;
+  f.utilPerRound=f.rounds?f.util/f.rounds:null;
+  f.ultPerGame=f.n?f.ult/f.n:null;
+  const ws=Object.entries(wc).sort((a,b)=>b[1]-a[1]);
+  f.kills=ws.reduce((sum,[,v])=>sum+v,0);
+  f.topWeapon=ws.length?{ name:ws[0][0], kills:ws[0][1], share:f.kills?ws[0][1]/f.kills*100:0 }:null;
   return f;
 }
 
@@ -1203,9 +1228,11 @@ function analyzeSession(session, ctx){
   const bf=base&&base.facts||null;
   const trend=sessionTrend(ms);
   const good=[], bad=[], tips=[];
-  const G=(t,x)=>good.push({title:t,text:x});
-  const B=(t,x)=>bad.push({title:t,text:x});
-  const T=(t,x)=>tips.push({title:t,text:x});
+  // Le poids hiérarchise : à la fin on garde les plus significatifs, sinon un
+  // rapport de neuf parties devient un mur qu'on ne lit plus.
+  const G=(t,x,w)=>good.push({title:t,text:x,w:w||50});
+  const B=(t,x,w)=>bad.push({title:t,text:x,w:w||50});
+  const T=(t,x,w)=>tips.push({title:t,text:x,w:w||50});
   const one=v=>Math.round(v*100)/100;
   const sign=v=>(v>0?'+':'')+v;
   const d=(a,b)=>(a==null||b==null)?null:a-b;
@@ -1216,32 +1243,32 @@ function analyzeSession(session, ctx){
   const dKast=(st.kast!=null&&base&&base.kast!=null)?st.kast-base.kast:null;
 
   // --- Performance globale vs ta référence
-  if(dIdx!=null && dIdx>=6)  G('Au-dessus de ton niveau', `Indice moyen ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude (${sign(Math.round(dIdx))}).`);
-  if(dIdx!=null && dIdx<=-6) B('En dessous de ton niveau', `Indice moyen ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude (${sign(Math.round(dIdx))}).`);
+  if(dIdx!=null && dIdx>=6)  G('Au-dessus de ton niveau', `Indice moyen ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude (${sign(Math.round(dIdx))}).`, 95);
+  if(dIdx!=null && dIdx<=-6) B('En dessous de ton niveau', `Indice moyen ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude (${sign(Math.round(dIdx))}).`, 95);
 
   // --- Impact
-  if(dAcs!=null && dAcs>=15)  G('Impact en hausse', `${Math.round(st.acs)} ACS contre ${Math.round(base.acs)} en moyenne.`);
-  if(dAcs!=null && dAcs<=-15) B('Impact en baisse', `${Math.round(st.acs)} ACS contre ${Math.round(base.acs)} en moyenne.`);
+  if(dAcs!=null && dAcs>=15)  G('Impact en hausse', `${Math.round(st.acs)} ACS contre ${Math.round(base.acs)} en moyenne.`, 80);
+  if(dAcs!=null && dAcs<=-15) B('Impact en baisse', `${Math.round(st.acs)} ACS contre ${Math.round(base.acs)} en moyenne.`, 80);
   if(dAdr!=null && dAdr<=-12){
-    B('Moins de dégâts', `${Math.round(st.adr)} ADR contre ${Math.round(base.adr)} d'habitude.`);
+    B('Moins de dégâts', `${Math.round(st.adr)} ADR contre ${Math.round(base.adr)} d'habitude.`, 76);
     T('Cherche le dégât, pas le kill', 'Tire sur tout ce qui dépasse : un adversaire à 40 PV, c\'est un round gagné par ton équipe même si tu ne le finis pas.');
   }
 
   // --- Duels & survie
-  if(dKd!=null && dKd>=0.25)  G('Duels gagnés', `K/D ${one(st.kd)} contre ${one(base.kd)} d'habitude.`);
-  if(dKd!=null && dKd<=-0.25) B('Duels perdus', `K/D ${one(st.kd)} contre ${one(base.kd)} d'habitude.`);
+  if(dKd!=null && dKd>=0.25)  G('Duels gagnés', `K/D ${one(st.kd)} contre ${one(base.kd)} d'habitude.`, 80);
+  if(dKd!=null && dKd<=-0.25) B('Duels perdus', `K/D ${one(st.kd)} contre ${one(base.kd)} d'habitude.`, 80);
   if(dDpr!=null && dDpr>=0.06){
-    B('Tu meurs plus souvent', `${one(st.dpr)} mort par round contre ${one(base.dpr)} d'habitude.`);
+    B('Tu meurs plus souvent', `${one(st.dpr)} mort par round contre ${one(base.dpr)} d'habitude.`, 82);
     T('Prends moins de duels gratuits', 'Attends l\'utilitaire et le trade de ton coéquipier avant d\'ouvrir. Une mort en début de round coûte le round entier.');
   }
-  if(dKast!=null && dKast>=6)  G('Toujours dans le coup', `KAST ${Math.round(st.kast)}% contre ${Math.round(base.kast)}% d'habitude.`);
+  if(dKast!=null && dKast>=6)  G('Toujours dans le coup', `KAST ${Math.round(st.kast)}% contre ${Math.round(base.kast)}% d'habitude.`, 78);
   if(dKast!=null && dKast<=-6){
     B('Souvent hors du coup', `KAST ${Math.round(st.kast)}% contre ${Math.round(base.kast)}% d'habitude : beaucoup de rounds sans kill, sans assist, sans survie et sans trade.`);
     T('Joue plus proche de ton équipe', 'Le KAST monte tout seul quand tu es tradable : reste à portée d\'un coéquipier au lieu de tenir un angle isolé.');
   }
 
   // --- Visée
-  if(dHs!=null && dHs>=4)  G('Visée au-dessus de ton niveau', `${Math.round(st.hs)}% de headshots contre ${Math.round(base.hs)}% d'habitude.`);
+  if(dHs!=null && dHs>=4)  G('Visée au-dessus de ton niveau', `${Math.round(st.hs)}% de headshots contre ${Math.round(base.hs)}% d'habitude.`, 68);
   if(dHs!=null && dHs<=-4){
     B('Visée en dessous', `${Math.round(st.hs)}% de headshots contre ${Math.round(base.hs)}% d'habitude.`);
     T('Échauffe-toi avant de lancer', '10 minutes de Range ou un deathmatch avant la première classée : la première partie d\'une session est presque toujours la moins précise.');
@@ -1254,11 +1281,11 @@ function analyzeSession(session, ctx){
       T('Ne rentre pas en premier sans info', 'Laisse partir un flash, un drone ou un coéquipier avant de prendre l\'angle. Sinon ton équipe joue le round à 4 contre 5.');
     }
     if(facts.firstBloods>=4 && facts.firstBloods>=facts.firstDeaths*1.5)
-      G('Tu ouvres bien les rounds', `${facts.firstBloods} premiers sangs pour seulement ${facts.firstDeaths} premières morts.`);
-    if(facts.clutches>=2) G('Clutch', `${facts.clutches} rounds gagnés en dernier survivant.`);
-    if(facts.aces>=1) G('Ace', `${facts.aces} ace${facts.aces>1?'s':''} dans la session.`);
+      G('Tu ouvres bien les rounds', `${facts.firstBloods} premiers sangs pour seulement ${facts.firstDeaths} premières morts.`, 74);
+    if(facts.clutches>=2) G('Clutch', `${facts.clutches} rounds gagnés en dernier survivant.`, 70);
+    if(facts.aces>=1) G('Ace', `${facts.aces} ace${facts.aces>1?'s':''} dans la session.`, 76);
     if(facts.ecoWR!=null && facts.ecoN>=5 && facts.ecoWR>=35)
-      G('Bons rounds d\'eco', `${Math.round(facts.ecoWR)}% de rounds gagnés en eco (${facts.ecoN} rounds).`);
+      G('Bons rounds d\'eco', `${Math.round(facts.ecoWR)}% de rounds gagnés en eco (${facts.ecoN} rounds).`, 58);
     if(facts.fullWR!=null && facts.fullN>=8 && facts.fullWR<=40){
       B('Full buys gâchés', `Seulement ${Math.round(facts.fullWR)}% de rounds gagnés en full buy (${facts.fullN} rounds).`);
       T('Le problème n\'est pas l\'argent', 'Avec l\'arme il reste l\'exécution : jouez les rounds ensemble, avec un plan de prise de site, plutôt qu\'en solo.');
@@ -1267,7 +1294,7 @@ function analyzeSession(session, ctx){
 
   // --- Tilt / durée de session
   if(trend){
-    if(trend.delta>=8) G('Montée en régime', `Indice ${trend.first} sur la première moitié, ${trend.last} sur la seconde (${sign(trend.delta)}).`);
+    if(trend.delta>=8) G('Montée en régime', `Indice ${trend.first} sur la première moitié, ${trend.last} sur la seconde (${sign(trend.delta)}).`, 80);
     if(trend.delta<=-8){
       B('Tu baisses en cours de session', `Indice ${trend.first} sur la première moitié, ${trend.last} sur la seconde (${sign(trend.delta)}).`);
       T('Coupe plus tôt', `Sur cette session, tes meilleures parties sont les premières. Au-delà de ${Math.ceil(trend.n/2)} parties d'affilée, une pause vaut mieux qu'une partie de plus.`);
@@ -1276,11 +1303,115 @@ function analyzeSession(session, ctx){
   if(st.n>=8 && (!trend || trend.delta<0))
     T('Session longue', `${st.n} parties d'affilée, sans progression sur la fin. Découpe en deux sessions avec une vraie coupure.`);
 
+  /* --- CE QUI SE LIT SANS RÉFÉRENCE ------------------------------------------
+     Jusqu'ici tout se jouait en écart à SES habitudes. Conséquence : une
+     session « dans ses eaux » ne produisait rien, alors que c'est le cas le
+     plus fréquent. Les repères ci-dessous sont absolus, et ce ne sont pas des
+     chiffres inventés : ce sont ceux sur lesquels l'indice COSMO lui-même est
+     calibré (cf. perfParts — 200 ACS, 140 ADR, 70 % KAST, 20 % HS, 0,65 mort
+     par round valent « moyen en ranked »). */
+  if(st.n>=3){
+    // Le constat le plus actionnable qui existe : présent dans les rounds, mais
+    // perdant ses duels. Le KAST dit qu'on contribue, le K/D dit qu'on meurt.
+    if(st.kast!=null && st.kast>=62 && st.kd<=0.90){
+      B('Présent partout, mais tu perds tes duels',
+        `KAST ${Math.round(st.kast)}% — tu es dans le coup sur la plupart des rounds — pour un K/D de ${one(st.kd)}. Tu apportes, mais tu sors perdant des échanges.`, 92);
+      T('Cherche le second contact',
+        `Laisse un coéquipier prendre le duel en premier et arrive en soutien pour le trade. À KAST égal, c'est ce qui fait remonter un K/D comme le tien (${one(st.kd)}) sans rien changer à ta visée.`, 92);
+    }
+    if(st.kast!=null && st.kast>=74)
+      G('Présent dans presque tous les rounds', `KAST ${Math.round(st.kast)}% : très peu de rounds où tu n'apportes rien.`, 72);
+    if(st.dpr!=null && st.dpr>=0.80){
+      B('Tu meurs presque à chaque round', `${one(st.dpr)} mort par round (0.65 est la moyenne en ranked).`, 86);
+      T('Choisis tes duels', 'Sur un round perdu d\'avance, garde ton arme et ta vie : une mort gratuite en fin de round coûte aussi le round suivant.', 86);
+    }
+    // Repli absolu : l'écart à l'habitude n'a rien dit, mais le niveau, lui, parle.
+    if(st.adr!=null && st.adr<=120 && !(dAdr!=null && dAdr<=-12)){
+      B('Peu de dégâts par round', `${Math.round(st.adr)} ADR (140 est la moyenne en ranked).`, 78);
+      T('Tire sur tout ce qui dépasse', 'Un adversaire laissé à 40 PV est un round à moitié gagné pour ton équipe. Le dégât compte même sans le kill.', 78);
+    }
+    if(st.adr!=null && st.adr>=165)
+      G('Tu pèses sur chaque round', `${Math.round(st.adr)} ADR, bien au-dessus de la moyenne en ranked.`, 66);
+    if(st.hs!=null && st.hs<=13 && !(dHs!=null && dHs<=-4)){
+      B('Visée basse', `${Math.round(st.hs)}% de headshots (20 % est la moyenne en ranked).`, 64);
+      T('Travaille la hauteur de crosshair', 'Garde le viseur à hauteur de tête en te déplaçant : la plupart des headshots manqués sont des visées trop basses au moment du contact.', 64);
+    }
+  }
+
+  /* --- CE QUE LE DÉTAIL DES ROUNDS DIT ET QU'ON N'ÉCOUTAIT PAS ---------------
+     L'utilitaire, la précision, les demi-achats, les plants et les multikills
+     étaient extraits de chaque partie et agrégés… sans qu'aucune règle ne les
+     lise. C'est là que se trouvaient les conseils les plus concrets. */
+  if(facts && facts.n>=3){
+    if(facts.utilPerRound!=null && facts.rounds>=40 && facts.utilPerRound<=0.7){
+      B('Ton kit reste dans la poche', `${one(facts.utilPerRound)} compétence par round sur ${facts.rounds} rounds.`, 84);
+      T('Dépense ton utilitaire chaque round', 'Une compétence non utilisée vaut zéro. Elles se rechargent : joue-les tôt, même imparfaitement, plutôt que de les garder pour un moment parfait qui n\'arrive pas.', 84);
+    }
+    if(facts.utilPerRound!=null && facts.rounds>=40 && facts.utilPerRound>=1.4)
+      G('Tu joues ton kit', `${one(facts.utilPerRound)} compétence par round : l\'utilitaire part au bon rythme.`, 62);
+    if(facts.ultPerGame!=null && facts.n>=4 && facts.ultPerGame<=0.8){
+      B('Tes ultimes finissent inutilisés', `${one(facts.ultPerGame)} ultime par partie en moyenne.`, 70);
+      T('Un ultime gardé est un ultime perdu', 'Utilise-le sur le round où il change quelque chose, pas sur le round parfait. À la fin de la partie il ne vaut plus rien.', 70);
+    }
+    if(facts.legPct!=null && facts.shots>=150 && facts.legPct>=12){
+      B('Beaucoup de balles dans les jambes', `${Math.round(facts.legPct)}% de tes tirs touchés partent dans les jambes.`, 66);
+      T('Contrôle la descente du recul', 'Tire par rafales courtes et redescends le viseur entre deux : les balles dans les jambes sont presque toujours une rafale trop longue.', 66);
+    }
+    if(facts.k3plus>=3)
+      G('Tu fais basculer des rounds seul', `${facts.k3plus} rounds à 3 éliminations ou plus.`, 68);
+    if(facts.plants+facts.defuses>=8)
+      G('Tu joues l\'objectif', `${facts.plants} spike${facts.plants>1?'s':''} posée${facts.plants>1?'s':''} et ${facts.defuses} désamorçage${facts.defuses>1?'s':''}.`, 60);
+    if(facts.halfWR!=null && facts.halfN>=10 && facts.halfWR<=30){
+      B('Les demi-achats ne passent pas', `${Math.round(facts.halfWR)}% de rounds gagnés en demi-achat (${facts.halfN} rounds).`, 62);
+      T('Décidez l\'achat ensemble', 'Un demi-achat en ordre dispersé est le pire des deux mondes. Soit toute l\'équipe achète, soit toute l\'équipe économise.', 62);
+    }
+    if(facts.afk>0)
+      B('Rounds joués en AFK', `${facts.afk} round${facts.afk>1?'s':''} où tu es marqué absent — à 4 contre 5, le round est perdu d\'avance.`, 58);
+    // L'arme seule ne dit rien ; couplée à des rounds pauvres, elle dit quelque chose.
+    if(facts.topWeapon && facts.kills>=50 && facts.topWeapon.share>=75
+       && ((facts.ecoWR!=null && facts.ecoWR<=20) || (facts.halfWR!=null && facts.halfN>=10 && facts.halfWR<=30)))
+      T('Travaille une deuxième arme', `${Math.round(facts.topWeapon.share)}% de tes éliminations sont au ${facts.topWeapon.name}. Les rounds d\'eco et de demi-achat se gagnent avec les autres — Sheriff, Spectre, Bulldog.`, 56);
+  }
+
+  /* --- COMPARAISON AUX FAITS D'ARMES HABITUELS ------------------------------
+     `base.facts` était calculé puis jamais lu. */
+  if(facts && bf && facts.n>=3 && bf.n>=6){
+    const fdNow=facts.firstDeaths/facts.n, fdBase=bf.firstDeaths/bf.n;
+    if(fdNow>=fdBase+0.8 && facts.firstDeaths>=3){
+      B('Tu meurs en premier plus que d\'habitude',
+        `${one(fdNow)} première mort par partie contre ${one(fdBase)} d\'habitude.`, 80);
+      T('Ralentis les entrées', 'Sur cette session tu prends le premier contact plus souvent que d\'ordinaire. Laisse l\'info venir avant de prendre l\'angle.', 80);
+    }
+    const utilNow=facts.utilPerRound, utilBase=bf.utilPerRound;
+    if(utilNow!=null && utilBase!=null && utilNow<=utilBase-0.25 && facts.rounds>=40)
+      B('Tu utilises moins ton kit que d\'habitude', `${one(utilNow)} compétence par round contre ${one(utilBase)} d\'ordinaire.`, 72);
+  }
+
   // --- Bilan
-  if(st.n>=3 && st.winrate>=70) G('Série gagnante', `${st.wins} victoires sur ${st.n} parties.`);
-  if(st.n>=3 && st.winrate<=30) B('Série perdante', `${st.losses} défaites sur ${st.n} parties.`);
-  if(st.rrNet!=null && st.rrNet>=30) G('RR bien remonté', `${sign(st.rrNet)} RR sur ${st.rrGames} partie${st.rrGames>1?'s':''} classée${st.rrGames>1?'s':''}.`);
-  if(st.rrNet!=null && st.rrNet<=-30) B('RR lâché', `${st.rrNet} RR sur ${st.rrGames} partie${st.rrGames>1?'s':''} classée${st.rrGames>1?'s':''}.`);
+  if(st.n>=3 && st.winrate>=70) G('Série gagnante', `${st.wins} victoires sur ${st.n} parties.`, 72);
+  if(st.n>=3 && st.winrate<=30) B('Série perdante', `${st.losses} défaites sur ${st.n} parties.`, 72);
+  if(st.rrNet!=null && st.rrNet>=30) G('RR bien remonté', `${sign(st.rrNet)} RR sur ${st.rrGames} partie${st.rrGames>1?'s':''} classée${st.rrGames>1?'s':''}.`, 74);
+  if(st.rrNet!=null && st.rrNet<=-30) B('RR lâché', `${st.rrNet} RR sur ${st.rrGames} partie${st.rrGames>1?'s':''} classée${st.rrGames>1?'s':''}.`, 74);
+
+  /* --- NUANCES -------------------------------------------------------------
+     Entre « rien à signaler » et « constat net » il y a une zone où quelque
+     chose bouge quand même. Ces règles ne se déclenchent QUE si la règle forte
+     correspondante n'a rien dit, et elles le disent avec les mots qui vont :
+     « légèrement », « un peu ». Poids faible : elles passent en dernier. */
+  if(dIdx!=null && dIdx>=3 && dIdx<6)
+    G('Légèrement au-dessus de tes standards', `Indice ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude.`, 40);
+  if(dIdx!=null && dIdx<=-3 && dIdx>-6)
+    B('Légèrement en dessous de tes standards', `Indice ${Math.round(st.index)} contre ${Math.round(base.index)} d'habitude.`, 40);
+  if(dKast!=null && dKast<=-3 && dKast>-6)
+    B('Un peu moins dans le coup', `KAST ${Math.round(st.kast)}% contre ${Math.round(base.kast)}% d'habitude.`, 38);
+  if(trend){
+    if(trend.delta>=4 && trend.delta<8)
+      G('Tu as redressé la barre', `Indice ${trend.first} sur la première moitié, ${trend.last} sur la seconde (${sign(trend.delta)}) : la session s'est terminée mieux qu'elle n'a commencé.`, 46);
+    if(trend.delta<=-4 && trend.delta>-8){
+      B('Tu t\'effrites en fin de session', `Indice ${trend.first} puis ${trend.last} (${sign(trend.delta)}).`, 46);
+      T('Une pause avant la partie de trop', `La baisse est légère mais elle est là. Après ${Math.ceil(trend.n/2)} parties, dix minutes debout valent mieux qu'une relance immédiate.`, 46);
+    }
+  }
 
   // --- Divergence perf / résultat : le constat le plus utile de tous.
   if(dIdx!=null){
@@ -1293,20 +1424,63 @@ function analyzeSession(session, ctx){
   // --- Maps & agents de la session
   const maps=bestWorst(ms, M=>M.map, 2);
   if(maps && maps.best.index-maps.worst.index>=10){
-    G('Ta map de la session', `${maps.best.key} — indice ${maps.best.index} sur ${maps.best.n} partie${maps.best.n>1?'s':''}.`);
-    B('Ta map compliquée', `${maps.worst.key} — indice ${maps.worst.index} sur ${maps.worst.n} partie${maps.worst.n>1?'s':''}.`);
+    G('Ta map de la session', `${maps.best.key} — indice ${maps.best.index} sur ${maps.best.n} partie${maps.best.n>1?'s':''}.`, 60);
+    B('Ta map compliquée', `${maps.worst.key} — indice ${maps.worst.index} sur ${maps.worst.n} partie${maps.worst.n>1?'s':''}.`, 60);
   }
   const ags=bestWorst(ms, M=>M.me.agent, 2);
   if(ags && ags.best.index-ags.worst.index>=10)
-    T('Choix d\'agent', `${ags.best.key} t'a bien réussi (indice ${ags.best.index}) là où ${ags.worst.key} a moins marché (${ags.worst.index}). À garder en tête au prochain agent select.`);
+    T('Choix d\'agent', `${ags.best.key} t'a bien réussi (indice ${ags.best.index}) là où ${ags.worst.key} a moins marché (${ags.worst.index}). À garder en tête au prochain agent select.`, 60);
+  // Une map nettement en dessous du reste de la session mérite d'être nommée,
+  // même quand l'écart avec la meilleure ne suffit pas à faire une paire.
+  if(maps && maps.rows.length>=2 && st.index!=null && maps.worst.index<=st.index-8 && !(maps.best.index-maps.worst.index>=10))
+    T('Une map à retravailler', `${maps.worst.key} : indice ${maps.worst.index} sur ${maps.worst.n} partie${maps.worst.n>1?'s':''}, contre ${Math.round(st.index)} sur l'ensemble de la session.`, 52);
 
   if(st.forfeits>0)
     T('Parties écourtées', `${st.forfeits} partie${st.forfeits>1?'s':''} coupée${st.forfeits>1?'s':''} par forfait : l'échantillon est trop court pour juger, l'indice a été rapproché de la moyenne.`);
 
-  if(!base) T('Pas encore de référence', `Il faut au moins ${BASELINE_MIN} autres parties dans les mêmes modes pour comparer cette session à tes habitudes. Reviens quand l'historique aura grossi.`);
+  /* --- PLANCHER ------------------------------------------------------------
+     Après neuf parties, repartir sans un seul angle de travail n'aide personne.
+     On n'invente rien pour autant : on nomme le point RÉELLEMENT le plus faible
+     de la session, et on dit explicitement qu'il reste dans les eaux du joueur.
+     Le classement se fait en fraction du seuil auquel la règle forte se serait
+     déclenchée — c'est ce qui rend comparables des unités qui ne le sont pas
+     (un ACS et un K/D ne se soustraient pas). */
+  if(!tips.length && st.n>=3){
+    const rel=[
+      { lab:'ton indice',  cur:Math.round(st.index||0),        ref:base&&Math.round(base.index||0),  d:dIdx,  seuil:6 },
+      { lab:'ton ACS',     cur:Math.round(st.acs||0),          ref:base&&Math.round(base.acs||0),    d:dAcs,  seuil:15 },
+      { lab:'ton ADR',     cur:Math.round(st.adr||0),          ref:base&&Math.round(base.adr||0),    d:dAdr,  seuil:12 },
+      { lab:'ton K/D',     cur:one(st.kd||0),                  ref:base&&one(base.kd||0),            d:dKd,   seuil:0.25 },
+      { lab:'ton HS%',     cur:Math.round(st.hs||0)+'%',       ref:base&&(Math.round(base.hs||0)+'%'), d:dHs, seuil:4 },
+      { lab:'ton KAST',    cur:(st.kast!=null?Math.round(st.kast)+'%':null), ref:base&&base.kast!=null?Math.round(base.kast)+'%':null, d:dKast, seuil:6 },
+    ].filter(x=>x.d!=null && x.cur!=null && x.ref!=null)
+     .map(x=>({ ...x, ratio:x.d/x.seuil }))
+     .sort((a,b)=>a.ratio-b.ratio)[0];
 
+    if(rel && rel.ratio<0){
+      T('Rien ne ressort — mais si tu veux un angle',
+        `Tout est resté dans tes eaux sur cette session. Le point le plus faible est ${rel.lab} : ${rel.cur} contre ${rel.ref} d'habitude. Ce n'est pas un problème, c'est juste là qu'il y a le plus à gagner.`, 30);
+    }else if(!base){
+      // Sans référence, l'écart à la moyenne ranked reste mesurable.
+      const abs=[
+        { lab:'ton ACS',  cur:Math.round(st.acs||0),     ratio:((st.acs||0)-200)/200 },
+        { lab:'ton ADR',  cur:Math.round(st.adr||0),     ratio:((st.adr||0)-140)/140 },
+        { lab:'ton HS%',  cur:Math.round(st.hs||0)+'%',  ratio:((st.hs||0)-20)/20 },
+      ].sort((a,b)=>a.ratio-b.ratio)[0];
+      if(abs && abs.ratio<0)
+        T('Un angle de travail, à défaut de référence',
+          `Sans historique pour te comparer, le repère reste la moyenne en ranked : ${abs.lab} est à ${abs.cur}, en dessous. C'est là qu'il y a le plus à gagner.`, 30);
+    }
+  }
+
+  if(!base) T('Pas encore de référence', `Il faut au moins ${BASELINE_MIN} autres parties dans les mêmes modes pour comparer cette session à tes habitudes. Reviens quand l'historique aura grossi.`, 100);
+
+  /* Trop de constats tue le constat. On garde les plus significatifs, du plus
+     au moins important — le poids est fixé à chaque règle, jamais au hasard. */
+  const top=(arr,n)=>arr.slice().sort((a,b)=>(b.w||0)-(a.w||0)).slice(0,n);
   return { st, facts, base, trend, maps, ags,
-           verdict:sessionVerdict(st, base, trend), good, bad, tips };
+           verdict:sessionVerdict(st, base, trend),
+           good:top(good, ANALYSIS_MAX), bad:top(bad, ANALYSIS_MAX), tips:top(tips, ANALYSIS_MAX) };
 }
 
 // Rapport COMMUN : chaque membre COSMO présent dans la session, avec ses

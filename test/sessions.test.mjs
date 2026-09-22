@@ -344,6 +344,102 @@ test("analyzeSession : la divergence perf/RR produit le bon conseil", () => {
   assert.ok(A.tips.some(p => /Rien à changer côté perso/.test(p.title)));
 });
 
+/* ------------------------------------------------------- la session « réelle »
+
+   Cas de référence : neuf parties classées d'un membre du squad, toutes « dans
+   ses eaux » (indice 59 contre 60 d'habitude, ACS 192 contre 195, ADR 118
+   contre 125, KAST 66 % contre 68 %, HS 21 % contre 22 %). AUCUN écart à la
+   référence n'atteint le seuil d'une règle comparative — et c'est le cas le
+   plus fréquent. Avant, le rapport se résumait à « Bons rounds d'eco » et
+   « RR lâché » : zéro conseil pour neuf parties.
+
+   Ce que les repères absolus et le détail des rounds permettent maintenant de
+   dire, sans rien inventer : il contribue (KAST 66 %) mais perd ses duels
+   (K/D 0,84), il tape peu (118 ADR), son utilitaire dort (0,63 par round) et
+   ses demi-achats ne passent pas (22 %). */
+const gogeFacts = (i) => ({
+  timeline: Array.from({ length: 24 }, () => ({ afk: false })),
+  firstBloods: 2, firstDeaths: 3, clutches: 0, plants: 1, defuses: 0,
+  multi: { 2: 2 },
+  precision: { head: 21, body: 70, leg: 9 },
+  abilities: { total: 15, ult: 1 },
+  weapons: [{ name: "Vandal", kills: 11 }, { name: "Classic", kills: 3 }, { name: "Ghost", kills: 2 }],
+  economy: {
+    avgLoadout: 3400,
+    buckets: {
+      eco: { n: i === 8 ? 7 : 3, won: i === 8 ? 4 : 1 },   // 31 rounds, 12 gagnés -> 39 %
+      half: { n: 2, won: i < 4 ? 1 : 0 },                  // 18 rounds, 4 gagnés  -> 22 %
+      full: { n: 14, won: i < 3 ? 7 : 6 },                 // 126 rounds, 57 gagnés -> 45 %
+    },
+  },
+});
+// 3 victoires, 6 défaites, -39 RR net.
+const GOGE_RR = [17, -15, -15, 18, -15, -16, 17, -15, -15];
+const gogeSession = () => ({
+  matches: Array.from({ length: 9 }, (_, i) => match({
+    startedMs: SAT23 + i * 40 * MIN,
+    result: GOGE_RR[i] > 0 ? "w" : "l",
+    myScore: GOGE_RR[i] > 0 ? 13 : 9, oppScore: GOGE_RR[i] > 0 ? 10 : 13,
+    rr: { change: GOGE_RR[i] },
+    facts: gogeFacts(i),
+    score100: i < 5 ? 57 : 62,                             // tendance +5 : sous le seuil de 8
+    me: { k: 16, d: 19, a: 6, acs: 192, adr: 118, hs: 21, kast: 66, shots: 100 },
+  })),
+});
+const gogeBaseline = () => X.sessionStats(Array.from({ length: 10 }, (_, i) => match({
+  startedMs: SAT23 - (i + 2) * 24 * H,
+  score100: 60, me: { k: 17, d: 18, a: 6, acs: 195, adr: 125, hs: 22, kast: 68, shots: 100 },
+})));
+
+test("une session « dans ses eaux » sur 9 parties ne repart plus sans un seul conseil", () => {
+  const A = X.analyzeSession(gogeSession(), { baseline: gogeBaseline() });
+
+  // Le garde-fou : aucun écart à la référence n'atteint son seuil.
+  assert.equal(A.good.concat(A.bad).some(p => /d'habitude/.test(p.text)), false,
+    "aucune règle comparative ne doit se déclencher sur cette session");
+
+  // Le constat le plus actionnable : il contribue, mais sort perdant des duels.
+  assert.ok(A.bad.some(p => /perds tes duels/.test(p.title)), "KAST haut + K/D bas");
+  assert.ok(A.tips.some(p => /second contact/.test(p.title)), "et le geste qui va avec");
+
+  // Et le reste, qui vient du détail des rounds — donnée déjà calculée, que
+  // plus aucune règle ne lisait.
+  assert.ok(A.bad.some(p => /kit reste dans la poche/.test(p.title)), "0,63 compétence par round");
+  assert.ok(A.bad.some(p => /Peu de dégâts par round/.test(p.title)), "118 ADR");
+  assert.ok(A.bad.some(p => /demi-achats ne passent pas/.test(p.title)), "22 % en demi-achat");
+
+  assert.ok(A.tips.length >= 3, `neuf parties méritent plus d'un conseil (${A.tips.length})`);
+  // Ce que l'ancien rapport savait déjà dire, toujours là.
+  assert.ok(A.good.some(p => /rounds d'eco/.test(p.title)));
+  assert.ok(A.bad.some(p => /RR lâché/.test(p.title)));
+});
+
+test("le rapport reste lisible : chaque rubrique est plafonnée, les plus lourds d'abord", () => {
+  const A = X.analyzeSession(gogeSession(), { baseline: gogeBaseline() });
+  [A.good, A.bad, A.tips].forEach(list => assert.ok(list.length <= 5, "5 constats par rubrique au plus"));
+  // Le plafond ne doit jamais couper le constat le plus important.
+  assert.match(A.bad[0].title, /perds tes duels/);
+  assert.match(A.tips[0].title, /second contact/);
+  A.bad.forEach((p, i) => { if (i) assert.ok(p.w <= A.bad[i - 1].w, "triés par poids décroissant"); });
+});
+
+test("un conseil de plancher quand vraiment rien ne ressort, et jamais autrement", () => {
+  // Session sans détail de round, parfaitement dans la moyenne : les règles
+  // absolues ne mordent pas non plus. On nomme quand même le point le plus
+  // faible — en disant que ce n'en est pas un.
+  const me = { k: 17, d: 17, a: 6, acs: 215, adr: 150, hs: 22, kast: 70, shots: 100 };
+  const sess = { matches: chrono(5, { score100: 64, rr: { change: 2 }, me }) };
+  const base = X.sessionStats(chrono(10, { score100: 65, me: Object.assign({}, me, { adr: 156 }) }));
+  const A = X.analyzeSession(sess, { baseline: base });
+  assert.equal(A.tips.length, 1, "un seul angle, pas un mur");
+  assert.match(A.tips[0].title, /Rien ne ressort/);
+  assert.match(A.tips[0].text, /ADR/, "le point réellement le plus faible, en fraction du seuil");
+
+  // Et dès qu'un vrai conseil existe, le plancher se tait.
+  const B = X.analyzeSession(gogeSession(), { baseline: gogeBaseline() });
+  assert.equal(B.tips.some(p => /Rien ne ressort/.test(p.title)), false);
+});
+
 test("bestWorst : pas de meilleur/pire sans au moins deux groupes qualifiés", () => {
   const ms = chrono(3, { map: "Ascent" });
   assert.equal(X.bestWorst(ms, m => m.map, 2), null);
