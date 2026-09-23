@@ -665,6 +665,26 @@ async function ensureTiers(){
   }catch(e){ /* pas d'icônes de rang, on garde le texte */ }
   return TIERS || {};
 }
+// Icône du rang d'un joueur tel qu'il était AU MOMENT de la partie.
+// Recherche par NOM d'abord : les numéros de palier ont glissé à l'arrivée
+// d'Ascendant (E5), un vieux « 21 » était Immortel 1 et vaut Ascendant 1
+// aujourd'hui. Le numéro ne sert que de repli.
+// Non classé ou inconnu : '' — un trou vaut mieux qu'un faux « Fer 1 ».
+function tierIconFor(id, name){
+  const n=String(name||'').trim();
+  if(id===0 || /^(unrated|unranked|non class)/i.test(n)) return '';
+  if(!n && id==null) return '';
+  return (n && TIERS && TIERS[n.toLowerCase()])
+      || (id!=null && TIER_BY_NUM && TIER_BY_NUM[id] && TIER_BY_NUM[id].icon)
+      || '';
+}
+function tierBadge(id, name){
+  const n=String(name||'').trim(), icon=tierIconFor(id, n);
+  if(icon) return `<img class="tierb" src="${esc(icon)}" alt="${esc(n)}" title="${esc(n)}" loading="lazy">`;
+  // Pas d'icône mais un nom connu (valorant-api injoignable) : le texte.
+  if(n && !/^(unrated|unranked|non class)/i.test(n) && id!==0) return `<span class="tierb txt" title="${esc(n)}">${esc(n)}</span>`;
+  return `<span class="tierb none" title="Non classé"></span>`;   // garde l'alignement des pseudos
+}
 // Récupère l'icône d'un rang : priorité aux images HenrikDev, repli sur valorant-api.
 function rankIcon(cur, tierName){
   return (cur && cur.images && (cur.images.large || cur.images.small))
@@ -683,9 +703,14 @@ function rawLine(p,rounds,kastMap){
   const dd=rounds?Math.round((dmg-rec)/rounds):0, kd=k/Math.max(d,1);
   const ag=p.agent||{};
   const kast=(kastMap && p.puuid!=null && kastMap[p.puuid]!=null)?kastMap[p.puuid]:null;
+  // Rang du joueur DANS CETTE PARTIE (v4 : tier{id,name} ; v2/v3 : currenttier*).
+  const tr=(p.tier && typeof p.tier==='object') ? p.tier : null;
+  const tierId=(tr && tr.id!=null && !isNaN(tr.id)) ? Number(tr.id)
+             : (p.currenttier!=null && !isNaN(p.currenttier) ? Number(p.currenttier) : null);
+  const tierName=String((tr && tr.name) || p.currenttier_patched || '').trim();
   return {k,d,a,hs,acs,adr,dd,kd,rounds,kast,shots:hsT,name:p.name||'?',tag:p.tag||'',team:p.team_id,
     agent:ag.name||(typeof p.agent==='string'?p.agent:'?'),
-    agentId:ag.id||ag.uuid||''};
+    agentId:ag.id||ag.uuid||'', tierId, tierName};
 }
 
 // Note TOUS les joueurs d'une partie d'un coup : nécessaire pour connaître le
@@ -846,7 +871,9 @@ function matchFacts(m, roundsCount, me){
 
   const lobby = players.map(p=>({
     name:p.name, tag:p.tag, team:p.team_id, mine:p.team_id===myTeam, isMe:p.puuid===mp,
-    tier:(p.tier&&p.tier.name)||'', party:p.party_id||'', agent:(p.agent&&p.agent.name)||'',
+    tier:(p.tier&&p.tier.name)||p.currenttier_patched||'',
+    tierId:(p.tier&&p.tier.id!=null)?Number(p.tier.id):(p.currenttier!=null?Number(p.currenttier):null),
+    party:p.party_id||'', agent:(p.agent&&p.agent.name)||'',
   }));
   // Groupes : on ne numérote que les party_id partagés par au moins 2 joueurs.
   const counts={}; lobby.forEach(p=>{ if(p.party) counts[p.party]=(counts[p.party]||0)+1; });
@@ -3209,7 +3236,7 @@ function scoreboardHTML(M){
     const prof = (mem && !mem.guest && !me) ? ` data-prof="${esc(mem.name+'#'+mem.tag)}" title="Ouvrir le profil de ${esc(mem.name)}"` : '';
     return `<tr class="${me?'me':''}">
       ${posCell}
-      <td class="pcol"><div class="agent">${agCell}
+      <td class="pcol"><div class="agent">${agCell}${tierBadge(s.tierId, s.tierName)}
         <div class="pn${prof?' pnlink':''}"${prof}><b${prof?' class="link"':''}>${esc(s.name)}</b> <span>#${esc(s.tag)}</span>${rrTag}</div></div></td>
       <td class="scell sd" style="color:${t.c}" data-sb="${all.indexOf(s)}" title="Voir le détail du calcul">${s.score100}</td>
       <td style="color:${sc((s.acs-130)/2)}"><b>${s.acs}</b></td>
@@ -3335,7 +3362,7 @@ function factsHTML(f){
           ${rows.map(p=>`<div class="mt-r${p.isMe?' me':''}">
             <span class="mt-n">${esc(p.name)}<small>#${esc(p.tag)}</small></span>
             <span class="mt-a mono">${esc(p.agent||'')}</span>
-            <span class="mt-t mono">${esc(p.tier||'—')}</span>
+            <span class="mt-t mono">${tierIconFor(p.tierId, p.tier)?`<img class="tieri" src="${esc(tierIconFor(p.tierId, p.tier))}" alt="" loading="lazy">`:''}${esc(p.tier||'—')}</span>
             ${p.group?`<span class="mt-g" title="A queue avec le groupe ${p.group}">G${p.group}</span>`:'<span class="mt-g none"></span>'}
           </div>`).join('')}</div>`;
       }).join('')}

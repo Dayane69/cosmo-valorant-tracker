@@ -256,3 +256,93 @@ test("utilitaire : casts de compétences, quelles que soient les clés de l'API"
   // Absence totale de données : pas de plantage
   assert.equal(mk(undefined).abilities.total, 0);
 });
+
+/* ============ Rang de chaque joueur dans la partie ============ */
+
+// Contexte séparé : il faut pouvoir poser les tables de paliers (valorant-api)
+// comme si elles avaient été chargées, ou comme si elles ne l'avaient pas été.
+const T = (() => {
+  const c = vm.createContext({ console });
+  vm.runInContext(readFileSync(join(root, "app.js"), "utf8") + `
+    globalThis.__r = { rawLine, tierIconFor, tierBadge, matchFacts, scoreboardHTML,
+      setTiers: (byName, byNum) => { TIERS = byName; TIER_BY_NUM = byNum; },
+      setMe: (n, t) => { STATE.name = n; STATE.tag = t; } };`, c);
+  return c.__r;
+})();
+// Numérotation actuelle (depuis E5) : 21 = Ascendant 1. Avant E5, 21 = Immortel 1.
+const BY_NAME = { "gold 3": "gold3.png", "ascendant 1": "asc1.png", "immortal 1": "imm1.png" };
+const BY_NUM = { 14: { name: "GOLD 3", icon: "gold3.png" }, 21: { name: "ASCENDANT 1", icon: "asc1.png" } };
+
+test("rang : lu dans la partie, au format v4 comme au format v2/v3", () => {
+  const st = { kills: 1, deaths: 1, score: 100, headshots: 1, bodyshots: 1, legshots: 0 };
+  const v4 = T.rawLine({ name: "a", tag: "1", team_id: "Blue", stats: st, tier: { id: 14, name: "Gold 3" } }, 13);
+  assert.equal(v4.tierId, 14);
+  assert.equal(v4.tierName, "Gold 3");
+  const v2 = T.rawLine({ name: "b", tag: "1", team_id: "Red", stats: st, currenttier: 14, currenttier_patched: "Gold 3" }, 13);
+  assert.equal(v2.tierId, 14);
+  assert.equal(v2.tierName, "Gold 3");
+  const none = T.rawLine({ name: "c", tag: "1", team_id: "Red", stats: st }, 13);
+  assert.equal(none.tierId, null, "pas de rang dans la réponse : on n'en invente pas");
+  assert.equal(none.tierName, "");
+});
+
+test("rang : le NOM prime sur le numéro, qui a glissé avec l'arrivée d'Ascendant", () => {
+  T.setTiers(BY_NAME, BY_NUM);
+  // Une vieille partie : palier 21 = Immortel 1 à l'époque. Par le numéro, on
+  // afficherait Ascendant 1 — un rang que le joueur n'avait pas.
+  assert.equal(T.tierIconFor(21, "Immortal 1"), "imm1.png");
+  // Nom inconnu de la table : le numéro sert de repli.
+  assert.equal(T.tierIconFor(14, ""), "gold3.png");
+  assert.equal(T.tierIconFor(14, "Or 3 (nom exotique)"), "gold3.png");
+});
+
+test("rang : un non-classé n'affiche jamais une icône, mais garde sa place", () => {
+  T.setTiers(BY_NAME, { 0: { name: "UNRANKED", icon: "unranked.png" }, ...BY_NUM });
+  assert.equal(T.tierIconFor(0, "Unrated"), "");
+  assert.equal(T.tierIconFor(0, ""), "");
+  assert.equal(T.tierIconFor(null, ""), "");
+  const b = T.tierBadge(0, "Unrated");
+  assert.doesNotMatch(b, /<img/, "surtout pas l'icône « unranked » de valorant-api");
+  assert.match(b, /tierb none/, "un emplacement vide, pour que les pseudos restent alignés");
+});
+
+test("rang : sans valorant-api, le nom en texte plutôt qu'un trou", () => {
+  T.setTiers(null, null);
+  const b = T.tierBadge(14, "Gold 3");
+  assert.doesNotMatch(b, /<img/);
+  assert.match(b, />Gold 3</);
+});
+
+test("rang : le nom venu de l'API est échappé", () => {
+  T.setTiers(null, null);
+  const b = T.tierBadge(14, '<img src=x onerror="alert(1)">');
+  assert.doesNotMatch(b, /<img src=x/);
+  assert.match(b, /&lt;img/);
+});
+
+test("scoreboard : chaque joueur, des deux camps, porte son rang", () => {
+  T.setTiers(BY_NAME, BY_NUM);
+  T.setMe("A", "0");
+  const players = [
+    { ...P("A", "Blue"), tier: { id: 14, name: "Gold 3" } },
+    { ...P("M", "Blue"), tier: { id: 21, name: "Ascendant 1" } },
+    { ...P("E1", "Red"), tier: { id: 21, name: "Ascendant 1" } },
+    { ...P("E2", "Red"), tier: { id: 0, name: "Unrated" } },
+  ];
+  const M = { id: "x", rounds: 13, myTeamId: "Blue", myScore: 13, oppScore: 7, players };
+  const { html } = T.scoreboardHTML(M);
+  assert.equal((html.match(/class="tierb"/g) || []).length, 3, "trois classés, trois icônes");
+  assert.equal((html.match(/tierb none/g) || []).length, 1, "le non-classé : un emplacement vide");
+  assert.match(html, /src="gold3\.png" alt="Gold 3"/);
+  assert.equal((html.match(/src="asc1\.png"/g) || []).length, 2, "un Ascendant dans chaque camp");
+});
+
+test("lobby : le rang porte son icône à côté de son nom", () => {
+  T.setTiers(BY_NAME, BY_NUM);
+  const m = { players: [{ ...P("A", "Blue"), tier: { id: 14, name: "Gold 3" } }, P("E1", "Red")],
+    rounds: [R("Blue", { stats: [{ p: "A", kills: 1 }] })], kills: [K(0, 5000, "A", "E1")] };
+  const f = T.matchFacts(m, 1, m.players[0]);
+  const a = f.lobby.find(p => p.name === "A");
+  assert.equal(a.tier, "Gold 3");
+  assert.equal(a.tierId, 14);
+});

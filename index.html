@@ -527,6 +527,12 @@
   .ag span{display:none}
   .ag.noimg span{display:block}
   .pn b{color:var(--txt);font-weight:700;font-size:13px} .pn span{color:var(--dim)}
+  /* Rang du joueur dans la partie, entre le portrait et le pseudo. Largeur fixe,
+     même vide : sinon les pseudos des non-classés se décalent. */
+  .agent .tierb{width:24px;height:24px;flex:none;object-fit:contain;display:block}
+  .agent .tierb.txt{width:auto;height:auto;font-size:9px;color:var(--amber);white-space:nowrap}
+  .mt-t{display:inline-flex;align-items:center;gap:5px}
+  .mt-t .tieri{width:16px;height:16px;object-fit:contain}
   .scell{font-weight:800}
   .teamlabel{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;padding:14px 7px 5px;color:var(--muted)}
   .teamlabel.blue{color:var(--cyan)} .teamlabel.red{color:var(--red)}
@@ -943,6 +949,7 @@
     .sb th,.sb td{padding:8px 5px}
     .sb td.pcol .pn b{font-size:12px}
     .ag{width:26px;height:26px}
+    .agent .tierb{width:20px;height:20px} .agent{gap:7px}
 
     /* --- cartes de stats --- */
     .md-tiles{grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:7px}
