@@ -532,6 +532,7 @@ function slimMatch(M){
     durMs:M.durMs||0, rounds:M.rounds, result:M.result, region:M.region||'',
     myScore:M.myScore, oppScore:M.oppScore, forfeit:!!M.forfeit,
     myTeamId:M.myTeamId, party:M.party||null, rr:M.rr||null, season:M.season||null,
+    ...(M.multi ? { multi:{ count:M.multi.count } } : {}),
     me: s ? { k:s.k, d:s.d, a:s.a, hs:s.hs, acs:s.acs, adr:s.adr, dd:s.dd, kd:s.kd,
               rounds:s.rounds, kast:s.kast==null?null:s.kast, shots:s.shots,
               name:s.name, tag:s.tag, team:s.team, agent:s.agent, agentId:s.agentId,
@@ -554,6 +555,7 @@ function rehydrateMatch(s){
   return { id:s.id, map:s.map, mode:s.mode, started:s.started, startedMs:s.startedMs,
     durMs:s.durMs, rounds:s.rounds, result:s.result, region:s.region||'', myScore:s.myScore, oppScore:s.oppScore,
     forfeit:s.forfeit, myTeamId:s.myTeamId, party:s.party, rr:s.rr, season:s.season,
+    ...(s.multi ? { multi:s.multi } : {}),
     players:[], lines: me ? [me] : [], facts:null, partial:true, cached:true, me };
 }
 
@@ -765,13 +767,28 @@ function matchFacts(m, roundsCount, me){
 
   const mates = players.filter(p=>p.team_id===myTeam && p.puuid!==mp).length;
   const foes  = players.filter(p=>p.team_id!==myTeam).length;
+  // Plusieurs équipes : un round ne m'oppose qu'à UNE partie du lobby. Compter
+  // les quatorze autres comme « ennemis vivants » fabriquerait des clutchs 1v13,
+  // et le premier kill du lobby n'est pas forcément celui de mon duel.
+  const multiTeam = !!multiTeamOf(players, m && m.teams);
+  const teamSize = {};
+  players.forEach(p=>{ teamSize[p.team_id]=(teamSize[p.team_id]||0)+1; });
 
   let firstBloods=0, firstDeaths=0, clutches=0, plants=0, defuses=0;
   const multi={}, clutchKinds=[];
   const dealt={}, received={};
 
   const timeline = rs.map((r,i)=>{
-    const ks = byRound.get(i) || [];
+    const all = byRound.get(i) || [];
+    const touchesMe = k => (k.killer&&k.killer.team===myTeam) || (k.victim&&k.victim.team===myTeam);
+    const ks = multiTeam ? all.filter(touchesMe) : all;
+    // Adversaires réels de ce round : les équipes croisées dans MON duel.
+    let roundFoes = foes;
+    if(multiTeam){
+      const opp = new Set();
+      ks.forEach(k=>{ [k.killer,k.victim].forEach(x=>{ if(x && x.team!=null && x.team!==myTeam) opp.add(x.team); }); });
+      roundFoes = [...opp].reduce((n,t)=>n+(teamSize[t]||0), 0);
+    }
     const mine = ks.filter(k=>k.killer&&k.killer.puuid===mp);
     const won = r.winning_team===myTeam;
 
@@ -810,7 +827,7 @@ function matchFacts(m, roundsCount, me){
       if(mateDeaths.length>=mates){
         const tLast = num(mateDeaths[mateDeaths.length-1].time_in_round_in_ms);
         const foesDeadBefore = ks.filter(k=>k.victim&&k.victim.team!==myTeam&&num(k.time_in_round_in_ms)<=tLast).length;
-        const alive = foes - foesDeadBefore;
+        const alive = roundFoes - foesDeadBefore;
         const after = mine.filter(k=>num(k.time_in_round_in_ms)>tLast).length;
         if(alive>=1 && after>=1){ clutches++; clutchKinds.push(`1v${alive}`); }
       }
@@ -896,6 +913,34 @@ function modeName(meta){
 }
 const modeKey = meta => String(modeName(meta)).toLowerCase();
 
+/* Parties à PLUSIEURS équipes (Gauntlet: Glitched, patch 13.06 : 8 duos).
+   Tout le reste du code suppose « ta team contre l'adverse » ; au-delà de deux
+   équipes, « l'adverse » n'existe plus. On détecte la FORME de la partie, pas
+   le nom du mode : le nom interne d'une file est souvent un nom de code (le
+   Team Deathmatch s'appelait « hurm » dans l'API), il peut changer, et une
+   règle sur la forme vaudra aussi pour le prochain mode du même genre.
+   Plus de deux équipes ET des équipes de plusieurs joueurs : un chacun-pour-
+   soi (deathmatch), quelle que soit la façon dont l'API l'encode, n'en est pas. */
+function multiTeamOf(players, teams){
+  const size={};
+  (players||[]).forEach(p=>{ if(p && p.team_id!=null) size[p.team_id]=(size[p.team_id]||0)+1; });
+  (teams||[]).forEach(t=>{ if(t && t.team_id!=null && !(t.team_id in size)) size[t.team_id]=0; });
+  const ids=Object.keys(size);
+  if(ids.length<=2 || !ids.some(id=>size[id]>=2)) return null;
+  return { count:ids.length };
+}
+
+// Libellé du résultat. À plusieurs équipes : sans verdict de l'API, « — »
+// plutôt qu'une défaite supposée ; et le score est le bilan de rounds de mon
+// équipe, qu'on nomme comme tel.
+function resultWord(M, low){
+  const w = M.result==='w' ? 'Victoire' : (M.result==='l' || !M.multi ? 'Défaite' : '—');
+  return low ? w.toLowerCase() : w.toUpperCase();
+}
+function scoreText(M){
+  return M.multi ? `${M.myScore}–${M.oppScore} en rounds` : `${M.myScore}–${M.oppScore}`;
+}
+
 // Normalise une partie au format "matches v4" (metadata + players[] + teams[]).
 function normMatch(m, targetState = STATE, opts){
   const meta=m.metadata||{};
@@ -910,11 +955,20 @@ function normMatch(m, targetState = STATE, opts){
 
   const T=id=>teams.find(t=>t.team_id===id);
   const rwon=t=>t&&t.rounds?num(t.rounds.won):0, rlost=t=>t&&t.rounds?num(t.rounds.lost):0;
+  const multi=multiTeamOf(players, teams);
   const myTeam=me?T(me.team_id):null, oppTeam=teams.find(t=>myTeam&&t.team_id!==myTeam.team_id);
   let rounds=myTeam?rwon(myTeam)+rlost(myTeam):(rwon(T('Red'))+rwon(T('Blue')));
   if(!rounds) rounds=(Array.isArray(m.rounds)&&m.rounds.length)||24;
   let result='?';
-  if(myTeam) result=(typeof myTeam.won==='boolean')?(myTeam.won?'w':'l'):(rwon(myTeam)>=rwon(oppTeam)?'w':'l');
+  if(myTeam) result=(typeof myTeam.won==='boolean')?(myTeam.won?'w':'l')
+    // À plusieurs équipes, comparer à « la première autre venue » n'a aucun
+    // sens : sans verdict explicite de l'API, on ne sait pas, et on le dit.
+    : (multi ? '?' : (rwon(myTeam)>=rwon(oppTeam)?'w':'l'));
+  if(multi){
+    // Le bilan de CHAQUE équipe, pour un scoreboard par équipe.
+    multi.teams=teams.filter(t=>t && t.team_id!=null).map(t=>({ id:t.team_id, won:rwon(t), lost:rlost(t),
+      winner: typeof t.won==='boolean' ? t.won : null }));
+  }
 
   // Forfait : en compétitif/non classé il faut 13 rounds pour gagner. Si le
   // vainqueur en a moins, c'est que l'équipe adverse a déclaré forfait.
@@ -950,7 +1004,10 @@ function normMatch(m, targetState = STATE, opts){
     startedMs,
     id: meta.match_id||meta.matchid||meta.matchId||null,
     region: meta.region||'',
-    myScore:rwon(myTeam), oppScore:rwon(oppTeam), result,
+    // À plusieurs équipes, le « score » est le bilan de rounds de MON équipe
+    // (gagnés–perdus), pas un face-à-face avec une équipe prise au hasard.
+    myScore:rwon(myTeam), oppScore:multi?rlost(myTeam):rwon(oppTeam), result,
+    ...(multi ? { multi } : {}),
     me:meStat, myTeamId:me?me.team_id:'Blue'};
 }
 
@@ -2685,7 +2742,6 @@ function renderList(){
     const s = M.me, sc100 = s ? s.score100 : 0, t = tierOf(sc100), f = s ? flair(s.kd) : '';
     const splash = imgURL(MAPS && MAPS[(M.map||'').toLowerCase()]);
     const art = agentArt(s);
-    const won = M.result === 'w';
     return `<div class="mrow ${M.result}" data-idx="${i}">
       <div class="mc-top">
         <span class="mc-mode">${esc(M.mode)}</span>
@@ -2699,12 +2755,12 @@ function renderList(){
           <b>${s ? esc(s.agent) : '—'}</b>
           <span class="mc-map">${esc(M.map)}</span>
         </div>
-        <span class="mc-res">${won ? 'VICTOIRE' : 'DÉFAITE'}</span>
+        <span class="mc-res">${resultWord(M)}</span>
       </div>
       <div class="mc-stats">
         <span class="mc-st"><i>K / D / A</i><b>${s ? s.k+' / '+s.d+' / '+s.a : '—'}</b></span>
         <span class="mc-st"><i>ACS</i><b>${s ? s.acs : '—'}</b></span>
-        <span class="mc-st"><i>Score</i><b>${M.myScore}–${M.oppScore}</b></span>
+        <span class="mc-st"><i>${M.multi ? `Rounds · ${M.multi.count} équipes` : 'Score'}</i><b>${M.myScore}–${M.oppScore}</b></span>
         <div class="scorebadge score-mini flair-${f} sd" style="--sc:${t.c}" data-sd="${i}" title="Voir le détail du calcul">${s?sc100:'—'}${flairHTML(f)}</div>
       </div>
     </div>`;
@@ -3254,8 +3310,27 @@ function scoreboardHTML(M){
       : `<div class="sbnote">Chargement du scoreboard complet…</div>`;
   }
   // sbRows() renseigne rrShown : il faut donc l'appeler avant de composer la note.
-  const body = `<tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
+  let body;
+  if(detail.multi){
+    // Plusieurs équipes : un bloc par équipe. La mienne d'abord, puis la
+    // gagnante, puis les autres par rounds gagnés — sans prétendre à un
+    // classement exact que l'API ne donne pas.
+    const rec={}; (detail.multi.teams||[]).forEach(t=>{ rec[t.id]=t; });
+    const ids=[...new Set(all.map(s=>s.team))].filter(id=>id!==detail.myTeamId).sort((a,b)=>{
+      const A=rec[a]||{}, B=rec[b]||{};
+      return (B.winner===true)-(A.winner===true) || (B.won||0)-(A.won||0);
+    });
+    const lab=(id,mine)=>{
+      const r=rec[id], bil=r?` — ${r.won}–${r.lost} en rounds`:'';
+      const win=r && r.winner===true ? ' · vainqueur' : '';
+      return `<tr><td colspan="8" class="teamlabel ${mine?'blue':'red'}">${mine?'Ta team':'Équipe'}${bil}${win}</td></tr>`;
+    };
+    body = `<tbody>${lab(detail.myTeamId,true)}${sbRows(blue)}`
+      + ids.map(id=>lab(id,false)+sbRows(all.filter(s=>s.team===id))).join('') + `</tbody>`;
+  }else{
+    body = `<tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
     <tr><td colspan="8" class="teamlabel red">Adverse — ${detail.oppScore} rounds</td></tr>${sbRows(red)}</tbody>`;
+  }
   const rrNote = rrShown
     ? `<div class="md-none">Le <b>±RR</b> n'est affiché que pour la squad : le détail d'une partie ne porte le RR d'aucun joueur, il vient de l'historique MMR accumulé de chaque membre. Pour les autres, personne ne le publie.</div>`
     : '';
@@ -3383,7 +3458,7 @@ function renderMatchModal(i){
     <div class="sd-head">
       <div class="scorebadge score-hero sd" id="mdHeroScore" title="Voir le détail du calcul" style="--sc:${t.c}">${M.me?M.me.score100:'—'}<span class="out">/100</span></div>
       <div>
-        <div class="sd-tier" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${M.result==='w'?'VICTOIRE':'DÉFAITE'} ${M.myScore}–${M.oppScore}</div>
+        <div class="sd-tier" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${resultWord(M)} ${scoreText(M)}</div>
         <h3>${esc(M.map)}</h3>
         <div class="sd-sub mono">${esc(M.mode)}${M.me?' · '+esc(M.me.agent):''} · ${esc(relTime(M.started))}${dur?' · '+dur:''}${rr}</div>
       </div>
@@ -3444,7 +3519,7 @@ function openProfileFrom(idStr){
 function openMatchScore(i){
   const M=STATE.matches[i]; if(!M||!M.me) return;
   openScoreDetail(M.me, {
-    title:`${M.map} · ${M.result==='w'?'Victoire':'Défaite'} ${M.myScore}–${M.oppScore}`,
+    title:`${M.map} · ${resultWord(M,true).replace(/^./,c=>c.toUpperCase())} ${scoreText(M)}`,
     sub:`${M.mode} · ${M.me.agent} · ${M.me.k}/${M.me.d}/${M.me.a} · ${relTime(M.started)}` });
 }
 
@@ -4948,7 +5023,7 @@ function wireStatic(){
       const line=SB_LINES[+c.dataset.sb]; if(!line) return;
       const M=STATE.matches[SELECTED_IDX];
       openScoreDetail(line, { title:`${line.name}#${line.tag} · ${line.agent}`,
-        sub:M?`${M.map} · ${M.result==='w'?'victoire':'défaite'} ${M.myScore}–${M.oppScore}`:'' });
+        sub:M?`${M.map} · ${resultWord(M,true)} ${scoreText(M)}`:'' });
       return;
     }
     if(e.target.closest('#mdHeroScore') && SELECTED_IDX>=0) openMatchScore(SELECTED_IDX);
