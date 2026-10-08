@@ -34,6 +34,17 @@ export function cleanAlias(raw, selfKey) {
   return out;
 }
 
+// Champs d'un membre mis en sommeil chez un invité. Mêmes bornes que pour un membre.
+export function cleanWas(w) {
+  if (!w || typeof w !== "object") return null;
+  const out = {};
+  if (w.agent) out.agent = String(w.agent).slice(0, 40);
+  if (w.role) out.role = String(w.role).slice(0, 40);
+  if (w.uuid) out.uuid = String(w.uuid).slice(0, 64);
+  if (w.customImg) out.customImg = String(w.customImg).slice(0, 500);
+  return Object.keys(out).length ? out : null;
+}
+
 // Exporté pour être testable directement : hors Netlify, getStore échoue, donc
 // passer par le handler ne permet jamais d'observer ce qui serait enregistré.
 export function cleanRoster(r) {
@@ -70,6 +81,11 @@ export function cleanRoster(r) {
                     color: g.color ? String(g.color).slice(0, 12) : "#8696a6" };
       const alias = cleanAlias(g.alias, `${out.name}#${out.tag}`.toLowerCase());
       if (alias.length) out.alias = alias;
+      // Un ancien membre passé en invité garde, À PART, ce qu'il avait comme
+      // membre : un invité n'a toujours ni agent ni carte, mais son retour dans
+      // la squad ne repart pas de zéro.
+      const was = cleanWas(g.was);
+      if (was) out.was = was;
       return out;
     });
   // Un invité qui rejoint la squad ne doit pas exister en double.

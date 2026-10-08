@@ -103,6 +103,11 @@
   .edsec em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--dim);margin-left:8px;font-size:11px}
   .edrow .edrm{flex:none;border:1px solid var(--line);border-radius:6px;color:var(--loss);width:30px;height:30px;font-size:12px}
   .edrow .edrm:hover{border-color:var(--loss);background:rgba(255,93,93,.1)}
+  .edrow .edmove{flex:none;border:1px solid var(--line);border-radius:6px;color:var(--cyan);height:30px;padding:0 10px;
+    font-family:var(--mono);font-size:11px;white-space:nowrap}
+  .edrow .edmove:hover{border-color:var(--cyan);background:rgba(86,216,201,.1)}
+  .edrow.moved{animation:edmoved 1.3s ease}
+  @keyframes edmoved{0%{background:rgba(86,216,201,.22)}100%{background:transparent}}
 
   /* ============ PROFILE / TRACKER ============ */
   #profile{padding:20px 16px 70px;background:radial-gradient(1000px 520px at 85% -5%,rgba(86,216,201,.05),transparent 60%),var(--bg)}
@@ -527,6 +532,12 @@
   .ag span{display:none}
   .ag.noimg span{display:block}
   .pn b{color:var(--txt);font-weight:700;font-size:13px} .pn span{color:var(--dim)}
+  /* Rang du joueur dans la partie, entre le portrait et le pseudo. Largeur fixe,
+     même vide : sinon les pseudos des non-classés se décalent. */
+  .agent .tierb{width:24px;height:24px;flex:none;object-fit:contain;display:block}
+  .agent .tierb.txt{width:auto;height:auto;font-size:9px;color:var(--amber);white-space:nowrap}
+  .mt-t{display:inline-flex;align-items:center;gap:5px}
+  .mt-t .tieri{width:16px;height:16px;object-fit:contain}
   .scell{font-weight:800}
   .teamlabel{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;padding:14px 7px 5px;color:var(--muted)}
   .teamlabel.blue{color:var(--cyan)} .teamlabel.red{color:var(--red)}
@@ -943,6 +954,7 @@
     .sb th,.sb td{padding:8px 5px}
     .sb td.pcol .pn b{font-size:12px}
     .ag{width:26px;height:26px}
+    .agent .tierb{width:20px;height:20px} .agent{gap:7px}
 
     /* --- cartes de stats --- */
     .md-tiles{grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:7px}
@@ -1025,6 +1037,7 @@
     .modal-x{width:44px;height:44px}
     .edrow input{min-height:44px}
     .edrow .edrm{width:44px;height:44px}
+    .edrow .edmove{height:44px}
     .chip{min-height:44px}
     .cmp-map{min-height:44px}
     .fresh{min-height:44px}
@@ -1055,7 +1068,7 @@
      elle se resserre en dock centré — pleine largeur sur 1400 px, elle aurait
      l'air d'un bandeau perdu. */
   .tabbar{position:fixed;left:0;right:0;bottom:0;z-index:40;
-    display:grid;grid-template-columns:repeat(5,1fr);gap:2px;
+    display:grid;grid-template-columns:repeat(6,1fr);gap:2px;
     background:rgba(10,15,21,.93);border-top:1px solid var(--line);
     -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
     padding:6px 6px calc(6px + env(safe-area-inset-bottom))}
@@ -1068,11 +1081,129 @@
   .tabbar button:hover{color:var(--txt)}
   .tabbar button.on:hover{color:var(--cyan)}
   @media(min-width:760px){
-    .tabbar{left:50%;right:auto;transform:translateX(-50%);bottom:16px;width:min(540px,92vw);
+    .tabbar{left:50%;right:auto;transform:translateX(-50%);bottom:16px;width:min(600px,92vw);
       border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 40px -18px #000;padding:6px}
   }
+
+  /* ===================== DASHBOARD =====================
+     Palette des séries : DASH_PALETTE (app.js), validée sur ce fond. Le texte
+     reste aux encres normales ; seules les marques (traits, points, pastilles)
+     portent la couleur d'un membre. Grilles et axes : filets pleins, discrets. */
+  #dashboard .up{color:var(--win)} #dashboard .dn{color:var(--loss)}
+  .dsh-head{margin-bottom:12px;border-bottom:0}
+  .dsh-head h1{margin:8px 0 2px;font-size:28px;font-weight:900;letter-spacing:-.02em;text-transform:uppercase}
+  .dsh-head .tag{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .dsh-card{margin-top:14px}
+  .dsh-card h2 em{font-style:normal;font-weight:400;font-size:11px;color:var(--muted);margin-left:6px;text-transform:none;letter-spacing:0}
+  .dsh-filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin-top:16px;padding:8px 0}
+  /* Collante seulement sur grand écran : au téléphone elle fait deux lignes et
+     mangerait un tiers de l'écran à chaque défilement. */
+  @media(min-width:760px){
+    .dsh-filters{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
+  }
+  #dashboard .seg button{padding:8px 12px;font-size:12px}
+  .dsh-scope{font-family:var(--mono);font-size:11px;color:var(--muted)} .dsh-scope b{color:var(--txt);font-weight:600}
+  .dsh-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:6px}
+  .dsh-kpi{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-width:0}
+  .dsh-kpi span{display:block;font-size:11px;color:var(--muted)}
+  .dsh-kpi b{display:block;font-size:24px;font-weight:700;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dsh-kpi em{display:block;font-style:normal;font-size:11px;color:var(--dim);margin-top:2px}
+  .dsh-who{display:inline-flex;align-items:center;gap:7px;min-width:0;white-space:nowrap}
+  .dsh-lk{display:inline-block;width:12px;height:3px;border-radius:2px;background:var(--c);flex:none}
+  .dsh-legend{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 6px}
+  .dsh-lg{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;
+    border:1px solid var(--line);background:var(--panel2);color:var(--txt);font-size:12px;min-height:30px}
+  .dsh-lg.off{color:var(--dim);background:transparent} .dsh-lg.off .dsh-lk{opacity:.25}
+  .dsh-chart{position:relative;width:100%;min-height:200px}
+  .dsh-svg{display:block;outline:none;touch-action:pan-y}
+  .dsh-svg:focus-visible{box-shadow:0 0 0 2px var(--cyan);border-radius:6px}
+  .dsh-grid{stroke:#1e2a36;stroke-width:1} .dsh-axis{stroke:#2c3b4a;stroke-width:1}
+  .dsh-ylab,.dsh-xlab{fill:var(--muted);font-family:var(--mono);font-size:10px;font-variant-numeric:tabular-nums}
+  .dsh-line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round;transition:opacity .15s}
+  .dsh-dot{stroke:#121b24;stroke-width:2;transition:opacity .15s}
+  .dsh-elab{fill:var(--txt);font-size:11px;font-weight:600;transition:opacity .15s}
+  .dsh-lead{stroke-width:1;opacity:.45;transition:opacity .15s}
+  .dsh-lkey{stroke-width:3;stroke-linecap:round;transition:opacity .15s}
+  @media(max-width:519px){ .dsh-elab{font-size:10.5px} }
+  .dsh-cross{stroke:var(--muted);stroke-width:1;pointer-events:none}
+  .dsh-hit{cursor:crosshair}
+  #dshChart .dim{opacity:.15}
+  .dsh-nodata{padding:30px 0;text-align:center}
+  .dsh-tip{position:fixed;z-index:70;min-width:170px;max-width:290px;pointer-events:none;
+    background:#0d141c;border:1px solid var(--line);border-radius:10px;padding:8px 10px;
+    box-shadow:0 12px 30px -12px #000;font-size:12px}
+  .dsh-tip .dt-h{font-size:11px;color:var(--muted);margin-bottom:4px}
+  /* Les classes, pas les balises : une règle sur « .dt-r i » attrapait aussi
+     la pastille de couleur (un <i>) et la jetait en dernière colonne. */
+  .dsh-tip .dt-r{display:grid;grid-template-columns:12px 38px minmax(0,1fr) 34px;align-items:center;gap:6px;padding:2px 0}
+  .dsh-tip .dt-r b{font-variant-numeric:tabular-nums;color:var(--txt)}
+  .dsh-tip .dt-r span{color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dsh-tip .dt-r span em{font-style:normal;color:var(--txt)}
+  .dsh-tip .dt-ch{font-weight:700;text-align:right;font-variant-numeric:tabular-nums}
+  @media(max-width:619px){ .dsh-tip{max-width:none;width:calc(100vw - 16px)} }
+  .dsh-tv{margin-top:10px} .dsh-tv summary{cursor:pointer;font-size:12px;color:var(--muted)}
+  .dsh-tbl td em{display:block;font-style:normal;font-size:10px;margin-top:2px;color:var(--dim)}
+  .dsh-tbl td em.up{color:var(--win)} .dsh-tbl td em.dn{color:var(--loss)}
+  .dsh-tbl td.dim{color:var(--dim)}
+  .dsh-tbl th button{color:inherit;font:inherit;letter-spacing:inherit;text-transform:inherit;padding:2px 0}
+  .dsh-tbl th button.on{color:var(--txt)}
+  .dsh-forms{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:8px;margin-top:10px}
+  .dsh-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 8px;align-items:center;
+    background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12.5px}
+  .dsh-fstate{font-size:11px;color:var(--muted);text-align:right;white-space:nowrap}
+  .dsh-form.up .dsh-fstate b{color:var(--win)} .dsh-form.down .dsh-fstate b{color:var(--loss)} .dsh-form.flat .dsh-fstate b{color:var(--dim)}
+  .dsh-fval{grid-column:1 / 3;font-size:12px} .dsh-fval em{font-style:normal;color:var(--muted)}
+  .dsh-sess{padding:12px 0;border-top:1px solid var(--line)} .dsh-sess:first-of-type{border-top:0;padding-top:4px}
+  .dsh-sh{font-size:13px;margin-bottom:8px} .dsh-sh span{color:var(--muted);font-size:12px}
+  .dsh-srow{display:grid;grid-template-columns:minmax(90px,1.2fr) 2fr 58px 52px;align-items:center;gap:10px;padding:3px 0;font-size:12px}
+  .dsh-bar{position:relative;height:10px}
+  .dsh-bar::before{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:#2c3b4a}
+  .dsh-bar i{position:absolute;top:0;bottom:0;border-radius:0 4px 4px 0}
+  .dsh-bar i.pos{left:50%;background:var(--win)}
+  .dsh-bar i.neg{right:50%;background:var(--loss);border-radius:4px 0 0 4px}
+  .dsh-val{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+  .dsh-wl{color:var(--muted);font-family:var(--mono);font-size:11px;text-align:right}
+  .dsh-tog{font-size:11.5px;color:var(--muted);margin-top:6px} .dsh-tog b{color:var(--txt);font-weight:600}
+  .dsh-tog.none{color:var(--dim)}
+  .dsh-more{display:block;width:100%;margin-top:10px;padding:10px;border:1px dashed var(--line);border-radius:10px;
+    color:var(--txt);font-size:12.5px;background:transparent}
+  .dsh-more em{font-style:normal;color:var(--muted)}
+  .dsh-small{font-style:normal;color:var(--amber)}
+  .dsh-pair{display:grid;grid-template-columns:1fr auto;gap:4px 12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+  .dsh-pair:first-of-type{border-top:0}
+  .dsh-pn{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px;font-weight:600}
+  .dsh-pn .plus{color:var(--dim)}
+  .dsh-pm{grid-column:1;display:flex;flex-direction:column;gap:2px;font-size:11.5px;color:var(--muted)}
+  .dsh-gain{grid-column:2;grid-row:1 / 3;text-align:right;font-size:20px;font-weight:700}
+  .dsh-gain em{display:block;font-style:normal;font-size:10px;color:var(--muted);font-weight:400}
+  .dsh-recs{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .dsh-rec{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
+  .dsh-rec span{display:block;font-size:11px;color:var(--muted)}
+  .dsh-rec b{display:block;font-size:20px;font-weight:700;margin:4px 0 2px}
+  .dsh-rec em{display:block;font-style:normal;font-size:11px;color:var(--dim);line-height:1.4}
+  .dsh-act{display:flex;flex-direction:column;gap:4px;margin-top:6px}
+  .dsh-arow{display:grid;grid-template-columns:78px 1fr;align-items:center;gap:8px}
+  .dsh-aname{font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dsh-acells{display:grid;grid-template-columns:repeat(var(--n),minmax(0,1fr));gap:2px;max-width:calc(var(--n) * 24px)}
+  .dsh-cell{display:block;aspect-ratio:1;border-radius:3px;background:var(--s)}
+  .dsh-cell.z{background:var(--panel2)}
+  .dsh-cell:hover{outline:1px solid var(--txt)}
+  .dsh-arow.head .dsh-acells{align-items:end}
+  .dsh-ah{position:relative;height:14px;font-family:var(--mono);font-size:9px;color:var(--muted)}
+  .dsh-ah b{position:absolute;left:0;bottom:0;white-space:nowrap;font-weight:400}
+  .dsh-ah.end b{left:auto;right:0}
+  .dsh-alegend{display:flex;align-items:center;gap:4px;margin-top:10px;font-size:10.5px;color:var(--muted)}
+  .dsh-alegend i{display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--s)}
+  @media(max-width:620px){
+    .dsh-kpis{grid-template-columns:repeat(2,1fr)}
+    .dsh-kpi b{font-size:20px}
+    .dsh-recs{grid-template-columns:repeat(2,1fr)}
+    .dsh-srow{grid-template-columns:minmax(80px,1fr) 1.3fr 48px;gap:8px}
+    .dsh-wl{display:none}
+    .dsh-head h1{font-size:22px}
+  }
   /* Rien ne doit passer sous la barre. */
-  #home,#profile,#tribunal,#leaderboard,#roulette,#comps{
+  #home,#profile,#tribunal,#leaderboard,#roulette,#comps,#dashboard{
     padding-bottom:calc(88px + env(safe-area-inset-bottom))}
 </style>
 </head>
@@ -1304,6 +1435,22 @@
 </section>
 
 <!-- ===================== COMPOS PAR MAP ===================== -->
+<!-- Dashboard du roster : tout est rendu par app.js (renderDashboard), depuis
+     l'historique stocké de chaque membre — aucun appel à l'API HenrikDev. -->
+<section id="dashboard" hidden>
+  <div class="pwrap">
+    <div class="phead dsh-head">
+      <div>
+        <div class="eyebrow" style="color:var(--amber)">COSMO Dashboard</div>
+        <h1>Le roster d'un coup d'œil</h1>
+        <div class="tag">RR, forme, sessions et duos · historique stocké, mis à jour toutes les heures</div>
+      </div>
+    </div>
+    <div id="dshBody"></div>
+  </div>
+  <div class="dsh-tip" id="dshTip" role="status" hidden></div>
+</section>
+
 <section id="comps" hidden>
   <div class="pwrap">
     <button class="back" id="btnBackCmp">← Retour à l'accueil</button>
@@ -1452,12 +1599,13 @@
      clics n'a donc pas bougé d'une ligne. -->
 <nav class="tabbar" id="tabbar" aria-label="Navigation principale">
   <button id="btnHome" type="button"><span class="ic">🏠</span>Accueil</button>
+  <button id="btnDash" type="button"><span class="ic">📈</span>Dashboard</button>
   <button id="btnComps" type="button"><span class="ic">🗺</span>Compos</button>
   <button id="btnRoulette" type="button"><span class="ic">🎲</span>Roulette</button>
   <button id="btnLeaderboard" type="button"><span class="ic">🏆</span>Classement</button>
   <button id="btnTribunal" type="button"><span class="ic">⚖</span>Tribunal</button>
 </nav>
 
-<script src="app.js?v=20260913a" defer></script>
+<script src="app.js?v=20261008a" defer></script>
 </body>
 </html>

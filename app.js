@@ -532,6 +532,7 @@ function slimMatch(M){
     durMs:M.durMs||0, rounds:M.rounds, result:M.result, region:M.region||'',
     myScore:M.myScore, oppScore:M.oppScore, forfeit:!!M.forfeit,
     myTeamId:M.myTeamId, party:M.party||null, rr:M.rr||null, season:M.season||null,
+    ...(M.multi ? { multi:{ count:M.multi.count } } : {}),
     me: s ? { k:s.k, d:s.d, a:s.a, hs:s.hs, acs:s.acs, adr:s.adr, dd:s.dd, kd:s.kd,
               rounds:s.rounds, kast:s.kast==null?null:s.kast, shots:s.shots,
               name:s.name, tag:s.tag, team:s.team, agent:s.agent, agentId:s.agentId,
@@ -554,6 +555,7 @@ function rehydrateMatch(s){
   return { id:s.id, map:s.map, mode:s.mode, started:s.started, startedMs:s.startedMs,
     durMs:s.durMs, rounds:s.rounds, result:s.result, region:s.region||'', myScore:s.myScore, oppScore:s.oppScore,
     forfeit:s.forfeit, myTeamId:s.myTeamId, party:s.party, rr:s.rr, season:s.season,
+    ...(s.multi ? { multi:s.multi } : {}),
     players:[], lines: me ? [me] : [], facts:null, partial:true, cached:true, me };
 }
 
@@ -665,6 +667,26 @@ async function ensureTiers(){
   }catch(e){ /* pas d'icônes de rang, on garde le texte */ }
   return TIERS || {};
 }
+// Icône du rang d'un joueur tel qu'il était AU MOMENT de la partie.
+// Recherche par NOM d'abord : les numéros de palier ont glissé à l'arrivée
+// d'Ascendant (E5), un vieux « 21 » était Immortel 1 et vaut Ascendant 1
+// aujourd'hui. Le numéro ne sert que de repli.
+// Non classé ou inconnu : '' — un trou vaut mieux qu'un faux « Fer 1 ».
+function tierIconFor(id, name){
+  const n=String(name||'').trim();
+  if(id===0 || /^(unrated|unranked|non class)/i.test(n)) return '';
+  if(!n && id==null) return '';
+  return (n && TIERS && TIERS[n.toLowerCase()])
+      || (id!=null && TIER_BY_NUM && TIER_BY_NUM[id] && TIER_BY_NUM[id].icon)
+      || '';
+}
+function tierBadge(id, name){
+  const n=String(name||'').trim(), icon=tierIconFor(id, n);
+  if(icon) return `<img class="tierb" src="${esc(icon)}" alt="${esc(n)}" title="${esc(n)}" loading="lazy">`;
+  // Pas d'icône mais un nom connu (valorant-api injoignable) : le texte.
+  if(n && !/^(unrated|unranked|non class)/i.test(n) && id!==0) return `<span class="tierb txt" title="${esc(n)}">${esc(n)}</span>`;
+  return `<span class="tierb none" title="Non classé"></span>`;   // garde l'alignement des pseudos
+}
 // Récupère l'icône d'un rang : priorité aux images HenrikDev, repli sur valorant-api.
 function rankIcon(cur, tierName){
   return (cur && cur.images && (cur.images.large || cur.images.small))
@@ -683,9 +705,14 @@ function rawLine(p,rounds,kastMap){
   const dd=rounds?Math.round((dmg-rec)/rounds):0, kd=k/Math.max(d,1);
   const ag=p.agent||{};
   const kast=(kastMap && p.puuid!=null && kastMap[p.puuid]!=null)?kastMap[p.puuid]:null;
+  // Rang du joueur DANS CETTE PARTIE (v4 : tier{id,name} ; v2/v3 : currenttier*).
+  const tr=(p.tier && typeof p.tier==='object') ? p.tier : null;
+  const tierId=(tr && tr.id!=null && !isNaN(tr.id)) ? Number(tr.id)
+             : (p.currenttier!=null && !isNaN(p.currenttier) ? Number(p.currenttier) : null);
+  const tierName=String((tr && tr.name) || p.currenttier_patched || '').trim();
   return {k,d,a,hs,acs,adr,dd,kd,rounds,kast,shots:hsT,name:p.name||'?',tag:p.tag||'',team:p.team_id,
     agent:ag.name||(typeof p.agent==='string'?p.agent:'?'),
-    agentId:ag.id||ag.uuid||''};
+    agentId:ag.id||ag.uuid||'', tierId, tierName};
 }
 
 // Note TOUS les joueurs d'une partie d'un coup : nécessaire pour connaître le
@@ -740,13 +767,28 @@ function matchFacts(m, roundsCount, me){
 
   const mates = players.filter(p=>p.team_id===myTeam && p.puuid!==mp).length;
   const foes  = players.filter(p=>p.team_id!==myTeam).length;
+  // Plusieurs équipes : un round ne m'oppose qu'à UNE partie du lobby. Compter
+  // les quatorze autres comme « ennemis vivants » fabriquerait des clutchs 1v13,
+  // et le premier kill du lobby n'est pas forcément celui de mon duel.
+  const multiTeam = !!multiTeamOf(players, m && m.teams);
+  const teamSize = {};
+  players.forEach(p=>{ teamSize[p.team_id]=(teamSize[p.team_id]||0)+1; });
 
   let firstBloods=0, firstDeaths=0, clutches=0, plants=0, defuses=0;
   const multi={}, clutchKinds=[];
   const dealt={}, received={};
 
   const timeline = rs.map((r,i)=>{
-    const ks = byRound.get(i) || [];
+    const all = byRound.get(i) || [];
+    const touchesMe = k => (k.killer&&k.killer.team===myTeam) || (k.victim&&k.victim.team===myTeam);
+    const ks = multiTeam ? all.filter(touchesMe) : all;
+    // Adversaires réels de ce round : les équipes croisées dans MON duel.
+    let roundFoes = foes;
+    if(multiTeam){
+      const opp = new Set();
+      ks.forEach(k=>{ [k.killer,k.victim].forEach(x=>{ if(x && x.team!=null && x.team!==myTeam) opp.add(x.team); }); });
+      roundFoes = [...opp].reduce((n,t)=>n+(teamSize[t]||0), 0);
+    }
     const mine = ks.filter(k=>k.killer&&k.killer.puuid===mp);
     const won = r.winning_team===myTeam;
 
@@ -785,7 +827,7 @@ function matchFacts(m, roundsCount, me){
       if(mateDeaths.length>=mates){
         const tLast = num(mateDeaths[mateDeaths.length-1].time_in_round_in_ms);
         const foesDeadBefore = ks.filter(k=>k.victim&&k.victim.team!==myTeam&&num(k.time_in_round_in_ms)<=tLast).length;
-        const alive = foes - foesDeadBefore;
+        const alive = roundFoes - foesDeadBefore;
         const after = mine.filter(k=>num(k.time_in_round_in_ms)>tLast).length;
         if(alive>=1 && after>=1){ clutches++; clutchKinds.push(`1v${alive}`); }
       }
@@ -846,7 +888,9 @@ function matchFacts(m, roundsCount, me){
 
   const lobby = players.map(p=>({
     name:p.name, tag:p.tag, team:p.team_id, mine:p.team_id===myTeam, isMe:p.puuid===mp,
-    tier:(p.tier&&p.tier.name)||'', party:p.party_id||'', agent:(p.agent&&p.agent.name)||'',
+    tier:(p.tier&&p.tier.name)||p.currenttier_patched||'',
+    tierId:(p.tier&&p.tier.id!=null)?Number(p.tier.id):(p.currenttier!=null?Number(p.currenttier):null),
+    party:p.party_id||'', agent:(p.agent&&p.agent.name)||'',
   }));
   // Groupes : on ne numérote que les party_id partagés par au moins 2 joueurs.
   const counts={}; lobby.forEach(p=>{ if(p.party) counts[p.party]=(counts[p.party]||0)+1; });
@@ -869,6 +913,34 @@ function modeName(meta){
 }
 const modeKey = meta => String(modeName(meta)).toLowerCase();
 
+/* Parties à PLUSIEURS équipes (Gauntlet: Glitched, patch 13.06 : 8 duos).
+   Tout le reste du code suppose « ta team contre l'adverse » ; au-delà de deux
+   équipes, « l'adverse » n'existe plus. On détecte la FORME de la partie, pas
+   le nom du mode : le nom interne d'une file est souvent un nom de code (le
+   Team Deathmatch s'appelait « hurm » dans l'API), il peut changer, et une
+   règle sur la forme vaudra aussi pour le prochain mode du même genre.
+   Plus de deux équipes ET des équipes de plusieurs joueurs : un chacun-pour-
+   soi (deathmatch), quelle que soit la façon dont l'API l'encode, n'en est pas. */
+function multiTeamOf(players, teams){
+  const size={};
+  (players||[]).forEach(p=>{ if(p && p.team_id!=null) size[p.team_id]=(size[p.team_id]||0)+1; });
+  (teams||[]).forEach(t=>{ if(t && t.team_id!=null && !(t.team_id in size)) size[t.team_id]=0; });
+  const ids=Object.keys(size);
+  if(ids.length<=2 || !ids.some(id=>size[id]>=2)) return null;
+  return { count:ids.length };
+}
+
+// Libellé du résultat. À plusieurs équipes : sans verdict de l'API, « — »
+// plutôt qu'une défaite supposée ; et le score est le bilan de rounds de mon
+// équipe, qu'on nomme comme tel.
+function resultWord(M, low){
+  const w = M.result==='w' ? 'Victoire' : (M.result==='l' || !M.multi ? 'Défaite' : '—');
+  return low ? w.toLowerCase() : w.toUpperCase();
+}
+function scoreText(M){
+  return M.multi ? `${M.myScore}–${M.oppScore} en rounds` : `${M.myScore}–${M.oppScore}`;
+}
+
 // Normalise une partie au format "matches v4" (metadata + players[] + teams[]).
 function normMatch(m, targetState = STATE, opts){
   const meta=m.metadata||{};
@@ -883,11 +955,20 @@ function normMatch(m, targetState = STATE, opts){
 
   const T=id=>teams.find(t=>t.team_id===id);
   const rwon=t=>t&&t.rounds?num(t.rounds.won):0, rlost=t=>t&&t.rounds?num(t.rounds.lost):0;
+  const multi=multiTeamOf(players, teams);
   const myTeam=me?T(me.team_id):null, oppTeam=teams.find(t=>myTeam&&t.team_id!==myTeam.team_id);
   let rounds=myTeam?rwon(myTeam)+rlost(myTeam):(rwon(T('Red'))+rwon(T('Blue')));
   if(!rounds) rounds=(Array.isArray(m.rounds)&&m.rounds.length)||24;
   let result='?';
-  if(myTeam) result=(typeof myTeam.won==='boolean')?(myTeam.won?'w':'l'):(rwon(myTeam)>=rwon(oppTeam)?'w':'l');
+  if(myTeam) result=(typeof myTeam.won==='boolean')?(myTeam.won?'w':'l')
+    // À plusieurs équipes, comparer à « la première autre venue » n'a aucun
+    // sens : sans verdict explicite de l'API, on ne sait pas, et on le dit.
+    : (multi ? '?' : (rwon(myTeam)>=rwon(oppTeam)?'w':'l'));
+  if(multi){
+    // Le bilan de CHAQUE équipe, pour un scoreboard par équipe.
+    multi.teams=teams.filter(t=>t && t.team_id!=null).map(t=>({ id:t.team_id, won:rwon(t), lost:rlost(t),
+      winner: typeof t.won==='boolean' ? t.won : null }));
+  }
 
   // Forfait : en compétitif/non classé il faut 13 rounds pour gagner. Si le
   // vainqueur en a moins, c'est que l'équipe adverse a déclaré forfait.
@@ -923,7 +1004,10 @@ function normMatch(m, targetState = STATE, opts){
     startedMs,
     id: meta.match_id||meta.matchid||meta.matchId||null,
     region: meta.region||'',
-    myScore:rwon(myTeam), oppScore:rwon(oppTeam), result,
+    // À plusieurs équipes, le « score » est le bilan de rounds de MON équipe
+    // (gagnés–perdus), pas un face-à-face avec une équipe prise au hasard.
+    myScore:rwon(myTeam), oppScore:multi?rlost(myTeam):rwon(oppTeam), result,
+    ...(multi ? { multi } : {}),
     me:meStat, myTeamId:me?me.team_id:'Blue'};
 }
 
@@ -1540,6 +1624,7 @@ function sessionSquadReport(session, squadIndex, selfKey, selfInfo){
    deux : appris en 1 ou 2, il rattache les entrées dont le nom a changé. */
 let SQUAD_INDEX = null;      // match_id -> [{key,name,tag,color,team,M?}]
 let SQUAD_HIST = null;       // clé roster -> ses parties normalisées (depuis les blobs)
+let SQUAD_RR = null;         // clé roster -> sa série RR (blob), pour le dashboard
 let SQUAD_LOADING = null;
 let SQUAD_BLOBS_DONE = false;
 let PUUID_MEMBER = {};       // puuid -> clé roster (survit à un changement de pseudo)
@@ -1600,6 +1685,7 @@ async function ensureSquadHistories(){
     people.forEach((m,i)=>{
       const key=memberKey(m), target={ puuid:null, name:m.name, tag:m.tag };
       const rrIdx=rrIndexFromSeries(rrLists[i]||[]);
+      (SQUAD_RR || (SQUAD_RR = {}))[key]=rrLists[i]||[];
       hist[key]=[];
       (lists[i]||[]).forEach(raw=>{
         let M=null;
@@ -1841,7 +1927,7 @@ function findSessionAt(sessions, ts){
 
 // Un changement de roster (pseudo, membre ajouté/retiré) invalide l'index.
 function resetSquadIndex(){
-  SQUAD_INDEX=null; SQUAD_HIST=null; SQUAD_LOADING=null; SQUAD_BLOBS_DONE=false; PUUID_MEMBER={};
+  SQUAD_INDEX=null; SQUAD_HIST=null; SQUAD_RR=null; SQUAD_LOADING=null; SQUAD_BLOBS_DONE=false; PUUID_MEMBER={};
 }
 
 /* ===================== COMPOS PAR MAP =====================
@@ -2229,6 +2315,7 @@ function showHome(){
   $('leaderboard').hidden = true;
   const rou=$('roulette'); if(rou) rou.hidden = true;
   const cmp=$('comps'); if(cmp) cmp.hidden = true;
+  const dsh=$('dashboard'); if(dsh) dsh.hidden=true;
   $('home').hidden = false;
   window.scrollTo(0,0);
   // On nettoie les paramètres de partage : un rafraîchissement depuis l'accueil
@@ -2658,7 +2745,6 @@ function renderList(){
     const s = M.me, sc100 = s ? s.score100 : 0, t = tierOf(sc100), f = s ? flair(s.kd) : '';
     const splash = imgURL(MAPS && MAPS[(M.map||'').toLowerCase()]);
     const art = agentArt(s);
-    const won = M.result === 'w';
     return `<div class="mrow ${M.result}" data-idx="${i}">
       <div class="mc-top">
         <span class="mc-mode">${esc(M.mode)}</span>
@@ -2672,12 +2758,12 @@ function renderList(){
           <b>${s ? esc(s.agent) : '—'}</b>
           <span class="mc-map">${esc(M.map)}</span>
         </div>
-        <span class="mc-res">${won ? 'VICTOIRE' : 'DÉFAITE'}</span>
+        <span class="mc-res">${resultWord(M)}</span>
       </div>
       <div class="mc-stats">
         <span class="mc-st"><i>K / D / A</i><b>${s ? s.k+' / '+s.d+' / '+s.a : '—'}</b></span>
         <span class="mc-st"><i>ACS</i><b>${s ? s.acs : '—'}</b></span>
-        <span class="mc-st"><i>Score</i><b>${M.myScore}–${M.oppScore}</b></span>
+        <span class="mc-st"><i>${M.multi ? `Rounds · ${M.multi.count} équipes` : 'Score'}</i><b>${M.myScore}–${M.oppScore}</b></span>
         <div class="scorebadge score-mini flair-${f} sd" style="--sc:${t.c}" data-sd="${i}" title="Voir le détail du calcul">${s?sc100:'—'}${flairHTML(f)}</div>
       </div>
     </div>`;
@@ -3209,7 +3295,7 @@ function scoreboardHTML(M){
     const prof = (mem && !mem.guest && !me) ? ` data-prof="${esc(mem.name+'#'+mem.tag)}" title="Ouvrir le profil de ${esc(mem.name)}"` : '';
     return `<tr class="${me?'me':''}">
       ${posCell}
-      <td class="pcol"><div class="agent">${agCell}
+      <td class="pcol"><div class="agent">${agCell}${tierBadge(s.tierId, s.tierName)}
         <div class="pn${prof?' pnlink':''}"${prof}><b${prof?' class="link"':''}>${esc(s.name)}</b> <span>#${esc(s.tag)}</span>${rrTag}</div></div></td>
       <td class="scell sd" style="color:${t.c}" data-sb="${all.indexOf(s)}" title="Voir le détail du calcul">${s.score100}</td>
       <td style="color:${sc((s.acs-130)/2)}"><b>${s.acs}</b></td>
@@ -3227,8 +3313,27 @@ function scoreboardHTML(M){
       : `<div class="sbnote">Chargement du scoreboard complet…</div>`;
   }
   // sbRows() renseigne rrShown : il faut donc l'appeler avant de composer la note.
-  const body = `<tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
+  let body;
+  if(detail.multi){
+    // Plusieurs équipes : un bloc par équipe. La mienne d'abord, puis la
+    // gagnante, puis les autres par rounds gagnés — sans prétendre à un
+    // classement exact que l'API ne donne pas.
+    const rec={}; (detail.multi.teams||[]).forEach(t=>{ rec[t.id]=t; });
+    const ids=[...new Set(all.map(s=>s.team))].filter(id=>id!==detail.myTeamId).sort((a,b)=>{
+      const A=rec[a]||{}, B=rec[b]||{};
+      return (B.winner===true)-(A.winner===true) || (B.won||0)-(A.won||0);
+    });
+    const lab=(id,mine)=>{
+      const r=rec[id], bil=r?` — ${r.won}–${r.lost} en rounds`:'';
+      const win=r && r.winner===true ? ' · vainqueur' : '';
+      return `<tr><td colspan="8" class="teamlabel ${mine?'blue':'red'}">${mine?'Ta team':'Équipe'}${bil}${win}</td></tr>`;
+    };
+    body = `<tbody>${lab(detail.myTeamId,true)}${sbRows(blue)}`
+      + ids.map(id=>lab(id,false)+sbRows(all.filter(s=>s.team===id))).join('') + `</tbody>`;
+  }else{
+    body = `<tbody><tr><td colspan="8" class="teamlabel blue">Ta team — ${detail.myScore} rounds</td></tr>${sbRows(blue)}
     <tr><td colspan="8" class="teamlabel red">Adverse — ${detail.oppScore} rounds</td></tr>${sbRows(red)}</tbody>`;
+  }
   const rrNote = rrShown
     ? `<div class="md-none">Le <b>±RR</b> n'est affiché que pour la squad : le détail d'une partie ne porte le RR d'aucun joueur, il vient de l'historique MMR accumulé de chaque membre. Pour les autres, personne ne le publie.</div>`
     : '';
@@ -3335,7 +3440,7 @@ function factsHTML(f){
           ${rows.map(p=>`<div class="mt-r${p.isMe?' me':''}">
             <span class="mt-n">${esc(p.name)}<small>#${esc(p.tag)}</small></span>
             <span class="mt-a mono">${esc(p.agent||'')}</span>
-            <span class="mt-t mono">${esc(p.tier||'—')}</span>
+            <span class="mt-t mono">${tierIconFor(p.tierId, p.tier)?`<img class="tieri" src="${esc(tierIconFor(p.tierId, p.tier))}" alt="" loading="lazy">`:''}${esc(p.tier||'—')}</span>
             ${p.group?`<span class="mt-g" title="A queue avec le groupe ${p.group}">G${p.group}</span>`:'<span class="mt-g none"></span>'}
           </div>`).join('')}</div>`;
       }).join('')}
@@ -3356,7 +3461,7 @@ function renderMatchModal(i){
     <div class="sd-head">
       <div class="scorebadge score-hero sd" id="mdHeroScore" title="Voir le détail du calcul" style="--sc:${t.c}">${M.me?M.me.score100:'—'}<span class="out">/100</span></div>
       <div>
-        <div class="sd-tier" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${M.result==='w'?'VICTOIRE':'DÉFAITE'} ${M.myScore}–${M.oppScore}</div>
+        <div class="sd-tier" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${resultWord(M)} ${scoreText(M)}</div>
         <h3>${esc(M.map)}</h3>
         <div class="sd-sub mono">${esc(M.mode)}${M.me?' · '+esc(M.me.agent):''} · ${esc(relTime(M.started))}${dur?' · '+dur:''}${rr}</div>
       </div>
@@ -3417,7 +3522,7 @@ function openProfileFrom(idStr){
 function openMatchScore(i){
   const M=STATE.matches[i]; if(!M||!M.me) return;
   openScoreDetail(M.me, {
-    title:`${M.map} · ${M.result==='w'?'Victoire':'Défaite'} ${M.myScore}–${M.oppScore}`,
+    title:`${M.map} · ${resultWord(M,true).replace(/^./,c=>c.toUpperCase())} ${scoreText(M)}`,
     sub:`${M.mode} · ${M.me.agent} · ${M.me.k}/${M.me.d}/${M.me.a} · ${relTime(M.started)}` });
 }
 
@@ -3457,7 +3562,7 @@ function openProfile(idx){
   const cached = cacheGetProfile(memberKey(m));
   if(cached && cached.acc) ACCOUNT = cached.acc;   // bannière tout de suite, comme le reste
   renderPHead(m);
-  $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; if($('comps')) $('comps').hidden=true; $('profile').hidden=false; window.scrollTo(0,0);
+  $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; if($('comps')) $('comps').hidden=true; if($('dashboard')) $('dashboard').hidden=true; $('profile').hidden=false; window.scrollTo(0,0);
 
   CURRENT_MODE = 'all';
   document.querySelectorAll('#modeTabs button').forEach(x => x.classList.toggle('on', x.dataset.mode === 'all'));
@@ -3922,6 +4027,7 @@ async function loadTribunal() {
   $('leaderboard').hidden = true;
   if($('roulette')) $('roulette').hidden = true;
   if($('comps')) $('comps').hidden = true;
+  if($('dashboard')) $('dashboard').hidden = true;
   $('tribunal').hidden = false;
   $('appTrib').hidden = true;
 
@@ -3965,6 +4071,7 @@ async function loadLeaderboard() {
   $('tribunal').hidden = true;
   if($('roulette')) $('roulette').hidden = true;
   if($('comps')) $('comps').hidden = true;
+  if($('dashboard')) $('dashboard').hidden = true;
   $('leaderboard').hidden = false;
   $('appLb').hidden = true;
   window.scrollTo(0,0);
@@ -4417,6 +4524,7 @@ async function showComps(){
   $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
   $('leaderboard').hidden=true;
   const rou=$('roulette'); if(rou) rou.hidden=true;
+  const dsh=$('dashboard'); if(dsh) dsh.hidden=true;
   const sec=$('comps'); if(!sec) return;
   sec.hidden=false;
   window.scrollTo(0,0);
@@ -4434,6 +4542,732 @@ async function showComps(){
     COMPS_RENDERING=false;
   }
   if(!$('comps').hidden) renderComps();
+}
+
+/* ===================== DASHBOARD : CALCULS ===================== */
+/* Tout ce qui suit est PUR (aucun DOM, aucun réseau) : le rendu vient après,
+   et les tests attaquent ces fonctions directement.
+
+   Source : les blobs déjà chargés par ensureSquadHistories (parties ET série
+   RR de chaque membre). Le dashboard ne fait donc AUCUN appel HenrikDev — il
+   peut s'ouvrir dix fois de suite sans toucher au rate limit.
+
+   Périmètre : les parties CLASSÉES uniquement. Le RR n'existe que là, et un
+   HS% de deathmatch à côté d'un HS% de ranked ne se compare pas. */
+
+// Palette catégorielle validée (fond #121b24, mode sombre : ΔE CVD adjacent
+// ≥ 8.4, vision normale ≥ 19.3). Les couleurs du roster ne passent pas : quatre
+// membres sont orange, indiscernables même sans daltonisme. L'ordre est celui
+// du roster — la couleur suit le MEMBRE, jamais son rang, et ne change pas
+// quand on en masque un. Jamais de 9e teinte inventée.
+const DASH_PALETTE = ['#3987e5','#d95926','#199e70','#c98500','#d55181','#008300','#9085e9','#e66767'];
+const DASH_DAY = 86400000;
+
+function dashColors(roster){
+  const out={};
+  (roster||[]).forEach((m,i)=>{ out[memberKey(m)] = i<DASH_PALETTE.length ? DASH_PALETTE[i] : null; });
+  return out;
+}
+
+// Jour local "AAAA-MM-JJ" d'un horodatage.
+function dashDayKey(ms){
+  const d=new Date(ms);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+
+/* Acte le plus récent vu dans les séries RR, et celui d'avant (ordre de première
+   apparition). null si aucune série ne porte d'acte. */
+function dashActs(rrByKey){
+  const first={};
+  Object.values(rrByKey||{}).forEach(s=>(s||[]).forEach(e=>{
+    if(!e || !e.season) return;
+    const t=num(e.ts);
+    if(first[e.season]==null || t<first[e.season]) first[e.season]=t;
+  }));
+  const order=Object.keys(first).sort((a,b)=>first[a]-first[b]);
+  return { act:order[order.length-1]||null, prev:order[order.length-2]||null };
+}
+
+/* Période choisie -> deux prédicats (période et période précédente de même
+   longueur) qui s'appliquent aux parties ET aux points RR.
+   '7' / '30' : fenêtres glissantes. 'act' : l'acte en cours, comparé au
+   précédent. 'all' : tout, sans comparaison (il n'y a pas d'« avant »). */
+function dashRange(period, now, acts){
+  const tOf=x=>num(x && (x.startedMs!=null ? x.startedMs : x.ts));
+  if(period==='act' && acts && acts.act){
+    const act=acts.act, prev=acts.prev;
+    return { kind:'act', label:'acte en cours', act, prevAct:prev,
+      has:x=>!!x && x.season===act,
+      hasPrev: prev ? (x=>!!x && x.season===prev) : null };
+  }
+  if(period==='all' || period==='act')        // acte inconnu : on dit « tout »
+    return { kind:'all', label:'tout l\'historique', from:0, to:now, has:x=>!!x, hasPrev:null };
+  const days=Number(period)||30, from=now-days*DASH_DAY, pFrom=from-days*DASH_DAY;
+  return { kind:'time', label:days+' derniers jours', days, from, to:now,
+    has:x=>{ const t=tOf(x); return t>=from && t<=now; },
+    hasPrev:x=>{ const t=tOf(x); return t>=pFrom && t<from; } };
+}
+
+/* Courbes RR. L'axe est l'elo ABSOLU (palier × 100 + RR dans le palier) : le
+   seul qui se compare d'un joueur à l'autre et qui ne retombe pas à 0 à chaque
+   montée de rang. view 'game' : un point par partie ; 'day' : le niveau de fin
+   de journée. Sur une fenêtre de temps, la courbe part du niveau qu'avait le
+   joueur AU DÉBUT de la période (dernier point connu avant), sinon toutes les
+   courbes démarreraient en l'air à leur première partie. */
+function dashCurves(rrByKey, range, view){
+  const out={};
+  Object.keys(rrByKey||{}).forEach(key=>{
+    const s=(rrByKey[key]||[]).filter(e=>e && e.elo!=null && num(e.ts)>0)
+      .slice().sort((a,b)=>a.ts-b.ts);
+    let pts=s.filter(range.has).map(e=>({ t:e.ts, elo:Number(e.elo), change:e.change, id:e.id||null,
+      tier:(e.tier&&e.tier.name)||'', rr:e.rr }));
+    if(range.kind==='time'){
+      const before=s.filter(e=>e.ts<range.from).pop();
+      if(before && pts.length) pts.unshift({ t:range.from, elo:Number(before.elo), change:null, id:null,
+        tier:(before.tier&&before.tier.name)||'', rr:before.rr, start:true });
+    }
+    if(view==='day'){
+      const byDay=new Map();
+      pts.forEach(p=>{ byDay.set(p.start?'start':dashDayKey(p.t), p); });   // le dernier du jour gagne
+      const net={}; pts.forEach(p=>{ if(!p.start && p.change!=null){ const d=dashDayKey(p.t); net[d]=(net[d]||0)+num(p.change); } });
+      pts=[...byDay.entries()].map(([d,p])=>Object.assign({}, p, d==='start'?{}:{ day:d, change:net[d]!=null?net[d]:null }));
+    }
+    if(pts.length) out[key]=pts;
+  });
+  return out;
+}
+
+/* Parties classées d'un membre, avec la clé du membre — la base de tout le reste. */
+function dashEntries(perMember, has){
+  const out=[];
+  (perMember||[]).forEach(p=>rankedOnly(p.matches).forEach(M=>{
+    if(M && M.me && M.startedMs>0 && (!has || has(M))) out.push({ key:p.key, M });
+  }));
+  return out.sort((a,b)=>a.M.startedMs-b.M.startedMs);
+}
+
+/* Qui jouait avec qui sur une partie : les membres qui partagent l'id de la
+   partie ET l'équipe. Deux membres face à face dans le même lobby ne sont pas
+   « ensemble ». */
+function dashTogether(entries){
+  const byMatch={};
+  entries.forEach(e=>{
+    if(!e.M.id) return;
+    const k=e.M.id+'|'+e.M.myTeamId;
+    (byMatch[k]=byMatch[k]||[]).push(e);
+  });
+  return byMatch;
+}
+
+/* Sessions de la SQUAD : les parties classées de tout le monde, mises bout à
+   bout et coupées au même écart que les sessions d'un profil. Pour chacune :
+   le RR net de chaque participant, et les groupes qui ont joué ensemble. C'est
+   ce qui répond à « qui est monté / descendu ensemble ». */
+function squadSessions(perMember, range, gapMs){
+  const gap=gapMs!=null?gapMs:SESSION_GAP_MIN*60000;
+  const entries=dashEntries(perMember, range.has);
+  const out=[]; let cur=null;
+  entries.forEach(e=>{
+    const M=e.M;
+    if(!cur || M.startedMs-cur.endMs>gap){
+      cur={ startMs:M.startedMs, endMs:0, entries:[] };
+      out.push(cur);
+    }
+    cur.entries.push(e);
+    cur.endMs=Math.max(cur.endMs, M.startedMs+matchDuration(M));
+  });
+  return out.map(s=>{
+    const members={};
+    s.entries.forEach(({key,M})=>{
+      const r=members[key]||(members[key]={ key, n:0, wins:0, losses:0, rr:0, rrGames:0 });
+      r.n++; if(M.result==='w') r.wins++; else if(M.result==='l') r.losses++;
+      if(M.rr && M.rr.change!=null){ r.rr+=num(M.rr.change); r.rrGames++; }
+    });
+    // Groupes « ensemble » : par partie, les membres de la même équipe.
+    const groups={};
+    Object.values(dashTogether(s.entries)).forEach(list=>{
+      const keys=[...new Set(list.map(x=>x.key))].sort();
+      if(keys.length<2) return;
+      const g=keys.join('+');
+      groups[g]=groups[g]||{ keys, n:0, wins:0 };
+      groups[g].n++; if(list[0].M.result==='w') groups[g].wins++;
+    });
+    const ids=new Set(s.entries.map(x=>x.M.id||x.M.startedMs));
+    return { startMs:s.startMs, endMs:s.endMs, games:ids.size,
+      members:Object.values(members).sort((a,b)=>b.rr-a.rr),
+      groups:Object.values(groups).sort((a,b)=>b.n-a.n||b.keys.length-a.keys.length) };
+  }).reverse();                                   // plus récente en premier
+}
+
+/* Tableau des membres : chaque indicateur sur la période, et l'écart à la
+   période précédente de même longueur (quand elle existe ET qu'elle a assez de
+   parties pour qu'un écart veuille dire quelque chose). */
+const DASH_MIN_PREV = 3;
+function dashTable(perMember, range){
+  return (perMember||[]).map(p=>{
+    const ranked=rankedOnly(p.matches).filter(M=>M && M.me);
+    const cur=sessionStats(ranked.filter(range.has));
+    const prevList=range.hasPrev ? ranked.filter(range.hasPrev) : [];
+    const prev=prevList.length>=DASH_MIN_PREV ? sessionStats(prevList) : null;
+    const d=(a,b)=>(prev && cur.n && a!=null && b!=null) ? a-b : null;
+    return { key:p.key, name:p.name, n:cur.n, wins:cur.wins, winrate:cur.winrate, rrNet:cur.rrNet,
+      hs:cur.hs, acs:cur.acs, adr:cur.adr, kd:cur.n?cur.kd:null, index:cur.index,
+      delta:{ winrate:d(cur.winrate, prev&&prev.winrate), hs:d(cur.hs, prev&&prev.hs), acs:d(cur.acs, prev&&prev.acs),
+              adr:d(cur.adr, prev&&prev.adr), kd:d(cur.kd, prev&&prev.kd), index:d(cur.index, prev&&prev.index) } };
+  });
+}
+
+/* Duos rentables : pour chaque paire, le RR moyen par partie ENSEMBLE (même
+   équipe) contre le RR moyen par partie SÉPARÉS — sur les parties de ces deux
+   membres uniquement. Une moyenne par partie, pas un total : sinon le duo qui
+   joue le plus « gagne » toujours. */
+const DASH_PAIR_MIN = 3, DASH_PAIR_SOLID = 6;
+function dashPairs(perMember, range){
+  const entries=dashEntries(perMember, range.has);
+  const together=dashTogether(entries);
+  const mates={};                                 // "id|clé" -> coéquipiers membres sur cette partie
+  Object.values(together).forEach(list=>{
+    const keys=list.map(x=>x.key);
+    list.forEach(x=>{ mates[x.M.id+'|'+x.key]=new Set(keys.filter(k=>k!==x.key)); });
+  });
+  const keys=(perMember||[]).map(p=>p.key), out=[];
+  for(let i=0;i<keys.length;i++) for(let j=i+1;j<keys.length;j++){
+    const a=keys[i], b=keys[j];
+    const tog={ n:0, wins:0, rr:0, rrN:0 }, apart={ rr:0, rrN:0 };
+    const seen=new Set();
+    entries.forEach(({key,M})=>{
+      if(key!==a && key!==b) return;
+      const other=key===a?b:a;
+      const m=mates[M.id+'|'+key];
+      const isTog=!!(m && m.has(other));
+      const rc=(M.rr && M.rr.change!=null) ? num(M.rr.change) : null;
+      if(isTog){
+        if(!seen.has(M.id)){ seen.add(M.id); tog.n++; if(M.result==='w') tog.wins++; }
+        if(rc!=null){ tog.rr+=rc; tog.rrN++; }
+      }else if(rc!=null){ apart.rr+=rc; apart.rrN++; }
+    });
+    if(tog.n<DASH_PAIR_MIN) continue;
+    const per=x=>x.rrN?x.rr/x.rrN:null;
+    out.push({ a, b, n:tog.n, wins:tog.wins, winrate:tog.wins/tog.n*100,
+      rrTogether:per(tog), rrApart:per(apart), apartN:apart.rrN,
+      gain:(per(tog)!=null && per(apart)!=null) ? per(tog)-per(apart) : null });
+  }
+  // Un écart sur 3 parties ne vaut pas un écart sur 15 : les duos établis
+  // (DASH_PAIR_SOLID parties ensemble) passent devant, puis le reste.
+  return out.sort((x,y)=>(y.n>=DASH_PAIR_SOLID)-(x.n>=DASH_PAIR_SOLID)
+    || (y.gain==null?-1e9:y.gain)-(x.gain==null?-1e9:x.gain) || y.n-x.n);
+}
+
+/* Records de la période. Chaque record a un seuil, sinon un 100 % HS sur deux
+   balles ou une « session » d'une partie gagnent à tous les coups. */
+const DASH_HS_MIN_SHOTS = 40, DASH_SESSION_MIN = 2;
+function dashRecords(perMember, sessions, range){
+  const entries=dashEntries(perMember, range.has);
+  const rec={};
+  sessions.forEach(s=>s.members.forEach(m=>{
+    if(m.n<DASH_SESSION_MIN || !m.rrGames) return;
+    if(!rec.bestSession || m.rr>rec.bestSession.value) rec.bestSession={ key:m.key, value:m.rr, n:m.n, t:s.startMs };
+    if(!rec.worstSession || m.rr<rec.worstSession.value) rec.worstSession={ key:m.key, value:m.rr, n:m.n, t:s.startMs };
+  }));
+  if(rec.bestSession && rec.bestSession.value<=0) delete rec.bestSession;     // un « record » négatif n'en est pas un
+  if(rec.worstSession && rec.worstSession.value>=0) delete rec.worstSession;
+  (perMember||[]).forEach(p=>{
+    const s=bestStreak(rankedOnly(p.matches).filter(range.has));
+    if(s && (!rec.streak || s.n>rec.streak.value)) rec.streak={ key:p.key, value:s.n, t:s.to.startedMs };
+  });
+  entries.forEach(({key,M})=>{
+    const me=M.me;
+    if(num(me.shots)>=DASH_HS_MIN_SHOTS && (!rec.hs || me.hs>rec.hs.value)) rec.hs={ key, value:me.hs, t:M.startedMs, map:M.map };
+    if(!rec.acs || me.acs>rec.acs.value) rec.acs={ key, value:me.acs, t:M.startedMs, map:M.map };
+  });
+  const perDay={};
+  entries.forEach(({key,M})=>{ const k=key+'|'+dashDayKey(M.startedMs); perDay[k]=(perDay[k]||0)+1; });
+  Object.keys(perDay).forEach(k=>{
+    if(!rec.marathon || perDay[k]>rec.marathon.value){
+      const [key,day]=k.split('|'); rec.marathon={ key, value:perDay[k], day };
+    }
+  });
+  return rec;
+}
+
+/* Forme du moment : l'indice des DASH_FORM_N dernières classées contre la
+   moyenne de l'acte (de tout le classé si l'acte est inconnu). Indépendant du
+   filtre de période — « du moment » veut dire maintenant. */
+const DASH_FORM_N = 10, DASH_FORM_MIN = 5, DASH_FORM_STEP = 5;
+function dashForm(perMember, act){
+  return (perMember||[]).map(p=>{
+    const ranked=rankedOnly(p.matches).filter(M=>M && M.me && M.startedMs>0).sort((a,b)=>b.startedMs-a.startedMs);
+    const recent=ranked.slice(0, DASH_FORM_N);
+    const pool=act ? ranked.filter(M=>M.season===act) : ranked;
+    if(recent.length<DASH_FORM_MIN || pool.length<DASH_FORM_MIN) return { key:p.key, n:recent.length, state:'na' };
+    const now=sessionStats(recent).index, ref=sessionStats(pool).index;
+    const delta=now-ref;
+    return { key:p.key, n:recent.length, now, ref, delta, refLabel:act?'l\'acte':'tout le classé',
+      state: delta>=DASH_FORM_STEP ? 'up' : (delta<=-DASH_FORM_STEP ? 'down' : 'flat') };
+  }).sort((a,b)=>(b.delta==null?-1e9:b.delta)-(a.delta==null?-1e9:a.delta));
+}
+
+/* Activité : parties classées par membre et par jour, sur la période (bornée
+   à DASH_ACT_MAX jours : au-delà, une case ne fait plus que quelques pixels). */
+const DASH_ACT_MAX = 42;
+function dashActivity(perMember, range, now){
+  const entries=dashEntries(perMember, range.has);
+  let from;
+  if(range.kind==='time') from=range.from;
+  else from=entries.length ? entries[0].M.startedMs : now;
+  from=Math.max(from, now-(DASH_ACT_MAX-1)*DASH_DAY);
+  const days=[]; const d0=new Date(from); d0.setHours(12,0,0,0);
+  for(let t=d0.getTime(); t<=now+DASH_DAY/2; t+=DASH_DAY) days.push(dashDayKey(t));
+  const cells={}; let max=0;
+  entries.forEach(({key,M})=>{
+    const day=dashDayKey(M.startedMs);
+    if(days.indexOf(day)<0) return;
+    const c=cells[key+'|'+day]||(cells[key+'|'+day]={ n:0, rr:0 });
+    c.n++; if(M.rr && M.rr.change!=null) c.rr+=num(M.rr.change);
+    if(c.n>max) max=c.n;
+  });
+  return { days:[...new Set(days)], cells, max };
+}
+
+/* Bandeau de tête : le bilan du roster sur la période. */
+function dashKpis(table){
+  const act=table.filter(r=>r.n>0);
+  const n=act.reduce((s,r)=>s+r.n,0), wins=act.reduce((s,r)=>s+r.wins,0);
+  const rr=act.filter(r=>r.rrNet!=null);
+  const best=rr.slice().sort((a,b)=>b.rrNet-a.rrNet)[0]||null;
+  return { games:n, players:act.length, winrate:n?wins/n*100:null,
+    rrNet:rr.length?rr.reduce((s,r)=>s+r.rrNet,0):null, best: best && best.rrNet>0 ? best : null };
+}
+
+/* ===================== DASHBOARD : RENDU ===================== */
+let DASH_PERIOD='30', DASH_VIEW='game', DASH_SORT='rrNet';
+let DASH_HIDDEN=new Set();       // membres masqués sur la courbe (la couleur des autres ne bouge pas)
+let DASH_LOADING=false, DASH_CTX=null, DASH_PLOT=null, DASH_SESS_SHOWN=0;
+const DASH_SESS_MAX = 6, DASH_PAIRS_MAX = 6;
+// Rampe séquentielle (une teinte, bleu) pour l'activité, du plus discret au plus fort.
+const DASH_SEQ = ['#184f95','#256abf','#3987e5','#6da7ec'];
+
+const dashFmtDay = t => new Date(t).toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' });
+const dashFmtShort = t => new Date(t).toLocaleDateString('fr-FR', { day:'numeric', month:'short' });
+const dashFmtTime = t => new Date(t).toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' });
+const dashNum = (v, dec) => v==null||isNaN(v) ? '—' : (dec ? Number(v).toFixed(dec) : String(Math.round(v)));
+const dashSigned = (v, dec) => {
+  if(v==null || isNaN(v)) return '—';
+  const r=Number(dashNum(Math.abs(v), dec));
+  return (r===0 ? '' : (v>0?'+':'−'))+dashNum(Math.abs(v), dec);
+};
+
+// Nom court d'un palier, en français : « PLATINUM 2 » -> « Plat 2 ».
+const TIER_SHORT = { iron:'Fer', bronze:'Bronze', silver:'Argent', gold:'Or', platinum:'Plat', diamond:'Diam',
+  ascendant:'Asc', immortal:'Imm', radiant:'Radiant' };
+function tierShort(name){
+  const m=String(name||'').trim().match(/^([a-z]+)\s*(\d)?$/i);
+  if(!m) return String(name||'');
+  return (TIER_SHORT[m[1].toLowerCase()]||m[1])+(m[2]?' '+m[2]:'');
+}
+
+function dashPerMember(){
+  return (ROSTER||[]).map(m=>({ key:memberKey(m), name:m.name, matches:(SQUAD_HIST && SQUAD_HIST[memberKey(m)]) || [] }));
+}
+
+async function showDashboard(){
+  setTab('btnDash');
+  ['home','profile','tribunal','leaderboard','roulette','comps'].forEach(id=>{ const el=$(id); if(el) el.hidden=true; });
+  const sec=$('dashboard'); if(!sec) return;
+  sec.hidden=false; window.scrollTo(0,0);
+  const host=$('dshBody'); if(!host) return;
+  if(!SQUAD_BLOBS_DONE){
+    if(!host.innerHTML.trim()) host.innerHTML='<div class="cmp-empty">Chargement de l\'historique du roster…</div>';
+    if(DASH_LOADING) return;
+    DASH_LOADING=true;
+    try{ await Promise.all([ ensureSquadHistories().catch(()=>null), ensureTiers().catch(()=>null) ]); }
+    finally{ DASH_LOADING=false; }
+  }else{
+    await ensureTiers().catch(()=>null);
+  }
+  if(!$('dashboard').hidden) renderDashboard();
+}
+
+function renderDashboard(){
+  const host=$('dshBody'); if(!host) return;
+  const now=Date.now();
+  const per=dashPerMember();
+  const rrBy={}; per.forEach(p=>{ rrBy[p.key]=(SQUAD_RR && SQUAD_RR[p.key]) || []; });
+  const acts=dashActs(rrBy);
+  const range=dashRange(DASH_PERIOD, now, acts);
+  const colors=dashColors(ROSTER);
+  const names={}; per.forEach(p=>{ names[p.key]=p.name; });
+  const ctx={ now, per, rrBy, acts, range, colors, names };
+  DASH_CTX=ctx;
+
+  if(!per.some(p=>rankedOnly(p.matches).length)){
+    host.innerHTML=dashFormHTML([], ctx)+dashFiltersHTML(ctx)
+      +'<div class="cmp-empty">Aucune partie classée dans l\'historique stocké du roster pour l\'instant. Le cron le remplit toutes les heures.</div>';
+    return;
+  }
+  const table=dashTable(per, range);
+  const sessions=squadSessions(per, range);
+  host.innerHTML =
+      dashFormHTML(dashForm(per, acts.act), ctx)
+    + dashFiltersHTML(ctx)
+    + dashKpisHTML(dashKpis(table), ctx)
+    + dashChartCardHTML(ctx)
+    + dashSessionsHTML(sessions, ctx)
+    + dashTableHTML(table, ctx)
+    + dashPairsHTML(dashPairs(per, range), ctx)
+    + dashRecordsHTML(dashRecords(per, sessions, range), ctx)
+    + dashActivityHTML(dashActivity(per, range, now), ctx);
+  drawDashChart();
+}
+
+// Pastille d'identité : un petit trait de la couleur du membre. Le texte, lui,
+// reste à l'encre normale — jamais dans la couleur de la série.
+const dashKey = (ctx, key) => `<i class="dsh-lk" style="--c:${ctx.colors[key]||'var(--dim)'}"></i>`;
+const dashWho = (ctx, key) => `<span class="dsh-who">${dashKey(ctx,key)}${esc(ctx.names[key]||key)}</span>`;
+
+function dashFormHTML(form, ctx){
+  const rows=form.filter(f=>f.state!=='na');
+  const icon={ up:'▲', down:'▼', flat:'●' }, word={ up:'En feu', down:'Dans le dur', flat:'Stable' };
+  const body = rows.length ? `<div class="dsh-forms">${rows.map(f=>`<div class="dsh-form ${f.state}"
+      data-tip="${esc((ctx.names[f.key]||f.key)+' : indice '+dashNum(f.now)+' sur ses '+f.n+' dernières classées, contre '+dashNum(f.ref)+' sur '+f.refLabel)}">
+      ${dashWho(ctx, f.key)}
+      <span class="dsh-fstate"><b>${icon[f.state]}</b> ${word[f.state]}</span>
+      <span class="dsh-fval"><b>${dashNum(f.now)}</b> <em>${dashSigned(f.delta)} vs ${f.refLabel==='l\'acte'?'l\'acte':'d\'habitude'}</em></span>
+    </div>`).join('')}</div>`
+    : '<div class="md-none">Pas assez de parties classées récentes pour juger une forme (il en faut 5).</div>';
+  return `<div class="card full dsh-card"><h2 class="tabs-header"><span>Forme du moment <em>indice des ${DASH_FORM_N} dernières classées, contre la moyenne de l'acte</em></span></h2>${body}</div>`;
+}
+
+function dashFiltersHTML(ctx){
+  const P=[['7','7 jours'],['30','30 jours'],['act','Acte'],['all','Tout']];
+  const V=[['game','Par partie'],['day','Par jour']];
+  const lab = ctx.range.kind==='all' && DASH_PERIOD==='act' ? 'tout l\'historique (acte inconnu)' : ctx.range.label;
+  return `<div class="dsh-filters">
+    <div class="seg" id="dshPeriod">${P.map(([k,l])=>`<button type="button" data-p="${k}"${DASH_PERIOD===k?' class="on"':''}>${l}</button>`).join('')}</div>
+    <div class="seg" id="dshView">${V.map(([k,l])=>`<button type="button" data-v="${k}"${DASH_VIEW===k?' class="on"':''}>${l}</button>`).join('')}</div>
+    <span class="dsh-scope">Tout ce qui suit : <b>${esc(lab)}</b>, parties classées</span>
+  </div>`;
+}
+
+function dashKpisHTML(k, ctx){
+  const tile=(label, value, sub)=>`<div class="dsh-kpi"><span>${label}</span><b>${value}</b>${sub?`<em>${sub}</em>`:''}</div>`;
+  return `<div class="dsh-kpis">
+    ${tile('Parties classées', dashNum(k.games), k.players?`${k.players} membre${k.players>1?'s':''} actif${k.players>1?'s':''}`:'')}
+    ${tile('Winrate du roster', k.winrate==null?'—':dashNum(k.winrate)+' %', '')}
+    ${tile('RR net du roster', k.rrNet==null?'—':`<span class="${k.rrNet>=0?'up':'dn'}">${dashSigned(k.rrNet)}</span>`, 'somme des membres')}
+    ${tile('Meilleure progression', k.best?esc(ctx.names[k.best.key]||k.best.name):'—', k.best?`${dashSigned(k.best.rrNet)} RR`:'personne en positif')}
+  </div>`;
+}
+
+function dashChartCardHTML(ctx){
+  const legend=ctx.per.map(p=>{
+    const c=ctx.colors[p.key];
+    if(!c) return '';
+    const off=DASH_HIDDEN.has(p.key);
+    return `<button type="button" class="dsh-lg${off?' off':''}" data-key="${esc(p.key)}" aria-pressed="${off?'false':'true'}"
+      title="${off?'Afficher':'Masquer'} ${esc(p.name)}">${dashKey(ctx,p.key)}${esc(p.name)}</button>`;
+  }).join('');
+  const sub = DASH_VIEW==='day' ? 'niveau en fin de journée' : 'un point par partie';
+  return `<div class="card full dsh-card">
+    <h2 class="tabs-header"><span>Courbe RR <em>elo absolu (palier × 100 + RR) · ${sub}</em></span></h2>
+    <div class="dsh-legend" id="dshLegend">${legend}</div>
+    <div class="dsh-chart" id="dshChart"></div>
+    <div class="md-none">Survole la courbe pour lire le niveau de chacun à cet instant ; touche un nom pour l'afficher ou le masquer. Les rangs sont ceux de l'API, au moment de chaque partie.</div>
+    <details class="dsh-tv" id="dshTv"><summary>Voir les chiffres</summary><div id="dshTvBody"></div></details>
+  </div>`;
+}
+
+/* La courbe. Dessinée à la largeur RÉELLE du cadre (pas un viewBox étiré) :
+   sinon, au téléphone, le texte des axes tomberait à 6 px. */
+function drawDashChart(){
+  const ctx=DASH_CTX, host=$('dshChart'); if(!ctx || !host) return;
+  const curves=dashCurves(ctx.rrBy, ctx.range, DASH_VIEW);
+  const keys=ctx.per.map(p=>p.key).filter(k=>ctx.colors[k] && curves[k] && !DASH_HIDDEN.has(k));
+  const tv=$('dshTvBody');
+  if(tv) tv.innerHTML=dashCurveTable(curves, ctx);
+  if(!keys.length){
+    host.innerHTML='<div class="md-none dsh-nodata">Aucun point RR sur cette période pour les membres affichés.</div>';
+    DASH_PLOT=null; return;
+  }
+  const W=Math.max(300, host.clientWidth||640), narrow=W<520;
+  const H=narrow?260:320, ml=narrow?44:52, mr=narrow?90:108, mt=12, mb=26;
+  const pw=W-ml-mr, ph=H-mt-mb;
+  const all=keys.flatMap(k=>curves[k]);
+  let lo=Math.min(...all.map(p=>p.elo)), hi=Math.max(...all.map(p=>p.elo));
+  lo=Math.floor(lo/100)*100; hi=Math.ceil((hi+1)/100)*100; if(hi-lo<100) hi=lo+100;
+  const t0=ctx.range.kind==='time' ? ctx.range.from : Math.min(...all.map(p=>p.t));
+  const t1=Math.max(ctx.now, ...all.map(p=>p.t));
+  const X=t=>ml+(t1===t0?pw/2:(t-t0)/(t1-t0)*pw), Y=e=>mt+ph-(e-lo)/(hi-lo)*ph;
+
+  // Paliers : une bande de 100 = un rang. Le décalage elo -> numéro de palier
+  // se déduit des points eux-mêmes (cf. computeEloTierOffset).
+  const offset=computeEloTierOffset(Object.values(ctx.rrBy).flat());
+  const bands=(hi-lo)/100, step=Math.max(1, Math.ceil(bands/(narrow?6:9)));
+  let grid='';
+  for(let e=lo; e<=hi; e+=100*step){
+    grid+=`<line class="dsh-grid" x1="${ml}" x2="${ml+pw}" y1="${Y(e).toFixed(1)}" y2="${Y(e).toFixed(1)}"/>`;
+    if(e+100<=hi){
+      const ti=TIER_BY_NUM && TIER_BY_NUM[Math.floor(e/100)+offset];
+      const lab=ti ? tierShort(ti.name) : String(e);
+      const yMid=Y(e+50*Math.min(step,1));
+      grid+=`<text class="dsh-ylab" x="${ml-6}" y="${(yMid+3.5).toFixed(1)}" text-anchor="end">${esc(lab)}</text>`;
+    }
+  }
+  // Graduations de temps : 4 à 6, aux dates rondes.
+  const nT=narrow?3:5; let xt='';
+  for(let i=0;i<=nT;i++){
+    const t=t0+(t1-t0)*i/nT;
+    xt+=`<text class="dsh-xlab" x="${X(t).toFixed(1)}" y="${H-8}" text-anchor="${i===0?'start':(i===nT?'end':'middle')}">${esc(dashFmtShort(t))}</text>`;
+  }
+  // Lignes, points de fin, étiquettes directes.
+  let lines='', ends=[];
+  keys.forEach(k=>{
+    const pts=curves[k];
+    const d=pts.map((p,i)=>(i?'L':'M')+X(p.t).toFixed(1)+','+Y(p.elo).toFixed(1)).join('');
+    lines+=`<path class="dsh-line" data-key="${esc(k)}" d="${d}" stroke="${ctx.colors[k]}"/>`;
+    const last=pts[pts.length-1];
+    ends.push({ k, x:X(last.t), y:Y(last.elo) });
+  });
+  let dots='', labels='';
+  ends.forEach(e=>{ dots+=`<circle class="dsh-dot" data-key="${esc(e.k)}" cx="${e.x.toFixed(1)}" cy="${e.y.toFixed(1)}" r="4" fill="${ctx.colors[e.k]}"/>`; });
+  // Étiquettes de fin : jamais empilées. Deux fins trop proches -> la seconde
+  // tombe ; la légende et l'infobulle portent l'identité.
+  // Chaque nom porte sa pastille de couleur, et un filet le relie à la fin de
+  // SA courbe quand elle s'arrête avant le bord : sinon le nom d'un joueur qui
+  // n'a pas joué depuis trois jours se lit à côté du point d'un autre.
+  let lastY=-1e9;
+  const lx=ml+pw+6;
+  ends.slice().sort((a,b)=>a.y-b.y).forEach(e=>{
+    if(e.y-lastY<14) return;
+    lastY=e.y;
+    const c=ctx.colors[e.k], y=e.y.toFixed(1), k=esc(e.k);
+    if(lx-e.x>12) labels+=`<line class="dsh-lead" data-key="${k}" x1="${(e.x+6).toFixed(1)}" x2="${lx}" y1="${y}" y2="${y}" stroke="${c}"/>`;
+    labels+=`<line class="dsh-lkey" data-key="${k}" x1="${lx}" x2="${lx+10}" y1="${y}" y2="${y}" stroke="${c}"/>`
+      +`<text class="dsh-elab" data-key="${k}" x="${lx+14}" y="${(e.y+4).toFixed(1)}">${esc(ctx.names[e.k]||e.k)}</text>`;
+  });
+  host.innerHTML=`<svg class="dsh-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" tabindex="0"
+      aria-label="Courbe RR du roster, ${keys.length} membres. Les valeurs sont aussi dans le tableau « Voir les chiffres ».">
+    ${grid}${xt}
+    <line class="dsh-axis" x1="${ml}" x2="${ml+pw}" y1="${mt+ph}" y2="${mt+ph}"/>
+    <line id="dshCross" class="dsh-cross" x1="0" x2="0" y1="${mt}" y2="${mt+ph}" visibility="hidden"/>
+    ${lines}${dots}${labels}
+    <rect class="dsh-hit" x="${ml}" y="${mt}" width="${pw}" height="${ph}" fill="transparent"/>
+  </svg>`;
+  // Instants survolables : tous les points de tous les membres affichés.
+  const times=[...new Set(all.map(p=>p.t))].sort((a,b)=>a-b);
+  DASH_PLOT={ keys, curves, times, X, ml, pw, t0, t1, idx:-1 };
+}
+
+// Niveau d'un membre à l'instant t : son dernier point connu à ou avant t.
+function dashAt(pts, t){
+  let v=null; for(const p of pts){ if(p.t<=t) v=p; else break; } return v;
+}
+
+function dashShowCross(i){
+  const P=DASH_PLOT, ctx=DASH_CTX, svg=document.querySelector('#dshChart svg'), tip=$('dshTip');
+  if(!P || !svg || !tip || i<0 || i>=P.times.length) return;
+  P.idx=i;
+  const t=P.times[i], x=P.X(t), cross=$('dshCross');
+  if(cross){ cross.setAttribute('x1',x); cross.setAttribute('x2',x); cross.setAttribute('visibility','visible'); }
+  const rows=P.keys.map(k=>({ k, p:dashAt(P.curves[k], t) })).filter(r=>r.p).sort((a,b)=>b.p.elo-a.p.elo);
+  const head = DASH_VIEW==='day' ? dashFmtDay(t) : dashFmtDay(t)+' · '+dashFmtTime(t);
+  tip.innerHTML=`<div class="dt-h">${esc(head)}</div>`+rows.map(r=>{
+    const here=r.p.t===t && !r.p.start && r.p.change!=null;
+    const tier=r.p.tier?' · '+esc(tierShort(r.p.tier))+(r.p.rr!=null?` · ${r.p.rr} RR`:''):'';
+    // Une ligne par membre : la valeur d'abord, le nom ensuite (le lecteur a la
+    // série, il veut le chiffre). Le ±RR n'apparaît que s'il a joué à cet instant.
+    return `<div class="dt-r">${dashKey(ctx,r.k)}<b>${dashNum(r.p.elo)}</b><span><em>${esc(ctx.names[r.k]||r.k)}</em>${tier}</span>${here?`<strong class="dt-ch ${r.p.change>=0?'up':'dn'}">${dashSigned(r.p.change)}</strong>`:'<strong class="dt-ch"></strong>'}</div>`;
+  }).join('');
+  tip.hidden=false;
+  const box=svg.getBoundingClientRect(), tw=tip.offsetWidth||200;
+  if(window.innerWidth<620){
+    // Au téléphone l'infobulle ferait la moitié de la courbe : on la pose
+    // DESSOUS, pleine largeur, et la courbe reste lisible au-dessus.
+    tip.style.left='8px'; tip.style.top=(box.bottom+6)+'px';
+    return;
+  }
+  let left=box.left+x+14; if(left+tw>window.innerWidth-8) left=box.left+x-tw-14;
+  tip.style.left=Math.max(8,left)+'px';
+  tip.style.top=(box.top+10)+'px';
+}
+function dashHideTip(){
+  const tip=$('dshTip'); if(tip) tip.hidden=true;
+  const c=$('dshCross'); if(c) c.setAttribute('visibility','hidden');
+}
+function dashFocus(key){
+  document.querySelectorAll('#dshChart [data-key]').forEach(el=>{
+    el.classList.toggle('dim', !!key && el.dataset.key!==key);
+  });
+}
+
+function dashCurveTable(curves, ctx){
+  const rows=ctx.per.filter(p=>curves[p.key]).map(p=>{
+    const pts=curves[p.key], a=pts[0], b=pts[pts.length-1];
+    const games=pts.filter(x=>!x.start).length;
+    return `<tr><td class="pcol">${dashWho(ctx,p.key)}</td><td>${dashNum(a.elo)} <em>${esc(tierShort(a.tier))}</em></td>
+      <td>${dashNum(b.elo)} <em>${esc(tierShort(b.tier))}</em></td>
+      <td class="${b.elo-a.elo>=0?'up':'dn'}">${dashSigned(b.elo-a.elo)}</td><td>${games}</td></tr>`;
+  }).join('');
+  return rows ? `<div class="sx-tablewrap"><table class="sb dsh-tbl"><thead><tr><th class="pcol">Membre</th><th>Début</th><th>Fin</th><th>Écart</th><th>${DASH_VIEW==='day'?'Jours':'Parties'}</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    : '<div class="md-none">Aucun point RR sur cette période.</div>';
+}
+
+function dashSessionsHTML(sessions, ctx){
+  const list=sessions.slice(0, Math.max(DASH_SESS_MAX, DASH_SESS_SHOWN));
+  if(!list.length) return `<div class="card full dsh-card"><h2 class="tabs-header"><span>Sessions de la squad</span></h2><div class="md-none">Aucune partie classée sur la période.</div></div>`;
+  const maxAbs=Math.max(10, ...list.flatMap(s=>s.members.map(m=>Math.abs(m.rr))));
+  const body=list.map(s=>{
+    const rows=s.members.map(m=>{
+      const w=Math.min(50, Math.abs(m.rr)/maxAbs*50);
+      const rrTxt=m.rrGames?`${dashSigned(m.rr)} RR`:'RR inconnu';
+      return `<div class="dsh-srow" data-tip="${esc((ctx.names[m.key]||m.key)+' · '+m.n+' partie'+(m.n>1?'s':'')+' · '+m.wins+' V – '+m.losses+' D · '+rrTxt)}">
+        ${dashWho(ctx,m.key)}
+        <span class="dsh-bar">${m.rrGames?`<i class="${m.rr>=0?'pos':'neg'}" style="width:${w.toFixed(1)}%"></i>`:''}</span>
+        <span class="dsh-val ${m.rr>=0?'up':'dn'}">${m.rrGames?dashSigned(m.rr):'—'}</span>
+        <span class="dsh-wl">${m.wins}V ${m.losses}D</span>
+      </div>`;
+    }).join('');
+    const tog=s.groups.slice(0,3).map(g=>`<div class="dsh-tog">Ensemble : <b>${g.keys.map(k=>esc(ctx.names[k]||k)).join(' + ')}</b> · ${g.n} partie${g.n>1?'s':''} · ${g.wins} V</div>`).join('');
+    return `<div class="dsh-sess">
+      <div class="dsh-sh"><b>${esc(dashFmtDay(s.startMs))}</b> ${esc(dashFmtTime(s.startMs))} → ${esc(dashFmtTime(s.endMs))}
+        <span>· ${s.games} partie${s.games>1?'s':''} · ${s.members.length} membre${s.members.length>1?'s':''}</span></div>
+      ${rows}${tog||'<div class="dsh-tog none">Chacun de son côté sur cette session.</div>'}
+    </div>`;
+  }).join('');
+  const rest=sessions.length-list.length;
+  const more=rest>0?`<button type="button" class="dsh-more" data-more="1">Afficher ${Math.min(DASH_SESS_MAX,rest)} session${Math.min(DASH_SESS_MAX,rest)>1?'s':''} de plus <em>(${rest} plus ancienne${rest>1?'s':''} sur la période)</em></button>`:'';
+  return `<div class="card full dsh-card"><h2 class="tabs-header"><span>Sessions de la squad <em>qui est monté, qui est descendu, et avec qui</em></span></h2>${body}${more}</div>`;
+}
+
+const DASH_COLS=[['n','Parties',0],['winrate','Winrate',0],['rrNet','RR net',0],['index','Indice',0],
+  ['hs','HS%',0],['acs','ACS',0],['kd','K/D',2],['adr','ADR',0]];
+function dashTableHTML(table, ctx){
+  const rows=table.slice().sort((a,b)=>{
+    const va=a[DASH_SORT], vb=b[DASH_SORT];
+    if(va==null && vb==null) return 0; if(va==null) return 1; if(vb==null) return -1;
+    return vb-va;
+  });
+  const cell=(r,[k,,dec])=>{
+    const v=r[k];
+    if(!r.n) return `<td class="dim">—</td>`;
+    let txt = k==='rrNet' ? `<span class="${(v||0)>=0?'up':'dn'}">${v==null?'—':dashSigned(v)}</span>`
+            : (k==='winrate'||k==='hs') ? (v==null?'—':dashNum(v)+'%') : dashNum(v, dec);
+    const dv=r.delta && r.delta[k];
+    let dl='';
+    if(dv!=null){
+      const shown=dec?Math.abs(dv).toFixed(dec):Math.round(Math.abs(dv));
+      if(Number(shown)!==0) dl=`<em class="${dv>0?'up':'dn'}">${dv>0?'▲':'▼'} ${shown}</em>`;
+    }
+    return `<td>${txt}${dl}</td>`;
+  };
+  const head=DASH_COLS.map(c=>`<th><button type="button" data-sort="${c[0]}" class="${DASH_SORT===c[0]?'on':''}">${c[1]}${DASH_SORT===c[0]?' ↓':''}</button></th>`).join('');
+  const prevTxt = ctx.range.hasPrev ? (ctx.range.kind==='act' ? 'l\'acte précédent' : `les ${ctx.range.days} jours d'avant`) : null;
+  return `<div class="card full dsh-card"><h2 class="tabs-header"><span>Membres <em>${prevTxt?`▲▼ : écart avec ${prevTxt} (si au moins ${DASH_MIN_PREV} parties)`:'pas de période précédente à comparer'}</em></span></h2>
+    <div class="sx-tablewrap"><table class="sb dsh-tbl"><thead><tr><th class="pcol">Membre</th>${head}</tr></thead>
+    <tbody>${rows.map(r=>`<tr><td class="pcol">${dashWho(ctx,r.key)}</td>${DASH_COLS.map(c=>cell(r,c)).join('')}</tr>`).join('')}</tbody></table></div></div>`;
+}
+
+function dashPairsHTML(pairs, ctx){
+  const list=pairs.slice(0, DASH_PAIRS_MAX);
+  const body=list.length ? list.map(p=>`<div class="dsh-pair">
+      <div class="dsh-pn">${dashWho(ctx,p.a)}<span class="plus">+</span>${dashWho(ctx,p.b)}</div>
+      <div class="dsh-pm"><span>${p.n} partie${p.n>1?'s':''} ensemble · ${dashNum(p.winrate)} % de victoires${p.n<DASH_PAIR_SOLID?' · <i class="dsh-small">échantillon court</i>':''}</span>
+        <span>Ensemble <b class="${(p.rrTogether||0)>=0?'up':'dn'}">${dashSigned(p.rrTogether,1)}</b> RR/partie · séparés <b class="${(p.rrApart||0)>=0?'up':'dn'}">${dashSigned(p.rrApart,1)}</b>${p.apartN?'':' (aucune partie séparée)'}</span></div>
+      ${p.gain!=null?`<div class="dsh-gain ${p.gain>=0?'up':'dn'}">${dashSigned(p.gain,1)}<em>RR/partie</em></div>`:'<div class="dsh-gain"></div>'}
+    </div>`).join('')
+    : `<div class="md-none">Aucun duo n'a joué au moins ${DASH_PAIR_MIN} parties classées ensemble sur la période.</div>`;
+  return `<div class="card full dsh-card"><h2 class="tabs-header"><span>Duos rentables <em>RR moyen par partie ensemble, contre séparés</em></span></h2>${body}</div>`;
+}
+
+function dashRecordsHTML(rec, ctx){
+  const who=r=>esc(ctx.names[r.key]||r.key);
+  const tiles=[
+    rec.bestSession && ['Plus grosse session', dashSigned(rec.bestSession.value)+' RR', `${who(rec.bestSession)} · ${rec.bestSession.n} parties · ${esc(dashFmtShort(rec.bestSession.t))}`],
+    rec.worstSession && ['Pire chute', dashSigned(rec.worstSession.value)+' RR', `${who(rec.worstSession)} · ${rec.worstSession.n} parties · ${esc(dashFmtShort(rec.worstSession.t))}`],
+    rec.streak && ['Plus longue série', rec.streak.value+' victoires', `${who(rec.streak)} · jusqu'au ${esc(dashFmtShort(rec.streak.t))}`],
+    rec.hs && ['Meilleur HS%', rec.hs.value+' %', `${who(rec.hs)} · ${esc(rec.hs.map||'')} · ${esc(dashFmtShort(rec.hs.t))}`],
+    rec.acs && ['Meilleur ACS', String(rec.acs.value), `${who(rec.acs)} · ${esc(rec.acs.map||'')} · ${esc(dashFmtShort(rec.acs.t))}`],
+    rec.marathon && ['Plus grosse journée', rec.marathon.value+' parties', `${who(rec.marathon)} · ${esc(dashFmtShort(new Date(rec.marathon.day+'T12:00:00').getTime()))}`],
+  ].filter(Boolean);
+  const body=tiles.length ? `<div class="dsh-recs">${tiles.map(([l,v,s])=>`<div class="dsh-rec"><span>${l}</span><b>${v}</b><em>${s}</em></div>`).join('')}</div>`
+    : '<div class="md-none">Pas encore de record sur la période.</div>';
+  return `<div class="card full dsh-card"><h2 class="tabs-header"><span>Records <em>HS% sur au moins ${DASH_HS_MIN_SHOTS} balles touchées, sessions d'au moins ${DASH_SESSION_MIN} parties</em></span></h2>${body}</div>`;
+}
+
+function dashActivityHTML(a, ctx){
+  const shade=n=>n<=0?'':DASH_SEQ[Math.min(DASH_SEQ.length-1, Math.max(0, Math.ceil(n/Math.max(1,a.max)*DASH_SEQ.length)-1))];
+  // Une date toutes les semaines, plus la dernière — ancrée à DROITE de sa case,
+  // sinon elle déborde de l'écran. Une date hebdo trop proche de la dernière
+  // saute plutôt que de la chevaucher.
+  const n=a.days.length;
+  const head=a.days.map((d,i)=>{
+    const t=new Date(d+'T12:00:00').getTime();
+    const last=i===n-1, show=n<=7 || last || (i%7===0 && n-1-i>=4);
+    return `<span class="dsh-ah${last && n>7?' end':''}">${show?`<b>${esc(n<=7?new Date(t).toLocaleDateString('fr-FR',{weekday:'short'}):dashFmtShort(t))}</b>`:''}</span>`;
+  }).join('');
+  const rows=ctx.per.map(p=>{
+    const cells=a.days.map(d=>{
+      const c=a.cells[p.key+'|'+d], n=c?c.n:0, t=new Date(d+'T12:00:00').getTime();
+      const tip=`${ctx.names[p.key]} · ${dashFmtDay(t)} · ${n?n+' partie'+(n>1?'s':'')+(c.rr?' · '+dashSigned(c.rr)+' RR':''):'aucune partie'}`;
+      return `<i class="dsh-cell${n?'':' z'}" style="${n?'--s:'+shade(n):''}" data-tip="${esc(tip)}"></i>`;
+    }).join('');
+    return `<div class="dsh-arow"><span class="dsh-aname">${esc(p.name)}</span><div class="dsh-acells" style="--n:${a.days.length}">${cells}</div></div>`;
+  }).join('');
+  const legend=`<div class="dsh-alegend"><span>moins</span>${DASH_SEQ.map(c=>`<i style="--s:${c}"></i>`).join('')}<span>plus (max ${a.max} partie${a.max>1?'s':''} par jour)</span></div>`;
+  return `<div class="card full dsh-card"><h2 class="tabs-header"><span>Activité <em>parties classées par jour${a.days.length>=DASH_ACT_MAX?` · ${DASH_ACT_MAX} derniers jours`:''}</em></span></h2>
+    <div class="dsh-act"><div class="dsh-arow head"><span class="dsh-aname"></span><div class="dsh-acells" style="--n:${a.days.length}">${head}</div></div>${rows}</div>${legend}</div>`;
+}
+
+function wireDashboard(){
+  const body=$('dshBody'); if(!body) return;
+  body.addEventListener('click', e=>{
+    const p=e.target.closest('[data-p]'); if(p){ DASH_PERIOD=p.dataset.p; DASH_SESS_SHOWN=0; renderDashboard(); return; }
+    const mo=e.target.closest('[data-more]');
+    if(mo){ DASH_SESS_SHOWN=Math.max(DASH_SESS_MAX, DASH_SESS_SHOWN)+DASH_SESS_MAX; renderDashboard(); return; }
+    const v=e.target.closest('[data-v]'); if(v){ DASH_VIEW=v.dataset.v; renderDashboard(); return; }
+    const s=e.target.closest('[data-sort]'); if(s){ DASH_SORT=s.dataset.sort; renderDashboard(); return; }
+    const lg=e.target.closest('.dsh-lg');
+    if(lg){
+      const k=lg.dataset.key;
+      if(DASH_HIDDEN.has(k)) DASH_HIDDEN.delete(k); else DASH_HIDDEN.add(k);
+      lg.classList.toggle('off', DASH_HIDDEN.has(k));
+      lg.setAttribute('aria-pressed', DASH_HIDDEN.has(k)?'false':'true');
+      dashHideTip(); drawDashChart();
+    }
+  });
+  // Survol de la courbe : le réticule cherche la DATE la plus proche, on ne vise pas un trait de 2 px.
+  body.addEventListener('pointermove', e=>{
+    const svg=e.target.closest && e.target.closest('#dshChart svg');
+    if(svg && DASH_PLOT){
+      const box=svg.getBoundingClientRect(), x=e.clientX-box.left, P=DASH_PLOT;
+      if(x<P.ml-4 || x>P.ml+P.pw+4){ dashHideTip(); return; }
+      const t=P.t0+(x-P.ml)/P.pw*(P.t1-P.t0);
+      let best=0; P.times.forEach((tt,i)=>{ if(Math.abs(tt-t)<Math.abs(P.times[best]-t)) best=i; });
+      dashShowCross(best); return;
+    }
+    const cell=e.target.closest && e.target.closest('[data-tip]');
+    const tip=$('dshTip');
+    if(cell && tip){
+      tip.innerHTML=`<div class="dt-h">${esc(cell.dataset.tip)}</div>`; tip.hidden=false;
+      const r=cell.getBoundingClientRect(), tw=tip.offsetWidth||180;
+      tip.style.left=Math.max(8, Math.min(window.innerWidth-tw-8, r.left+r.width/2-tw/2))+'px';
+      tip.style.top=Math.max(8, r.top-(tip.offsetHeight||30)-8)+'px';
+    }else if(tip && !e.target.closest('#dshChart')) tip.hidden=true;
+  });
+  body.addEventListener('pointerleave', dashHideTip);
+  body.addEventListener('pointerover', e=>{ const lg=e.target.closest('.dsh-lg'); dashFocus(lg?lg.dataset.key:null); });
+  body.addEventListener('focusin', e=>{ const lg=e.target.closest('.dsh-lg'); dashFocus(lg?lg.dataset.key:null); });
+  // Clavier : ← → déplacent le réticule (mêmes infos qu'au survol).
+  body.addEventListener('keydown', e=>{
+    if(!e.target.closest || !e.target.closest('#dshChart svg') || !DASH_PLOT) return;
+    if(e.key!=='ArrowLeft' && e.key!=='ArrowRight') return;
+    e.preventDefault();
+    const P=DASH_PLOT, i=P.idx<0 ? P.times.length-1 : P.idx+(e.key==='ArrowRight'?1:-1);
+    dashShowCross(Math.max(0, Math.min(P.times.length-1, i)));
+  });
+  body.addEventListener('focusout', e=>{ if(e.target.closest && e.target.closest('#dshChart svg')) dashHideTip(); });
+  let rt=null;
+  window.addEventListener('resize', ()=>{ clearTimeout(rt); rt=setTimeout(()=>{ const d=$('dashboard'); if(d && !d.hidden) drawDashChart(); }, 150); });
 }
 
 /* ===================== ROSTER (source unique) ===================== */
@@ -4673,6 +5507,7 @@ function showRoulette(){
   $('home').hidden=true; $('profile').hidden=true; $('tribunal').hidden=true;
   $('leaderboard').hidden=true; $('roulette').hidden=false;
   const cmp=$('comps'); if(cmp) cmp.hidden=true;
+  const dsh=$('dashboard'); if(dsh) dsh.hidden=true;
   window.scrollTo(0,0);
   // Par défaut : toute la squad est sélectionnée, on retire ceux qui ne jouent pas.
   if(!ROU_PICKED) ROU_PICKED=new Set(ROSTER.map(memberKey));
@@ -4756,6 +5591,7 @@ function rosterRowHTML(m){
     ${f('color','#couleur')}${f('uuid','uuid agent')}${f('customImg','URL GIF (optionnel)')}
     <input data-f="alias" class="edalias" placeholder="anciens pseudos : Ancien#tag, Autre#tag"
       title="Anciens pseudos Riot, séparés par des virgules. Sert à récupérer l'historique et la progression RR d'avant le changement de nom." value="${esc(aliasVal)}">
+    <button class="edmove" type="button" title="Passer ${esc(m.name||'ce joueur')} en invité (son agent, son rôle et son GIF sont gardés pour son retour)">→ invité</button>
     <button class="edrm" type="button" title="Retirer ce membre">✕</button>
   </div>`;
 }
@@ -4765,11 +5601,51 @@ function guestRowHTML(g){
   g=g||{};
   const f=(k,ph)=>`<input data-g="${k}" placeholder="${ph}" value="${esc(g[k]||'')}">`;
   const aliasVal=memberAliases(g).map(a=>a.name+'#'+a.tag).join(', ');
-  return `<div class="edrow">
+  // Ce qu'il avait quand il était membre (agent, rôle, GIF) : invisible ici,
+  // un invité n'a pas de carte, mais gardé pour qu'un retour soit sans perte.
+  const was=dormantFields(g.was);
+  const keep=Object.keys(was).length ? ` data-keep="${esc(JSON.stringify(was))}"` : '';
+  return `<div class="edrow"${keep}>
     ${f('name','pseudo')}${f('tag','tag')}${f('color','#couleur')}
     <input data-g="alias" class="edalias" placeholder="anciens pseudos : Ancien#tag" value="${esc(aliasVal)}">
+    <button class="edmove" type="button" title="Faire entrer ${esc(g.name||'ce joueur')} dans la squad">→ membre</button>
     <button class="edrm" type="button" title="Retirer cet invité">✕</button>
   </div>`;
+}
+// Champs propres à un membre, qu'un passage en invité met en sommeil.
+const DORMANT_KEYS=['agent','role','uuid','customImg'];
+function dormantFields(src){
+  const out={};
+  if(src && typeof src==='object') DORMANT_KEYS.forEach(k=>{ if(src[k]) out[k]=String(src[k]); });
+  return out;
+}
+// Valeurs ACTUELLES d'une ligne de l'éditeur (ce qui est tapé, pas ce qui a été chargé).
+function edRowValues(row){
+  let v={};
+  try{ v=Object.assign(v, JSON.parse(row.dataset.keep||'{}')||{}); }catch(e){}
+  row.querySelectorAll('input[data-f],input[data-g]').forEach(el=>{ v[el.dataset.f||el.dataset.g]=el.value.trim(); });
+  return v;
+}
+/* Membre <-> invité en un geste. La ligne change de liste avec ce qui y est
+   TAPÉ (pseudo, tag, couleur, anciens pseudos) ; ce qui n'a pas de sens pour
+   un invité est mis en sommeil, pas jeté. Rien n'est enregistré tant qu'on
+   n'a pas cliqué « Enregistrer » : on peut en déplacer plusieurs, ou se raviser. */
+function moveRosterRow(row){
+  if(!row || !row.parentElement) return;
+  const toGuest=row.parentElement.id==='edMembers';
+  const v=edRowValues(row);
+  const base={ name:v.name, tag:v.tag, color:v.color, alias:v.alias||'' };
+  row.remove();
+  if(toGuest) addGuestRow(Object.assign(base, { was:dormantFields(v) }));
+  else addRosterRow(Object.assign(base, dormantFields(v)));
+  const host=$(toGuest?'edGuests':'edMembers'), moved=host && host.lastElementChild;
+  if(moved){
+    moved.classList.add('moved');
+    if(moved.scrollIntoView) moved.scrollIntoView({ block:'nearest', behavior:'smooth' });
+    setTimeout(()=>moved.classList.remove('moved'), 1400);
+  }
+  const out=$('edStatus');
+  if(out) out.innerHTML=`<b>${esc(v.name||'Ce joueur')}</b> passe en <b>${toGuest?'invité':'membre'}</b> — pas encore enregistré : clique « Enregistrer le roster ».`;
 }
 function addGuestRow(g){ const host=$('edGuests'); if(host) host.insertAdjacentHTML('beforeend', guestRowHTML(g)); }
 
@@ -4798,6 +5674,8 @@ function collectRoster(){
     const o={ name:g('name'), tag:g('tag'), color:g('color')||'#8696a6' };
     const alias=memberAliases({ name:o.name, tag:o.tag, alias:g('alias') });
     if(alias.length) o.alias=alias.map(a=>a.name+'#'+a.tag);
+    let keep={}; try{ keep=dormantFields(JSON.parse(row.dataset.keep||'{}')); }catch(e){}
+    if(Object.keys(keep).length) o.was=keep;
     return o;
   }).filter(g=>g.name && g.tag);
 
@@ -4846,8 +5724,12 @@ function wireStatic(){
   });
   $('edAdd')?.addEventListener('click', () => addRosterRow());
   $('edAddGuest')?.addEventListener('click', () => addGuestRow());
-  $('edGuests')?.addEventListener('click', e => { const b=e.target.closest('.edrm'); if(b) b.closest('.edrow')?.remove(); });
-  $('edMembers')?.addEventListener('click', e => { const b=e.target.closest('.edrm'); if(b) b.closest('.edrow')?.remove(); });
+  const edClick = e => {
+    const mv=e.target.closest('.edmove'); if(mv){ moveRosterRow(mv.closest('.edrow')); return; }
+    const b=e.target.closest('.edrm'); if(b) b.closest('.edrow')?.remove();
+  };
+  $('edGuests')?.addEventListener('click', edClick);
+  $('edMembers')?.addEventListener('click', edClick);
   $('edSave')?.addEventListener('click', saveRoster);
   $('btnBack').addEventListener('click',showHome);
   $('btnBackTrib').addEventListener('click',showHome);
@@ -4856,6 +5738,8 @@ function wireStatic(){
   $('btnTribunal')?.addEventListener('click',loadTribunal);
   $('btnRoulette')?.addEventListener('click',showRoulette);
   $('btnBackRou')?.addEventListener('click',showHome);
+  $('btnDash')?.addEventListener('click',showDashboard);
+  wireDashboard();
   $('btnComps')?.addEventListener('click',showComps);
   $('btnBackCmp')?.addEventListener('click',showHome);
   $('cmpMaps')?.addEventListener('click',e=>{ const b=e.target.closest('[data-cmap]');
@@ -4921,7 +5805,7 @@ function wireStatic(){
       const line=SB_LINES[+c.dataset.sb]; if(!line) return;
       const M=STATE.matches[SELECTED_IDX];
       openScoreDetail(line, { title:`${line.name}#${line.tag} · ${line.agent}`,
-        sub:M?`${M.map} · ${M.result==='w'?'victoire':'défaite'} ${M.myScore}–${M.oppScore}`:'' });
+        sub:M?`${M.map} · ${resultWord(M,true)} ${scoreText(M)}`:'' });
       return;
     }
     if(e.target.closest('#mdHeroScore') && SELECTED_IDX>=0) openMatchScore(SELECTED_IDX);
