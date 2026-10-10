@@ -1202,6 +1202,45 @@
     .dsh-wl{display:none}
     .dsh-head h1{font-size:22px}
   }
+  /* ===================== RÈGLE =====================
+     Boîte teintée vert si ça monte, rouge si ça descend — et toujours le signe
+     et la flèche dans le texte : la couleur n'est jamais seule à le dire. */
+  .rul-btn{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border-radius:999px;min-height:30px;
+    border:1px solid var(--line);background:var(--panel2);color:var(--muted);font-size:12px;font-family:inherit;
+    letter-spacing:0;text-transform:none;font-weight:600}
+  .rul-btn:hover{color:var(--txt)}
+  .rul-btn.on{color:var(--cyan);border-color:var(--cyan);background:rgba(86,216,201,.12)}
+  svg.ruling{cursor:crosshair;touch-action:none}
+  .rul{pointer-events:none}
+  .rul .rul-area{stroke-width:1}
+  .rul.up .rul-area{fill:rgba(86,216,201,.12);stroke:rgba(86,216,201,.6)}
+  .rul.dn .rul-area{fill:rgba(255,93,93,.12);stroke:rgba(255,93,93,.6)}
+  .rul .rul-ax{stroke-width:1.5}
+  .rul.up .rul-ax{stroke:var(--win)} .rul.dn .rul-ax{stroke:var(--loss)}
+  .rul .rul-pt{stroke:#0d141c;stroke-width:2}
+  .rul.up .rul-pt{fill:var(--win)} .rul.dn .rul-pt{fill:var(--loss)}
+  .rul-box{position:absolute;z-index:6;min-width:180px;max-width:270px;background:#0d141c;border:1px solid var(--line);
+    border-radius:10px;padding:8px 30px 8px 10px;font-size:12px;box-shadow:0 12px 30px -12px #000;pointer-events:auto}
+  .rul-box.up{border-color:rgba(86,216,201,.45)} .rul-box.dn{border-color:rgba(255,93,93,.45)}
+  .rul-box .rul-h b{font-size:16px;font-variant-numeric:tabular-nums}
+  .rul-box.up .rul-h b{color:var(--win)} .rul-box.dn .rul-h b{color:var(--loss)}
+  .rul-box .rul-h span{color:var(--muted);font-size:11px}
+  .rul-box .rul-l{color:var(--txt);margin-top:3px} .rul-box .rul-l.dim{color:var(--muted)}
+  .rul-box .rul-rows{margin-top:6px;border-top:1px solid var(--line);padding-top:5px;max-height:170px;overflow:auto}
+  .rul-box .rul-r{display:grid;grid-template-columns:12px minmax(0,1fr) auto 30px;gap:6px;align-items:center;padding:1px 0}
+  .rul-box .rul-r span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rul-box .rul-r b{font-variant-numeric:tabular-nums;text-align:right}
+  .rul-box .rul-r b.up{color:var(--win)} .rul-box .rul-r b.dn{color:var(--loss)}
+  .rul-box .rul-r em{font-style:normal;color:var(--muted);font-size:10.5px;text-align:right}
+  .rul-x{position:absolute;top:4px;right:4px;width:24px;height:24px;border-radius:6px;color:var(--muted);font-size:12px}
+  .rul-x:hover{color:var(--txt);background:var(--panel2)}
+  .rul-box .nw{white-space:nowrap}
+  /* Au téléphone la boîte couvrirait la moitié de la courbe : elle passe
+     SOUS la courbe, dans le flux (les left/top posés en ligne sont neutralisés). */
+  @media(max-width:619px){
+    /* relative, pas static : la boîte doit rester le repère du ✕. */
+    .rul-box{position:relative;left:auto!important;top:auto!important;max-width:none;margin-top:8px}
+  }
   /* Rien ne doit passer sous la barre. */
   #home,#profile,#tribunal,#leaderboard,#roulette,#comps,#dashboard{
     padding-bottom:calc(88px + env(safe-area-inset-bottom))}
@@ -1274,6 +1313,8 @@
         <h2 class="tabs-header">
           <span>Progression RR <em>court → long terme</em></span>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button type="button" class="rul-btn" id="rrRulerBtn" aria-pressed="false"
+              title="Règle : glisse d'une partie à une autre pour mesurer l'écart de RR et de temps (à la souris : Maj + glisser). Échap pour effacer.">📏 Règle</button>
             <select id="rrCompare" class="rrsel" title="Comparer la progression avec un autre joueur"><option value="">Comparer à…</option></select>
             <select id="rrSeason" class="rrsel" title="Filtrer par saison / acte"><option value="all">Toutes les saisons</option></select>
             <div class="seg" id="rrPeriod" style="margin:0;">
