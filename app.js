@@ -2556,6 +2556,19 @@ function renderCurve(series, compare){
     <div class="hist">${pills}</div>`;
 
   wireCurveHover(box, meta, W, H);
+
+  // La règle : X calé sur la partie la plus proche, Y collé à la courbe — ce
+  // qu'on mesure ici, c'est le RR d'une partie à une autre.
+  const svg=box.querySelector('.rrchart'), wrap=box.querySelector('.rrwrap');
+  if(svg && wrap) RULERS.prof = makeRuler({ id:'prof', svg, wrap,
+    toView:e=>{ const r=svg.getBoundingClientRect(); return { x:(e.clientX-r.left)*W/(r.width||W), y:(e.clientY-r.top)*H/(r.height||H) }; },
+    toPx:(x,y)=>{ const r=svg.getBoundingClientRect(), k=(r.width||W)/W; return { left:x*k, top:y*k }; },
+    plot:{ y0:mT, y1:mT+ph },
+    snap:x=>{ const i=n<=1?0:Math.max(0, Math.min(n-1, Math.round((x-mL)/pw*(n-1)))); return { k:i, x:X(i) }; },
+    V:y=>lo+(1-(y-mT)/ph)*R, Y,
+    magnet:i=>pts[i],
+    label:(a,b)=>rulerProfileLabel(series, pts, a.k, b.k, chartMode),
+  });
 }
 
 // Survol du graphique RR : ligne-guide + point + infobulle (partie + RR).
@@ -2565,6 +2578,7 @@ function wireCurveHover(box, meta, W, H){
   const guide=box.querySelector('.rrguide'), cursor=box.querySelector('.rrcursor'), tip=box.querySelector('.rrtip');
   if(!svg||!hit||!tip) return;
   const move=e=>{
+    if(RULERS.prof && RULERS.prof.busy()){ leave(); return; }     // une mesure est affichée
     const rect=svg.getBoundingClientRect(); if(!rect.width) return;
     const vx=(e.clientX-rect.left)*(W/rect.width);               // px souris -> coordonnées viewBox
     let best=meta[0];
@@ -4839,6 +4853,155 @@ function dashKpis(table){
     rrNet:rr.length?rr.reduce((s,r)=>s+r.rrNet,0):null, best: best && best.rrNet>0 ? best : null };
 }
 
+/* ===================== RÈGLE (façon TradingView) =====================
+   On clique-glisse d'un point à un autre de la courbe — ou on clique deux
+   fois — et une boîte dit l'écart de RR, l'écart de temps et ce qui s'est
+   passé entre les deux. À la souris, Maj + glisser marche sans activer le
+   bouton ; au doigt il faut le bouton, sinon glisser fait défiler la page.
+   Échap ou ✕ efface.
+
+   Le moteur ne connaît aucune courbe : chacune lui dit comment lire ses axes
+   (adaptateur `o`). Les bilans affichés sont calculés par des fonctions PURES
+   (rulerProfileStats, rulerDashRows), testées sans DOM. */
+const RULER_ON = { dash:false, prof:false };   // bouton « Règle » enfoncé, par courbe
+const RULERS = {};                              // courbe -> règle attachée à son SVG actuel
+
+// Durée lisible : « 45 min », « 3 h 05 », « 8 j 2 h ».
+function rulerDur(ms){
+  const m=Math.round(Math.abs(num(ms))/60000);
+  if(m<60) return m+' min';
+  const h=Math.floor(m/60), mm=m%60;
+  if(h<24) return h+' h'+(mm?' '+String(mm).padStart(2,'0'):'');
+  const d=Math.floor(h/24), hh=h%24;
+  return d+' j'+(hh?' '+hh+' h':'');
+}
+
+/* Profil : bilan entre deux parties de la série affichée (indices). Toujours
+   de la plus ancienne à la plus récente, quel que soit le sens du geste.
+   « ↑ / ↓ » vient du signe du RR de chaque partie — pas d'un résultat qu'on
+   n'a pas dans la série. */
+function rulerProfileStats(series, pts, i, j){
+  const a=Math.min(i,j), b=Math.max(i,j);
+  let games=0, up=0, down=0;
+  for(let k=a+1; k<=b; k++){
+    games++;
+    const c=series[k] && series[k].change;
+    if(c!=null && !isNaN(c)){ if(c>0) up++; else if(c<0) down++; }
+  }
+  const tA=num(series[a] && series[a].ts), tB=num(series[b] && series[b].ts);
+  return { from:a, to:b, games, up, down, dv:num(pts[b])-num(pts[a]), tA:tA||null, tB:tB||null };
+}
+
+/* Dashboard : l'écart de CHAQUE membre affiché entre deux instants — son
+   niveau au plus tard, moins son niveau au plus tôt. Un membre qui n'avait pas
+   encore de point au début de la fenêtre part du niveau d'AVANT sa première
+   partie dedans (elo − son ±RR), pas du niveau d'après. */
+function rulerDashRows(curves, keys, tA, tB){
+  const t0=Math.min(tA,tB), t1=Math.max(tA,tB);
+  return (keys||[]).map(k=>{
+    const pts=(curves && curves[k]) || [];
+    const end=dashAt(pts, t1); if(!end) return null;
+    const games=pts.filter(p=>!p.start && p.t>t0 && p.t<=t1).length;
+    if(!games) return null;                        // n'a pas joué dans la fenêtre
+    let base=dashAt(pts, t0), approx=false;
+    let from = base ? base.elo : null;
+    if(from==null){
+      const first=pts.find(p=>p.t>t0 && p.t<=t1);
+      if(first.change!=null && !isNaN(first.change)) from=first.elo-Number(first.change);
+      else { from=first.elo; approx=true; }       // ±RR inconnu : on part d'après, et on le dit
+    }
+    return { key:k, d:end.elo-from, games, approx };
+  }).filter(Boolean).sort((a,b)=>b.d-a.d);
+}
+
+/* Moteur. o = { id, svg, wrap, toView(e)->{x,y}, toPx(x,y)->{left,top},
+   plot:{y0,y1}, snap(x)->{k,x}, V(y)->valeur, Y(valeur)->y,
+   magnet(k,y)->valeur|null, label(a,b)->html }. */
+function makeRuler(o){
+  const svg=o.svg, st={ a:null, b:null, drag:false, armed:false, down:null };
+  const active=()=>!!RULER_ON[o.id];
+  const pt=e=>{
+    const v=o.toView(e);
+    const y=Math.max(o.plot.y0, Math.min(o.plot.y1, v.y));
+    const s=o.snap(v.x);
+    const m=o.magnet ? o.magnet(s.k, y) : null;
+    return { k:s.k, x:s.x, v:(m!=null ? m : o.V(y)) };
+  };
+  const draw=()=>{
+    svg.querySelectorAll('.rul').forEach(n=>n.remove());
+    let box=o.wrap.querySelector('.rul-box');
+    if(!st.a || !st.b){ if(box) box.remove(); return; }
+    const [p,q] = st.a.k<=st.b.k ? [st.a,st.b] : [st.b,st.a];
+    const cls = q.v-p.v>=0 ? 'up' : 'dn';
+    const xa=st.a.x, ya=o.Y(st.a.v), xb=st.b.x, yb=o.Y(st.b.v);
+    const x0=Math.min(xa,xb), x1=Math.max(xa,xb), y0=Math.min(ya,yb), y1=Math.max(ya,yb);
+    const xm=(x0+x1)/2, ym=(ya+yb)/2, f=v=>v.toFixed(1);
+    svg.insertAdjacentHTML('beforeend', `<g class="rul ${cls}">
+      <rect class="rul-area" x="${f(x0)}" y="${f(y0)}" width="${f(Math.max(1,x1-x0))}" height="${f(Math.max(1,y1-y0))}"/>
+      <line class="rul-ax" x1="${f(xm)}" x2="${f(xm)}" y1="${f(ya)}" y2="${f(yb)}"/>
+      <line class="rul-ax" x1="${f(xa)}" x2="${f(xb)}" y1="${f(ym)}" y2="${f(ym)}"/>
+      <circle class="rul-pt" cx="${f(xa)}" cy="${f(ya)}" r="4"/><circle class="rul-pt" cx="${f(xb)}" cy="${f(yb)}" r="4"/>
+    </g>`);
+    if(!box){
+      box=document.createElement('div');
+      box.className='rul-box'; box.setAttribute('role','status');
+      o.wrap.appendChild(box);
+    }
+    box.className='rul-box '+cls;
+    box.innerHTML=o.label(st.a, st.b)+'<button type="button" class="rul-x" title="Effacer la règle (Échap)" aria-label="Effacer la règle">✕</button>';
+    const x=box.querySelector('.rul-x'); if(x) x.addEventListener('click', clear);
+    // Près du point d'arrivée, sans sortir du cadre.
+    const at=o.toPx(xb, yb), W=o.wrap.clientWidth||0, bw=box.offsetWidth||200, bh=box.offsetHeight||80;
+    let left=at.left+12; if(W && left+bw>W) left=Math.max(0, at.left-bw-12);
+    let top=at.top-bh-10; if(top<0) top=at.top+12;
+    box.style.left=left+'px'; box.style.top=top+'px';
+  };
+  function clear(){ st.a=st.b=null; st.drag=st.armed=false; draw(); }
+  svg.addEventListener('pointerdown', e=>{
+    if(!(active() || (e.shiftKey && e.pointerType!=='touch'))) return;
+    e.preventDefault();
+    if(st.armed){ st.b=pt(e); st.armed=false; draw(); return; }      // 2e clic : fin de la mesure
+    st.a=pt(e); st.b=st.a; st.drag=true; st.down={ x:e.clientX, y:e.clientY };
+    try{ svg.setPointerCapture && svg.setPointerCapture(e.pointerId); }catch(err){}
+    draw();
+  });
+  svg.addEventListener('pointermove', e=>{
+    if(!st.drag && !st.armed) return;
+    st.b=pt(e); draw();
+  });
+  svg.addEventListener('pointerup', e=>{
+    if(!st.drag) return;
+    st.drag=false;
+    const moved=st.down && Math.hypot(e.clientX-st.down.x, e.clientY-st.down.y)>6;
+    if(!moved) st.armed=true;                       // simple clic : on attend le second point
+  });
+  svg.classList.toggle('ruling', active());
+  return { busy:()=>!!st.a, clear, state:()=>({ a:st.a, b:st.b, armed:st.armed }) };
+}
+
+// Bouton « Règle » d'une courbe : état visible, et l'effacement en sortant.
+function rulerToggle(id, btn){
+  RULER_ON[id]=!RULER_ON[id];
+  if(btn){ btn.setAttribute('aria-pressed', RULER_ON[id]?'true':'false'); btn.classList.toggle('on', RULER_ON[id]); }
+  const r=RULERS[id];
+  if(r && !RULER_ON[id]) r.clear();
+  document.querySelectorAll(id==='dash'?'#dshChart svg':'#curve svg.rrchart').forEach(s=>s.classList.toggle('ruling', RULER_ON[id]));
+}
+
+// Libellé de la règle du profil (série d'un joueur, un point par partie).
+function rulerProfileLabel(series, pts, i, j, mode){
+  const s=rulerProfileStats(series, pts, i, j);
+  const sign=s.dv>0?'+':(s.dv<0?'−':''), arrow=s.dv>=0?'▲':'▼';
+  let tiers='';
+  if(mode==='elo'){
+    const ta=tierFromElo(pts[s.from]), tb=tierFromElo(pts[s.to]);
+    if(ta && tb) tiers=`<div class="rul-l">${esc(tierShort(ta.name))} → ${esc(tierShort(tb.name))}</div>`;
+  }
+  const dates = s.tA && s.tB ? `<div class="rul-l dim">${esc(dashFmtShort(s.tA))} → ${esc(dashFmtShort(s.tB))} · <span class="nw">${esc(rulerDur(s.tB-s.tA))}</span></div>` : '';
+  return `<div class="rul-h"><b>${arrow} ${sign}${Math.abs(Math.round(s.dv))}</b> <span>${mode==='elo'?'RR':'RR cumulé'}</span></div>
+    ${tiers}<div class="rul-l">${s.games} partie${s.games>1?'s':''} · ${s.up} ↑ ${s.down} ↓</div>${dates}`;
+}
+
 /* ===================== DASHBOARD : RENDU ===================== */
 let DASH_PERIOD='30', DASH_VIEW='game', DASH_SORT='rrNet';
 let DASH_HIDDEN=new Set();       // membres masqués sur la courbe (la couleur des autres ne bouge pas)
@@ -4969,10 +5132,12 @@ function dashChartCardHTML(ctx){
   }).join('');
   const sub = DASH_VIEW==='day' ? 'niveau en fin de journée' : 'un point par partie';
   return `<div class="card full dsh-card">
-    <h2 class="tabs-header"><span>Courbe RR <em>elo absolu (palier × 100 + RR) · ${sub}</em></span></h2>
+    <h2 class="tabs-header"><span>Courbe RR <em>elo absolu (palier × 100 + RR) · ${sub}</em></span>
+      <button type="button" class="rul-btn${RULER_ON.dash?' on':''}" id="dshRulerBtn" aria-pressed="${RULER_ON.dash?'true':'false'}"
+        title="Règle : glisse d'un point à un autre pour mesurer l'écart de RR et de temps (à la souris : Maj + glisser). Échap pour effacer.">📏 Règle</button></h2>
     <div class="dsh-legend" id="dshLegend">${legend}</div>
     <div class="dsh-chart" id="dshChart"></div>
-    <div class="md-none">Survole la courbe pour lire le niveau de chacun à cet instant ; touche un nom pour l'afficher ou le masquer. Les rangs sont ceux de l'API, au moment de chaque partie.</div>
+    <div class="md-none">Survole la courbe pour lire le niveau de chacun à cet instant ; touche un nom pour l'afficher ou le masquer. <b>📏 Règle</b> : glisse d'un point à un autre (ou deux clics) pour l'écart de RR et de temps, et ce qu'a fait chaque membre entre les deux. Les rangs sont ceux de l'API, au moment de chaque partie.</div>
     <details class="dsh-tv" id="dshTv"><summary>Voir les chiffres</summary><div id="dshTvBody"></div></details>
   </div>`;
 }
@@ -5014,7 +5179,7 @@ function drawDashChart(){
     }
   }
   // Graduations de temps : 4 à 6, aux dates rondes.
-  const nT=narrow?3:5; let xt='';
+  const nT=narrow?2:5; let xt='';   // au téléphone, 4 dates se touchaient
   for(let i=0;i<=nT;i++){
     const t=t0+(t1-t0)*i/nT;
     xt+=`<text class="dsh-xlab" x="${X(t).toFixed(1)}" y="${H-8}" text-anchor="${i===0?'start':(i===nT?'end':'middle')}">${esc(dashFmtShort(t))}</text>`;
@@ -5056,6 +5221,41 @@ function drawDashChart(){
   // Instants survolables : tous les points de tous les membres affichés.
   const times=[...new Set(all.map(p=>p.t))].sort((a,b)=>a-b);
   DASH_PLOT={ keys, curves, times, X, ml, pw, t0, t1, idx:-1 };
+
+  // La règle : l'axe X est le temps (calé sur l'instant de partie le plus
+  // proche), l'axe Y est libre, aimanté à une courbe quand on passe à moins
+  // de 14 px d'elle.
+  const svg=host.querySelector('svg');
+  RULERS.dash = makeRuler({ id:'dash', svg, wrap:host,
+    toView:e=>{ const r=svg.getBoundingClientRect(); return { x:e.clientX-r.left, y:e.clientY-r.top }; },
+    toPx:(x,y)=>({ left:x, top:y }),
+    plot:{ y0:mt, y1:mt+ph },
+    snap:x=>{
+      const t=t0+(x-ml)/pw*(t1-t0);
+      let best=times[0]; times.forEach(tt=>{ if(Math.abs(tt-t)<Math.abs(best-t)) best=tt; });
+      return { k:best, x:X(best) };
+    },
+    V:y=>lo+(mt+ph-y)/ph*(hi-lo), Y,
+    magnet:(t,y)=>{
+      let best=null, dy=14;
+      keys.forEach(k=>{ const p=dashAt(curves[k], t); if(p && Math.abs(Y(p.elo)-y)<dy){ dy=Math.abs(Y(p.elo)-y); best=p.elo; } });
+      return best;
+    },
+    label:(a,b)=>dashRulerLabel(curves, keys, a, b, ctx),
+  });
+}
+
+function dashRulerLabel(curves, keys, a, b, ctx){
+  const [p,q] = a.k<=b.k ? [a,b] : [b,a];
+  const dv=q.v-p.v, sign=dv>0?'+':(dv<0?'−':''), arrow=dv>=0?'▲':'▼';
+  const ranks=Math.abs(dv)/100;
+  const rows=rulerDashRows(curves, keys, p.k, q.k);
+  const list = rows.length ? `<div class="rul-rows">${rows.map(r=>`<div class="rul-r">${dashKey(ctx,r.key)}<span>${esc(ctx.names[r.key]||r.key)}</span>
+      <b class="${r.d>=0?'up':'dn'}">${dashSigned(r.d)}${r.approx?'*':''}</b><em>${r.games} p.</em></div>`).join('')}</div>`
+    : '<div class="rul-l dim">Personne n\'a joué entre ces deux instants.</div>';
+  return `<div class="rul-h"><b>${arrow} ${sign}${Math.abs(Math.round(dv))}</b> <span>elo${ranks>=0.95?` · ≈ ${ranks.toFixed(1).replace('.',',')} rang${ranks>=1.95?'s':''}`:''}</span></div>
+    <div class="rul-l">${esc(dashFmtShort(p.k))} ${esc(dashFmtTime(p.k))} → ${esc(dashFmtShort(q.k))} ${esc(dashFmtTime(q.k))} · <span class="nw">${esc(rulerDur(q.k-p.k))}</span></div>
+    ${list}`;
 }
 
 // Niveau d'un membre à l'instant t : son dernier point connu à ou avant t.
@@ -5226,6 +5426,7 @@ function wireDashboard(){
     if(mo){ DASH_SESS_SHOWN=Math.max(DASH_SESS_MAX, DASH_SESS_SHOWN)+DASH_SESS_MAX; renderDashboard(); return; }
     const v=e.target.closest('[data-v]'); if(v){ DASH_VIEW=v.dataset.v; renderDashboard(); return; }
     const s=e.target.closest('[data-sort]'); if(s){ DASH_SORT=s.dataset.sort; renderDashboard(); return; }
+    const rb=e.target.closest('#dshRulerBtn'); if(rb){ rulerToggle('dash', rb); dashHideTip(); return; }
     const lg=e.target.closest('.dsh-lg');
     if(lg){
       const k=lg.dataset.key;
@@ -5238,6 +5439,7 @@ function wireDashboard(){
   // Survol de la courbe : le réticule cherche la DATE la plus proche, on ne vise pas un trait de 2 px.
   body.addEventListener('pointermove', e=>{
     const svg=e.target.closest && e.target.closest('#dshChart svg');
+    if(svg && RULERS.dash && RULERS.dash.busy()){ dashHideTip(); return; }
     if(svg && DASH_PLOT){
       const box=svg.getBoundingClientRect(), x=e.clientX-box.left, P=DASH_PLOT;
       if(x<P.ml-4 || x>P.ml+P.pw+4){ dashHideTip(); return; }
@@ -5739,6 +5941,8 @@ function wireStatic(){
   $('btnRoulette')?.addEventListener('click',showRoulette);
   $('btnBackRou')?.addEventListener('click',showHome);
   $('btnDash')?.addEventListener('click',showDashboard);
+  $('rrRulerBtn')?.addEventListener('click', e=>rulerToggle('prof', e.currentTarget));
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') Object.values(RULERS).forEach(r=>r && r.clear()); });
   wireDashboard();
   $('btnComps')?.addEventListener('click',showComps);
   $('btnBackCmp')?.addEventListener('click',showHome);
