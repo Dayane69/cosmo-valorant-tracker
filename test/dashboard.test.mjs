@@ -185,3 +185,51 @@ test("seules les parties CLASSÉES comptent", () => {
   assert.equal(T[0].n, 1, "le deathmatch ne compte pas");
   assert.equal(Math.round(T[0].hs), 22);
 });
+
+test("vue par jour : le ±RR du jour = niveau de fin de journée moins celui de la journée jouée d'avant", () => {
+  // Cas réel (joker) : les ±RR annoncés par partie ne collent pas toujours au
+  // niveau (une partie absente de l'historique, un ±RR faux côté API). La
+  // courbe montre le NIVEAU : le chiffre doit dire la même chose qu'elle.
+  const at = (iso) => new Date(iso).getTime();
+  const rr = { j: [
+    { ts: at("2026-09-30T21:00:00"), elo: 1254, change: 20 },
+    { ts: at("2026-09-30T22:00:00"), elo: 1291, change: 17 },                 // fin du 30 : 1291
+    { ts: at("2026-10-01T21:00:00"), elo: 1280, change: -11 },
+    { ts: at("2026-10-01T22:00:00"), elo: 1310, change: 5 },                  // l'API dit +5, le niveau dit +30
+    { ts: at("2026-10-03T21:00:00"), elo: 1400, change: -66 },                // fin du 3 : 1400 (rien le 4)
+    { ts: at("2026-10-05T21:00:00"), elo: 1413, change: 13 },
+    { ts: at("2026-10-05T22:00:00"), elo: 1427, change: 1 },                  // somme +14, niveau +27
+  ] };
+  const NOWX = at("2026-10-06T12:00:00");
+  const d = X.dashCurves(rr, X.dashRange("all", NOWX, null), "day").j;
+  const by = Object.fromEntries(d.map((p) => [p.day, p]));
+  assert.equal(by["2026-10-01"].elo, 1310);
+  assert.equal(by["2026-10-01"].change, 19, "1310 − 1291, pas −11 + 5 = −6");
+  assert.equal(by["2026-10-05"].change, 27, "1427 − 1400 (la veille jouée est le 3), pas +14");
+  // Première journée sans rien avant : le niveau d'avant sa 1re partie (1254 − 20).
+  assert.equal(by["2026-09-30"].change, 1291 - 1234);
+});
+
+test("vue par jour : la 1re journée d'une fenêtre se compare au niveau d'avant la fenêtre", () => {
+  const r = X.dashRange("7", NOW, null);
+  const rr = { a: [
+    { ts: NOW - 20 * DAY, elo: 1200, change: 10 },                            // avant la fenêtre
+    { ts: NOW - 3 * DAY, elo: 1230, change: 4 },                              // ±RR incohérent exprès
+  ], b: [
+    { ts: NOW - 2 * DAY, elo: 900, change: null },                            // aucun repère avant
+  ] };
+  const A = X.dashCurves(rr, r, "day").a, B = X.dashCurves(rr, r, "day").b;
+  assert.equal(A[1].change, 30, "1230 − 1200 (niveau au début de la fenêtre)");
+  assert.equal(B[0].change, null, "pas de niveau d'avant connu : pas de chiffre inventé");
+});
+
+test("vue par jour, acte : la 1re journée se compare au dernier niveau de l'acte d'avant", () => {
+  const rr = { a: [
+    { ts: NOW - 30 * DAY, elo: 1500, change: 12, season: "e9a1" },
+    { ts: NOW - 5 * DAY, elo: 1460, change: 3, season: "e9a2" },             // ±RR incohérent exprès
+  ] };
+  const r = X.dashRange("act", NOW, X.dashActs(rr));
+  const d = X.dashCurves(rr, r, "day").a;
+  assert.equal(d.length, 1, "pas de point de départ en vue acte");
+  assert.equal(d[0].change, -40, "1460 − 1500, le niveau de fin de l'acte précédent");
+});

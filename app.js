@@ -4641,10 +4641,33 @@ function dashCurves(rrByKey, range, view){
         tier:(before.tier&&before.tier.name)||'', rr:before.rr, start:true });
     }
     if(view==='day'){
-      const byDay=new Map();
-      pts.forEach(p=>{ byDay.set(p.start?'start':dashDayKey(p.t), p); });   // le dernier du jour gagne
-      const net={}; pts.forEach(p=>{ if(!p.start && p.change!=null){ const d=dashDayKey(p.t); net[d]=(net[d]||0)+num(p.change); } });
-      pts=[...byDay.entries()].map(([d,p])=>Object.assign({}, p, d==='start'?{}:{ day:d, change:net[d]!=null?net[d]:null }));
+      /* Le ±RR d'une journée = son niveau de FIN moins le niveau de fin de la
+         journée jouée précédente — exactement ce que la courbe montre entre
+         deux points. On additionnait les ±RR annoncés partie par partie : il
+         suffit d'une partie absente de l'historique ou d'un ±RR faux côté API
+         pour que le chiffre contredise la courbe (« −6 » sur une journée où
+         le niveau monte de 19). */
+      const byDay=new Map(), firstOfDay={};
+      pts.forEach(p=>{
+        const d=p.start?'start':dashDayKey(p.t);
+        byDay.set(d, p);                                   // le dernier du jour gagne
+        if(!p.start && !(d in firstOfDay)) firstOfDay[d]=p;
+      });
+      let prev=null;                                       // niveau de fin de la journée précédente
+      pts=[...byDay.entries()].map(([d,p])=>{
+        if(d==='start'){ prev=p.elo; return Object.assign({}, p); }
+        let before=prev;
+        if(before==null){
+          // Première journée affichée, sans point de départ : le dernier niveau
+          // connu AVANT sa première partie (historique complet), sinon le niveau
+          // d'avant cette partie (elo − son ±RR), sinon on ne sait pas.
+          const f=firstOfDay[d], b=s.filter(e=>e.ts<f.t).pop();
+          before = b ? Number(b.elo)
+                 : (f.change!=null && !isNaN(f.change) ? f.elo-Number(f.change) : null);
+        }
+        prev=p.elo;
+        return Object.assign({}, p, { day:d, change: before==null ? null : p.elo-before });
+      });
     }
     if(pts.length) out[key]=pts;
   });
