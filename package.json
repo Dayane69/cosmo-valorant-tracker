@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check": "node --check app.js && node --check sw.js && node --check netlify/functions/valo.mjs && node --check netlify/functions/refresh-matches.mjs && node --check netlify/functions/refresh-now.mjs && node --check netlify/functions/save-history.mjs && node --check netlify/functions/historique.mjs && node --check netlify/functions/roster.mjs && node --check netlify/functions/lib/refresh-core.mjs && node --check netlify/functions/lib/roster-source.mjs && node --check netlify/functions/comps.mjs && node --check netlify/functions/lib/comps-core.mjs"
+    "check": "node --check app.js && node --check sw.js && node --check netlify/functions/valo.mjs && node --check netlify/functions/refresh-matches.mjs && node --check netlify/functions/refresh-now.mjs && node --check netlify/functions/save-history.mjs && node --check netlify/functions/historique.mjs && node --check netlify/functions/roster.mjs && node --check netlify/functions/lib/refresh-core.mjs && node --check netlify/functions/lib/roster-source.mjs && node --check netlify/functions/comps.mjs && node --check netlify/functions/lib/comps-core.mjs && node --check netlify/functions/goals.mjs && node --check netlify/functions/discord-recap.mjs && node --check netlify/functions/discord-recap-preview.mjs && node --check netlify/functions/lib/recap-core.mjs && node --check netlify/functions/lib/recap-card.mjs && node --check netlify/functions/lib/recap-run.mjs && node --check netlify/functions/lib/recap-assets.mjs"
   },
   "keywords": [
     "valorant",
@@ -15,7 +15,8 @@
   ],
   "license": "ISC",
   "dependencies": {
-    "@netlify/blobs": "^8.2.0"
+    "@netlify/blobs": "^8.2.0",
+    "@resvg/resvg-wasm": "^2.6.2"
   },
   "devDependencies": {
     "jsdom": "^29.1.1"

@@ -392,6 +392,35 @@ async function fetchRRHistoryAll(m){
   return mergeRRclient(...lists);
 }
 
+/* Performance Score stocké par le cron (blob cosmo-perf) : [{id, ps, g, r, mvp}].
+   L'historique compact n'a pas la note ; on la rattache par id de partie. */
+async function fetchPerf(name, tag){
+  try{
+    const r=await fetch(`/.netlify/functions/historique?name=${enc(name)}&tag=${enc(tag)}&kind=perf`);
+    if(!r.ok) return [];
+    const d=await r.json();
+    return Array.isArray(d) ? d : (d.perf||d.data||[]);
+  }catch(e){ return []; }
+}
+async function fetchPerfAll(m){
+  const ids=memberIdentities(m);
+  const lists=await Promise.all(ids.map(x=>fetchPerf(x.name, x.tag).catch(()=>[])));
+  return [].concat(...lists);
+}
+// Rattache les notes aux parties qui ne les ont pas déjà (une partie complète
+// porte sa propre note : on n'y touche pas).
+function attachPerf(matches, list){
+  if(!Array.isArray(list) || !list.length) return matches;
+  const by={}; list.forEach(e=>{ if(e && e.id) by[e.id]=e; });
+  (matches||[]).forEach(M=>{
+    const e=M && M.id && by[M.id];
+    if(!e || !M.me) return;
+    if(M.me.ps==null && e.ps!=null){ M.me.ps=Math.round(e.ps); M.me.psGrade=e.g||null; M.me.psR=e.r||null; }
+    if(e.mvp) M.mvp=true;
+  });
+  return matches;
+}
+
 // Récupère l'historique RR accumulé (progression long terme) depuis le blob cosmo-rr.
 async function fetchRRHistory(name, tag){
   try{
@@ -533,10 +562,13 @@ function slimMatch(M){
     myScore:M.myScore, oppScore:M.oppScore, forfeit:!!M.forfeit,
     myTeamId:M.myTeamId, party:M.party||null, rr:M.rr||null, season:M.season||null,
     ...(M.multi ? { multi:{ count:M.multi.count } } : {}),
+    ...(M.ffa ? { ffa:true, ffaN:M.ffaN||null, ffaPlace:M.ffaPlace||null } : {}),
+    ...(M.mvp ? { mvp:true } : {}),
     me: s ? { k:s.k, d:s.d, a:s.a, hs:s.hs, acs:s.acs, adr:s.adr, dd:s.dd, kd:s.kd,
               rounds:s.rounds, kast:s.kast==null?null:s.kast, shots:s.shots,
               name:s.name, tag:s.tag, team:s.team, agent:s.agent, agentId:s.agentId,
               score100:s.score100, placement:s.placement==null?null:s.placement,
+              ...(s.ps!=null ? { ps:s.ps, psGrade:s.psGrade||null } : {}),
               ctx:s.ctx||null } : null,
   };
 }
@@ -556,6 +588,8 @@ function rehydrateMatch(s){
     durMs:s.durMs, rounds:s.rounds, result:s.result, region:s.region||'', myScore:s.myScore, oppScore:s.oppScore,
     forfeit:s.forfeit, myTeamId:s.myTeamId, party:s.party, rr:s.rr, season:s.season,
     ...(s.multi ? { multi:s.multi } : {}),
+    ...(s.ffa ? { ffa:true, ffaN:s.ffaN||null, ffaPlace:s.ffaPlace||null } : {}),
+    ...(s.mvp ? { mvp:true } : {}),
     players:[], lines: me ? [me] : [], facts:null, partial:true, cached:true, me };
 }
 
@@ -710,9 +744,15 @@ function rawLine(p,rounds,kastMap){
   const tierId=(tr && tr.id!=null && !isNaN(tr.id)) ? Number(tr.id)
              : (p.currenttier!=null && !isNaN(p.currenttier) ? Number(p.currenttier) : null);
   const tierName=String((tr && tr.name) || p.currenttier_patched || '').trim();
+  // Performance Score (patch 13.06) : la note Riot sur 500, sa mention et
+  // l'appréciation par axe. Absent des parties d'avant le patch : null.
+  const pf=p.performance||null;
+  const ps=(pf && pf.score!=null && !isNaN(pf.score)) ? Math.round(Number(pf.score)) : null;
+  const rt=pf && pf.ratings ? pf.ratings : null;
   return {k,d,a,hs,acs,adr,dd,kd,rounds,kast,shots:hsT,name:p.name||'?',tag:p.tag||'',team:p.team_id,
     agent:ag.name||(typeof p.agent==='string'?p.agent:'?'),
-    agentId:ag.id||ag.uuid||'', tierId, tierName};
+    agentId:ag.id||ag.uuid||'', tierId, tierName,
+    ps, psGrade:(rt && rt.grade)||null, psR: rt ? Object.assign({}, rt.combat||{}, rt.utility||{}) : null};
 }
 
 // Note TOUS les joueurs d'une partie d'un coup : nécessaire pour connaître le
@@ -933,12 +973,50 @@ function multiTeamOf(players, teams){
 // Libellé du résultat. À plusieurs équipes : sans verdict de l'API, « — »
 // plutôt qu'une défaite supposée ; et le score est le bilan de rounds de mon
 // équipe, qu'on nomme comme tel.
+/* Performance Score à l'affichage. Partout où l'ACS était AFFICHÉ, on montre
+   la note Riot quand la partie en a une, l'ACS sinon (parties d'avant le
+   patch 13.06, qui n'ont pas de note). L'ACS reste la base de l'indice COSMO
+   et des conseils de session : il existe pour toutes les parties, avant comme
+   après le patch, et ses repères n'ont pas bougé. */
+const PS_GRADE = { pass:'Correct', merit:'Mérite', distinction:'Distinction', masterful:'Magistral' };
+const psGradeFr = g => g ? (PS_GRADE[String(g).toLowerCase()] || (String(g).charAt(0).toUpperCase()+String(g).slice(1))) : '';
+const perfVal = s => (s && s.ps!=null) ? { v:Math.round(s.ps), lab:'Perf.', ps:true }
+                                       : { v:s && s.acs!=null ? Math.round(num(s.acs)) : null, lab:'ACS', ps:false };
+const perfAgg = st => (st && st.psN) ? { v:Math.round(st.ps), lab:'Perf.', ps:true, n:st.psN }
+                                     : { v:st && st.acs!=null ? Math.round(num(st.acs)) : null, lab:'ACS', ps:false, n:0 };
+const PS_AXES = [['damage','Dégâts'],['kill_impact','Impact des kills'],['death_impact','Impact des morts'],['trades','Trades'],
+  ['assists','Assists'],['utility_usage','Utilitaire'],['plants','Plants'],['defuses','Désamorçages']];
+const PS_ARROW = { double_up:['▲▲','up'], up:['▲','up'], neutral:['=','flat'], down:['▼','dn'], double_down:['▼▼','dn'] };
+
+/* Deathmatch (chacun pour soi) : un seul gagnant sur 14, donc « DÉFAITE »
+   s'affichait sur presque toutes les parties, même finies 2e. On affiche la
+   place quand on la connaît (partie complète), « Deathmatch » sinon (format
+   compact : un seul joueur, aucune place calculable). */
+function isFFA(M){ return !!(M && M.ffa); }
 function resultWord(M, low){
-  const w = M.result==='w' ? 'Victoire' : (M.result==='l' || !M.multi ? 'Défaite' : '—');
-  return low ? w.toLowerCase() : w.toUpperCase();
+  let w;
+  if(isFFA(M)) w = M.ffaPlace ? `${ordinalFr(M.ffaPlace)} / ${M.ffaN}` : 'Deathmatch';
+  else w = M.result==='w' ? 'Victoire' : (M.result==='l' || !M.multi ? 'Défaite' : '—');
+  return isFFA(M) ? w : (low ? w.toLowerCase() : w.toUpperCase());
 }
 function scoreText(M){
+  if(isFFA(M)) return '';
   return M.multi ? `${M.myScore}–${M.oppScore} en rounds` : `${M.myScore}–${M.oppScore}`;
+}
+
+/* Chacun pour soi : le mode le dit (« Deathmatch » tout court, pas « Team
+   Deathmatch »), ou la forme : chaque joueur seul dans son « équipe ». */
+function ffaOf(players, meta){
+  if(/^deathmatch$/i.test(String(modeName(meta)).trim())) return true;
+  const ids=new Set((players||[]).map(p=>p && p.team_id));
+  return (players||[]).length>=3 && ids.size===(players||[]).length;
+}
+// Place en chacun pour soi : au nombre de kills, puis au score.
+function ffaPlaceOf(players, me){
+  const st=p=>p.stats||{};
+  const sorted=[...players].sort((a,b)=>num(st(b).kills)-num(st(a).kills) || num(st(b).score)-num(st(a).score));
+  const i=sorted.findIndex(p=>p===me || (p.puuid && p.puuid===me.puuid));
+  return i>=0 ? i+1 : null;
 }
 
 // Normalise une partie au format "matches v4" (metadata + players[] + teams[]).
@@ -956,6 +1034,7 @@ function normMatch(m, targetState = STATE, opts){
   const T=id=>teams.find(t=>t.team_id===id);
   const rwon=t=>t&&t.rounds?num(t.rounds.won):0, rlost=t=>t&&t.rounds?num(t.rounds.lost):0;
   const multi=multiTeamOf(players, teams);
+  const ffa=ffaOf(players, meta);
   const myTeam=me?T(me.team_id):null, oppTeam=teams.find(t=>myTeam&&t.team_id!==myTeam.team_id);
   let rounds=myTeam?rwon(myTeam)+rlost(myTeam):(rwon(T('Red'))+rwon(T('Blue')));
   if(!rounds) rounds=(Array.isArray(m.rounds)&&m.rounds.length)||24;
@@ -984,6 +1063,9 @@ function normMatch(m, targetState = STATE, opts){
   const meIdx=me?players.indexOf(me):-1;
   const meStat=meIdx>=0?lines[meIdx]:null;
   if(meStat) meStat.placement = placement;
+  // MVP désigné par Riot (patch 13.06) : le meilleur Performance Score.
+  const mvpId = meta.mvp && meta.mvp.puuid;
+  if(mvpId) players.forEach((p,i)=>{ if(lines[i]) lines[i].mvp = p.puuid===mvpId; });
 
   const startedMs=tsMs(meta);
   // Le détail par round (timeline, duels, éco) pèse ~28 Ko par partie et coûte
@@ -1008,6 +1090,8 @@ function normMatch(m, targetState = STATE, opts){
     // (gagnés–perdus), pas un face-à-face avec une équipe prise au hasard.
     myScore:rwon(myTeam), oppScore:multi?rlost(myTeam):rwon(oppTeam), result,
     ...(multi ? { multi } : {}),
+    ...(ffa ? { ffa:true, ffaN:players.length, ffaPlace:me?ffaPlaceOf(players, me):null } : {}),
+    mvp: !!(meStat && meStat.mvp),
     me:meStat, myTeamId:me?me.team_id:'Blue'};
 }
 
@@ -1019,7 +1103,10 @@ function normStored(entry, targetState = STATE){   // format compact : jamais de
   const myScore=num(tms[teamKey]);
   const oppScore=num(tms[teamKey==='red'?'blue':'red']);
   let rounds=myScore+oppScore; if(!rounds) rounds=24;
-  const result=myScore>oppScore?'w':(myScore<oppScore?'l':'?');
+  // Chacun pour soi : l'« équipe » est le puuid du joueur et le score des
+  // équipes (13-13) ne veut rien dire — ni victoire ni défaite à en tirer.
+  const ffa = /^deathmatch$/i.test(String(modeName(meta)).trim()) || (teamKey && teamKey!=='red' && teamKey!=='blue');
+  const result=ffa ? '?' : (myScore>oppScore?'w':(myScore<oppScore?'l':'?'));
   const ch=st.character||{}, shots=st.shots||{}, dmg=st.damage||{};
   // On reconstruit un "player" brut pour réutiliser statline (mêmes calculs partout).
   const player={ puuid:st.puuid, name:targetState.name||st.name||'?', tag:targetState.tag||'', team_id:st.team,
@@ -1039,7 +1126,7 @@ function normStored(entry, targetState = STATE){   // format compact : jamais de
     startedMs,
     id: meta.id||meta.match_id||null,
     region: meta.region||'',
-    myScore, oppScore, result, me:meStat, myTeamId:st.team||'Blue' };
+    myScore, oppScore, result, ...(ffa ? { ffa:true, ffaN:null, ffaPlace:null } : {}), me:meStat, myTeamId:st.team||'Blue' };
 }
 
 // Détecte le format puis normalise. v4 = "metadata", stored v1 = "meta"+"stats".
@@ -1091,6 +1178,11 @@ const isRanked = M => RANKED_RE.test(String((M&&M.mode)||'').toLowerCase());
 // polluerait aussi bien le découpage que les moyennes.
 const rankedOnly = list => (list||[]).filter(isRanked);
 const memberKey = m => String((m&&m.name)||'').toLowerCase()+'#'+String((m&&m.tag)||'').toLowerCase();
+/* Un identifiant d'acte ressemble à « e11a6 ». L'API renvoie parfois autre
+   chose (« Unknown » sur une seule partie de stxwyy7, le 15 octobre) : pris
+   pour un acte, il devenait « l'acte en cours » — une seule partie dedans, et
+   la forme du moment de TOUT le roster tombait à « pas assez de parties ». */
+const isActId = s => /^e\d+a\d+$/i.test(String(s||'').trim());
 
 const mean = a => a.length ? a.reduce((x,y)=>x+y,0)/a.length : null;
 // Moyenne pondérée : une partie de 24 rounds pèse plus qu'un stomp en 13.
@@ -1143,6 +1235,11 @@ function sessionStats(list){
     d:P.reduce((s,M)=>s+num(M.me.d),0),
     a:P.reduce((s,M)=>s+num(M.me.a),0),
   };
+  // Performance Score : moyenne sur les SEULES parties notées (patch 13.06).
+  // Mélanger des notes et des ACS dans une même moyenne n'aurait aucun sens.
+  const PSd=P.filter(M=>M.me.ps!=null);
+  st.psN=PSd.length;
+  st.ps=PSd.length ? wavg(PSd, M=>M.me.ps, rounds) : null;
   st.kd=st.d?st.k/st.d:st.k;
   st.kda=st.d?(st.k+st.a)/st.d:(st.k+st.a);
   st.dpr=st.totalRounds?st.d/st.totalRounds:null;          // morts par round
@@ -1678,9 +1775,10 @@ async function ensureSquadHistories(){
     // la lecture est tentée quand même, et leurs stats viennent sinon du
     // scoreboard des parties (cf. mateMatch).
     const people = sessionRoster();
-    const [lists, rrLists] = await Promise.all([
+    const [lists, rrLists, perfLists] = await Promise.all([
       Promise.all(people.map(m=>fetchHistoriqueAll(m).catch(()=>[]))),
       Promise.all(people.map(m=>fetchRRHistoryAll(m).catch(()=>[]))),
+      Promise.all(people.map(m=>fetchPerfAll(m).catch(()=>[]))),
     ]);
     people.forEach((m,i)=>{
       const key=memberKey(m), target={ puuid:null, name:m.name, tag:m.tag };
@@ -1692,6 +1790,7 @@ async function ensureSquadHistories(){
         try{ M=normalizeAny(raw, target); }catch(e){ M=null; }
         if(!M || !M.id) return;
         if(rrIdx[M.id]){ M.rr=rrIdx[M.id]; M.season=rrIdx[M.id].season; }
+        attachPerf([M], perfLists[i]);
         hist[key].push(M);
         const pu=M.players && M.players[0] && M.players[0].puuid;
         if(pu) PUUID_MEMBER[pu]=key;
@@ -2190,7 +2289,7 @@ const FRESH = {
   home:    { state:'idle', ts:0, err:'' },
   profile: { state:'idle', ts:0, err:'' },
 };
-const FRESH_LABEL = { idle:'—', cached:'en cache', loading:'mise à jour…', ok:'à jour', error:'échec · réessayer' };
+const FRESH_LABEL = { idle:'—', cached:'en cache', loading:'mise à jour…', ok:'à jour', error:'échec · réessayer', stored:'historique' };
 
 function freshAge(ts){
   if(!ts) return '';
@@ -2225,6 +2324,8 @@ function renderFresh(){
     el.innerHTML=`<span class="fdot"></span><span class="flbl">${esc(lbl)}</span>`;
     el.title = f.state==='error'
       ? `Dernier rafraîchissement échoué : ${f.err}. Clique pour réessayer.`
+      : f.state==='stored'
+      ? "Lu dans l'historique stocké, que le serveur met à jour toutes les heures — sans appel à l'API. Clique pour interroger l'API maintenant."
       : (f.state==='loading' ? 'Mise à jour en cours…'
         : `Données ${f.state==='ok'?'à jour':'affichées depuis le cache'}${age?' ('+age+')':''}. Clique pour rafraîchir.`);
   });
@@ -2263,7 +2364,26 @@ function paintRank(i, r){
   el.innerHTML=`${r.icon?`<img class="rankicon" src="${esc(r.icon)}" alt="${esc(r.tier)}" loading="lazy">`:''}<span>${esc(r.tier)}${rrTxt}</span>`;
 }
 
-async function fillRanks(){
+/* Rang d'un membre d'après sa série RR stockée : le palier et le RR après sa
+   dernière partie classée. null si la série ne dit rien d'exploitable. */
+function rankFromSeries(series){
+  const s=(series||[]).filter(e=>e && e.tier && e.tier.name);
+  const last=s[s.length-1]; if(!last) return null;
+  const name=String(last.tier.name).trim();
+  if(!name || last.tier.id===0 || /^(unrated|unranked)/i.test(name)) return null;
+  return { tier:name, rr:last.rr!=null?Number(last.rr):null, elo:last.elo!=null?Number(last.elo):null,
+           icon:(TIERS && TIERS[name.toLowerCase()]) || null, at:num(last.ts) };
+}
+
+/* Rangs de l'accueil. Ils venaient de l'API EN DIRECT, un appel par joueur, à
+   chaque chargement : 7 des 30 appels par minute de la clé, juste pour ouvrir
+   la page. Un tour des onglets puis un rechargement suffisaient à la saturer
+   (« rang n/c » partout). Le cron récupère déjà la série RR de chacun toutes
+   les heures : on la lit (zéro appel), et l'API ne sert plus que sur demande
+   (clic sur le voyant ou « Rafraîchir les rangs ») ou pour un membre que
+   l'historique ne connaît pas encore. */
+async function fillRanks(arg){
+  const live = arg===true || !!(arg && arg.type==='click');
   RANKS_FILLED = true;
   // 1) Instantané : ce qu'on savait la dernière fois.
   let newest=0;
@@ -2279,9 +2399,23 @@ async function fillRanks(){
   const region=REGION();
   setFresh('home','loading',{ ts:newest });
 
-  // 2) Rafraîchissement systématique, en paquets.
+  // 2) Historique stocké : aucun appel API.
+  let todo=ROSTER.slice();
+  if(!live){
+    await ensureSquadHistories().catch(()=>null);
+    todo=[];
+    ROSTER.forEach((m,i)=>{
+      const rk=rankFromSeries(SQUAD_RR && SQUAD_RR[memberKey(m)]);
+      if(rk){ cachePutRank(memberKey(m), rk); paintRank(i, rk); }
+      else todo.push(m);
+    });
+    cacheSave();
+    if(!todo.length){ setFresh('home','stored',{ ts:Date.now() }); return; }
+  }
+
+  // 3) Direct : sur demande, ou pour ceux que l'historique ne connaît pas.
   let failed=0, lastErr=null;
-  await pooled(ROSTER, RANK_POOL, async (m, )=>{
+  await pooled(todo, RANK_POOL, async (m, )=>{
     const i=ROSTER.indexOf(m);
     try{
       const d=(await api(`/valorant/v3/mmr/${region}/pc/${enc(m.name)}/${enc(m.tag)}`)).data||{};
@@ -2297,8 +2431,8 @@ async function fillRanks(){
     }
   });
   cacheSave();
-  if(failed) setFresh('home','error',{ ts:newest||Date.now(), err:apiErrMsg(lastErr)+` (${failed}/${ROSTER.length})` });
-  else setFresh('home','ok',{ ts:Date.now() });
+  if(failed) setFresh('home','error',{ ts:newest||Date.now(), err:apiErrMsg(lastErr)+` (${failed}/${todo.length})` });
+  else setFresh('home', live ? 'ok' : 'stored',{ ts:Date.now() });
 }
 function toggleSheet(){ $('sheet').hidden=!$('sheet').hidden; }
 
@@ -2761,7 +2895,7 @@ function renderList(){
     const art = agentArt(s);
     return `<div class="mrow ${M.result}" data-idx="${i}">
       <div class="mc-top">
-        <span class="mc-mode">${esc(M.mode)}</span>
+        <span class="mc-mode">${esc(M.mode)}</span>${M.mvp?'<span class="mc-mvp" title="MVP de la partie (meilleur Performance Score)">MVP</span>':''}
         <span class="mc-when">${esc(relTime(M.started))}</span>
         ${rrChip(M.rr)}
       </div>
@@ -2776,8 +2910,9 @@ function renderList(){
       </div>
       <div class="mc-stats">
         <span class="mc-st"><i>K / D / A</i><b>${s ? s.k+' / '+s.d+' / '+s.a : '—'}</b></span>
-        <span class="mc-st"><i>ACS</i><b>${s ? s.acs : '—'}</b></span>
-        <span class="mc-st"><i>${M.multi ? `Rounds · ${M.multi.count} équipes` : 'Score'}</i><b>${M.myScore}–${M.oppScore}</b></span>
+        ${(()=>{ const pv=perfVal(s); return `<span class="mc-st"${pv.ps?' title="Performance Score Riot (0-500)"':''}><i>${pv.lab}</i><b>${pv.v!=null?pv.v:'—'}</b></span>`; })()}
+        ${isFFA(M) ? `<span class="mc-st"><i>Kills</i><b>${s ? s.k : '—'}</b></span>`
+          : `<span class="mc-st"><i>${M.multi ? `Rounds · ${M.multi.count} équipes` : 'Score'}</i><b>${M.myScore}–${M.oppScore}</b></span>`}
         <div class="scorebadge score-mini flair-${f} sd" style="--sc:${t.c}" data-sd="${i}" title="Voir le détail du calcul">${s?sc100:'—'}${flairHTML(f)}</div>
       </div>
     </div>`;
@@ -3014,7 +3149,7 @@ function openSessionReport(key){
   const common=squad.length>1 ? `
     <div class="md-sec">Rapport commun · ${squad.length} joueurs</div>
     <div class="sx-tablewrap"><table class="sb"><thead><tr>
-      <th>Joueur</th><th>N</th><th>V-D</th><th>Indice</th><th>ACS</th><th>K/D</th><th>RR</th>
+      <th>Joueur</th><th>N</th><th>V-D</th><th>Indice</th><th title="Performance Score Riot (0-500), ACS pour les parties d'avant le patch 13.06">Perf.</th><th>K/D</th><th>RR</th>
     </tr></thead><tbody>${squad.map(r=>{
       const rt=tierOf(Math.round(r.st.index||0));
       // Même geste que dans le scoreboard : un membre du roster mène à son profil.
@@ -3025,7 +3160,7 @@ function openSessionReport(key){
         <td>${r.n}</td>
         <td><b class="w">${r.st.wins}</b>-<b class="l">${r.st.losses}</b></td>
         <td class="scell" style="color:${rt.c}">${Math.round(r.st.index||0)}</td>
-        <td>${Math.round(r.st.acs||0)}</td>
+        <td>${(()=>{ const pv=perfAgg(r.st); return pv.v!=null ? pv.v+(pv.ps?'':' <em class="sx-acs">ACS</em>') : '—'; })()}</td>
         <td>${(r.st.kd||0).toFixed(2)}</td>
         <td class="${(r.st.rrNet||0)>=0?'up':'dn'}">${r.st.rrNet!=null?signed(r.st.rrNet):'—'}</td>
       </tr>`;
@@ -3060,7 +3195,8 @@ function openSessionReport(key){
       ${sxTile('Bilan', `<i class="wv">${st.wins}</i>–<i class="lv">${st.losses}</i>`, st.winrate!=null?Math.round(st.winrate)+'% de victoires':'')}
       ${sxTile('RR', st.rrNet!=null?signed(st.rrNet):'—', st.rrGames?`sur ${st.rrGames} classée${st.rrGames>1?'s':''}`:'aucune classée', st.rrNet!=null?(st.rrNet>=0?'var(--win)':'var(--loss)'):'')}
       ${sxTile('Indice moyen', Math.round(st.index||0), esc(t.label)+dl(st.index, base&&base.index), t.c)}
-      ${sxTile('ACS', Math.round(st.acs||0), dl(st.acs, base&&base.acs))}
+      ${st.psN ? sxTile('Perf.', Math.round(st.ps), (base&&base.psN ? dl(st.ps, base.ps) : `${st.psN} partie${st.psN>1?'s':''} notée${st.psN>1?'s':''}`))
+               : sxTile('ACS', Math.round(st.acs||0), dl(st.acs, base&&base.acs))}
       ${sxTile('K/D', (st.kd||0).toFixed(2), `${st.k}/${st.d}/${st.a}`+dl(st.kd, base&&base.kd, true))}
       ${sxTile('ADR', Math.round(st.adr||0), dl(st.adr, base&&base.adr))}
       ${sxTile('HS%', Math.round(st.hs||0)+'%', dl(st.hs, base&&base.hs))}
@@ -3082,7 +3218,7 @@ function openSessionReport(key){
 
     <div class="md-sec">Les parties</div>
     <div class="sx-tablewrap"><table class="sb"><thead><tr>
-      <th>#</th><th>Map</th><th>Agent</th><th>Score</th><th>K/D/A</th><th>ACS</th><th>Indice</th><th>RR</th>
+      <th>#</th><th>Map</th><th>Agent</th><th>Score</th><th>K/D/A</th><th title="Performance Score Riot (0-500), ACS pour les parties d'avant le patch 13.06">Perf.</th><th>Indice</th><th>RR</th>
     </tr></thead><tbody>${s.matches.filter(M=>M.me).map((M,i)=>{
       const mt=tierOf(M.me.score100);
       return `<tr>
@@ -3091,7 +3227,7 @@ function openSessionReport(key){
         <td>${esc(M.me.agent)}</td>
         <td class="${M.result==='w'?'w':'l'}"><b>${M.myScore}–${M.oppScore}</b>${M.forfeit?' <em>ff</em>':''}</td>
         <td>${M.me.k}/${M.me.d}/${M.me.a}</td>
-        <td>${M.me.acs}</td>
+        <td>${(()=>{ const pv=perfVal(M.me); return pv.v+(pv.ps?'':' <em class="sx-acs">ACS</em>'); })()}${M.mvp?' <span class="pn-mvp">MVP</span>':''}</td>
         <td class="scell" style="color:${mt.c}">${M.me.score100}</td>
         <td class="${M.rr&&M.rr.change>=0?'up':'dn'}">${M.rr&&M.rr.change!=null?signed(M.rr.change):'—'}</td>
       </tr>`;
@@ -3280,6 +3416,7 @@ function scoreboardHTML(M){
   // Classement par ACS décroissant sur TOUS les joueurs de la partie (1er, 2e, …).
   [...all].sort((a,b)=>b.acs-a.acs).forEach((s,idx)=>{ s.acsRank=idx+1; });
   SB_LINES=all;   // pour ouvrir le détail du calcul au clic sur un indice
+  const hasPS = all.some(l=>l.ps!=null);   // partie d'après le patch 13.06 : la note remplace l'ACS
   const blue=all.filter(s=>s.team===detail.myTeamId), red=all.filter(s=>s.team!==detail.myTeamId);
   let rrShown = false;
   const sbRows = rows => rows.map(s=>{
@@ -3310,9 +3447,10 @@ function scoreboardHTML(M){
     return `<tr class="${me?'me':''}">
       ${posCell}
       <td class="pcol"><div class="agent">${agCell}${tierBadge(s.tierId, s.tierName)}
-        <div class="pn${prof?' pnlink':''}"${prof}><b${prof?' class="link"':''}>${esc(s.name)}</b> <span>#${esc(s.tag)}</span>${rrTag}</div></div></td>
+        <div class="pn${prof?' pnlink':''}"${prof}><b${prof?' class="link"':''}>${esc(s.name)}</b> <span>#${esc(s.tag)}</span>${s.mvp?'<span class="pn-mvp" title="MVP de la partie">MVP</span>':''}${rrTag}</div></div></td>
       <td class="scell sd" style="color:${t.c}" data-sb="${all.indexOf(s)}" title="Voir le détail du calcul">${s.score100}</td>
-      <td style="color:${sc((s.acs-130)/2)}"><b>${s.acs}</b></td>
+      ${hasPS ? `<td title="Performance Score Riot (0-500)" style="color:${s.ps!=null?sc((s.ps-150)/2):'var(--dim)'}"><b>${s.ps!=null?s.ps:'—'}</b></td>`
+              : `<td style="color:${sc((s.acs-130)/2)}"><b>${s.acs}</b></td>`}
       <td><b style="color:${sc((s.kd-0.6)*100)}">${s.k}</b>/${s.d}/${s.a}</td>
       <td style="color:${s.k-s.d>=0?'var(--win)':'var(--loss)'}">${(s.k-s.d>0?'+':'')}${s.k-s.d}</td>
       <td style="color:${sc((s.hs-10)*4)}">${s.hs}%</td>
@@ -3328,7 +3466,11 @@ function scoreboardHTML(M){
   }
   // sbRows() renseigne rrShown : il faut donc l'appeler avant de composer la note.
   let body;
-  if(detail.multi){
+  if(detail.ffa){
+    // Chacun pour soi : un seul classement, au nombre de kills.
+    const sorted=[...all].sort((a,b)=>b.k-a.k || b.acs-a.acs);
+    body=`<tbody><tr><td colspan="8" class="teamlabel blue">Classement — chacun pour soi (kills)</td></tr>${sbRows(sorted)}</tbody>`;
+  }else if(detail.multi){
     // Plusieurs équipes : un bloc par équipe. La mienne d'abord, puis la
     // gagnante, puis les autres par rounds gagnés — sans prétendre à un
     // classement exact que l'API ne donne pas.
@@ -3351,7 +3493,7 @@ function scoreboardHTML(M){
   const rrNote = rrShown
     ? `<div class="md-none">Le <b>±RR</b> n'est affiché que pour la squad : le détail d'une partie ne porte le RR d'aucun joueur, il vient de l'historique MMR accumulé de chaque membre. Pour les autres, personne ne le publie.</div>`
     : '';
-  const html=`<div class="sx-tablewrap"><table class="sb"><thead><tr><th>#</th><th class="pcol">Joueur</th><th>Indice</th><th>ACS</th><th>K/D/A</th><th>+/–</th><th>HS%</th><th>ADR</th></tr></thead>
+  const html=`<div class="sx-tablewrap"><table class="sb"><thead><tr><th>#</th><th class="pcol">Joueur</th><th>Indice</th><th${hasPS?' title="Performance Score Riot (0-500)"':''}>${hasPS?'Perf.':'ACS'}</th><th>K/D/A</th><th>+/–</th><th>HS%</th><th>ADR</th></tr></thead>
     ${body}</table></div>${note}${rrNote}`;
   return { html, detail, partialNow };
 }
@@ -3475,7 +3617,7 @@ function renderMatchModal(i){
     <div class="sd-head">
       <div class="scorebadge score-hero sd" id="mdHeroScore" title="Voir le détail du calcul" style="--sc:${t.c}">${M.me?M.me.score100:'—'}<span class="out">/100</span></div>
       <div>
-        <div class="sd-tier" style="color:${M.result==='w'?'var(--win)':'var(--loss)'}">${resultWord(M)} ${scoreText(M)}</div>
+        <div class="sd-tier" style="color:${M.result==='w'?'var(--win)':(isFFA(M)?'var(--amber)':'var(--loss)')}">${resultWord(M)} ${scoreText(M)}</div>
         <h3>${esc(M.map)}</h3>
         <div class="sd-sub mono">${esc(M.mode)}${M.me?' · '+esc(M.me.agent):''} · ${esc(relTime(M.started))}${dur?' · '+dur:''}${rr}</div>
       </div>
@@ -3483,11 +3625,41 @@ function renderMatchModal(i){
 
     <div class="md-sec">Scoreboard <em>clique un indice pour le détail du calcul</em></div>
     ${sb.html}
+    ${perfHTML(perfLineOf(M, sb.detail), M)}
 
     ${f ? factsHTML(f) : `<div class="md-empty mono">Détail round par round indisponible pour cette partie —
       il n'est fourni que par l'API sur les parties récentes.</div>`}`;
   if(f) renderRoundDetail(1);
   markScrollable();
+}
+
+/* La ligne du joueur suivi, avec sa note détaillée : celle du détail complet
+   si on l'a, sinon celle de la partie (rattachée depuis le blob cosmo-perf). */
+function perfLineOf(M, detail){
+  const same=l=>l && String(l.name||'').toLowerCase()===String(STATE.name||'').toLowerCase()
+                  && String(l.tag||'').toLowerCase()===String(STATE.tag||'').toLowerCase();
+  const fromDetail=((detail && detail.lines)||[]).find(same);
+  if(fromDetail && fromDetail.ps!=null) return fromDetail;
+  return (M && M.me && M.me.ps!=null) ? M.me : null;
+}
+/* Ta note de la partie, comme l'écran de fin de partie du jeu : la note sur
+   500, la mention, et chaque axe en hausse ou en baisse. Riot n'en publie pas
+   la formule : on affiche ce qu'il note, sans le recalculer. */
+function perfHTML(l, M){
+  if(!l || l.ps==null) return '';
+  const R=l.psR||{};
+  const axes=PS_AXES.filter(([k])=>R[k]).map(([k,lab])=>{
+    const a=PS_ARROW[R[k]]||['·','flat'];
+    return `<div class="ps-ax ${a[1]}"><b>${a[0]}</b><span>${lab}</span></div>`;
+  }).join('');
+  const pick=keys=>PS_AXES.filter(([k])=>keys.includes(R[k])).map(([,lab])=>lab);
+  const strong=pick(['double_up','up']), weak=pick(['double_down','down']);
+  const sum=(strong.length||weak.length) ? `<div class="md-none">${strong.length?`<b>Points forts</b> : ${strong.join(', ')}. `:''}${weak.length?`<b>À travailler</b> : ${weak.join(', ')}.`:''}</div>` : '';
+  return `<div class="md-sec">Ta note de performance <em>Performance Score Riot, sur 500 — remplace l'ACS depuis le patch 13.06</em></div>
+    <div class="ps-card">
+      <div class="ps-score"><b>${l.ps}</b><span>/500</span>${l.psGrade?`<em>${esc(psGradeFr(l.psGrade))}</em>`:''}${M&&M.mvp?'<i class="pn-mvp">MVP</i>':''}</div>
+      ${axes?`<div class="ps-axes">${axes}</div>`:'<div class="md-none">Le détail par axe n\'est pas disponible pour cette partie.</div>'}
+    </div>${sum}`;
 }
 
 // Ouvre la partie i : scoreboard + détail, dans une seule modale.
@@ -3594,7 +3766,7 @@ function renderPHead(m){
   if(!host || !m) return;
   const art = ACCOUNT ? imgURL(ACCOUNT.card) : '';
   // bustportrait.png n'existe pas (404) chez valorant-api : c'est fullportrait.
-  const bust = m.customImg || (m.uuid ? `${MEDIA}/${encodeURIComponent(m.uuid)}/fullportrait.png` : '');
+  const bust = m.customImg ? lightImg(m.customImg) : (m.uuid ? `${MEDIA}/${encodeURIComponent(m.uuid)}/fullportrait.png` : '');
   const lvl = (ACCOUNT && ACCOUNT.level!=null)
     ? `<span class="pb-lvl" title="Niveau de compte Riot">niv. ${ACCOUNT.level}</span>` : '';
   host.innerHTML=`
@@ -3628,6 +3800,8 @@ function paintProfile(mmr){
   populateCompareFilter();
   renderRank(mmr, overall); renderCurvePeriod(); renderPeakActs(); refreshSessions();
   renderActCard();
+  GOAL_EDIT=false; GOAL_PICK=null;
+  renderGoalCard();
   if(STATE.matches.length) renderList();
   updateMoreBtn();
 }
@@ -3636,7 +3810,7 @@ function paintProfile(mmr){
 function currentAct(){
   for(let i=(RR_FULL||[]).length-1; i>=0; i--){
     const sn = RR_FULL[i] && RR_FULL[i].season;
-    if(sn) return sn;
+    if(isActId(sn)) return sn;
   }
   return null;
 }
@@ -3689,7 +3863,7 @@ function renderActCard(){
         <div class="act-lab mono">${label}</div>
         <div class="act-wl"><b class="w">${st.wins}</b>V · <b class="l">${st.losses}</b>D
           <span class="act-wr">${st.winrate!=null?Math.round(st.winrate)+'%':'—'}</span>${rr}</div>
-        <div class="vh-line">K/D <b>${(st.kd||0).toFixed(2)}</b> · <b>${Math.round(st.acs||0)}</b> ACS ·
+        <div class="vh-line">K/D <b>${(st.kd||0).toFixed(2)}</b> · <b>${perfAgg(st).v}</b> ${perfAgg(st).lab} ·
           <b>${Math.round(st.hs||0)}%</b> HS${st.kast!=null?` · <b>${Math.round(st.kast)}%</b> KAST`:''}</div>
       </div>
     </div>
@@ -3725,19 +3899,49 @@ async function loadProfile(){
   if(!painted){ $('app').hidden=true; status('load','Récupération des données HenrikDev…'); }
   setFresh('profile','loading',{ ts: painted ? cached.ts : 0 });
 
+  /* L'historique stocké part TOUT DE SUITE, en parallèle de l'API. Avant, il
+     n'était lu qu'après l'appel « compte » : quand la clé HenrikDev saturait,
+     on restait sur « Récupération des données » alors que tout l'historique
+     était là, à une lecture de blob. Maintenant, sans cache, le profil se
+     peint depuis le stocké dès qu'il arrive ; l'API le complète ensuite. */
+  let live=false;                               // le direct a-t-il déjà repeint l'écran ?
+  const storedP=Promise.allSettled([fetchHistoriqueAll(STATE), fetchRRHistoryAll(STATE), fetchPerfAll(STATE)]);
+  if(!painted){
+    storedP.then(async ([b, r, pf])=>{
+      const blob=b.status==='fulfilled'?(b.value||[]):[], rr=r.status==='fulfilled'?(r.value||[]):[];
+      if(!blob.length && !rr.length) return;
+      await Promise.all([ensureTiers(), ensureAgents(), ensureMaps(), ensureWeapons()]).catch(()=>{});
+      if(live || painted || memberKey(STATE)!==key) return;
+      try{
+        STATE.allMatches=blob.map(m=>normalizeAny(m)).filter(Boolean);
+        attachPerf(STATE.allMatches, pf.status==='fulfilled'?pf.value:null);
+        const rrIdx=rrIndexFromSeries(rr);
+        STATE.allMatches.forEach(M=>{ if(M&&M.id&&rrIdx[M.id]){ M.rr=rrIdx[M.id]; M.season=rrIdx[M.id].season; } });
+        PROFILE_SHOWN=Math.min(FRESH_SIZE, STATE.allMatches.length);
+        STATE.matches=STATE.allMatches.slice(0, PROFILE_SHOWN);
+        RR_FULL=rr;
+        const rk=rankFromSeries(rr) || {};
+        paintProfile({ tier:rk.tier||'', rr:rk.rr!=null?rk.rr:null, elo:rk.elo!=null?rk.elo:null, peak:'', icon:rk.icon||null });
+        clearStatus(); $('app').hidden=false;
+        painted=true;
+        setFresh('profile','stored',{ ts:Date.now() });
+      }catch(e){ /* le direct prendra le relais */ }
+    });
+  }
+
   try{
     const acc=await api(`/valorant/v2/account/${n}/${t}`);
     const ad=(acc && acc.data) || {};
     STATE.puuid=ad.puuid;
     const info=accountInfo(ad);
     if(info){ ACCOUNT=info; renderPHead(CURRENT_MEMBER); }
-    const [mmrR,histR,matchR,blobR,rrBlobR]=await Promise.allSettled([
+    const [mmrR,histR,matchR]=await Promise.allSettled([
       api(`/valorant/v3/mmr/${region}/pc/${n}/${t}`),
       api(`/valorant/v2/mmr-history/${region}/pc/${n}/${t}`),
       api(`/valorant/v4/matches/${region}/pc/${n}/${t}?size=${FRESH_SIZE}`), // données fraîches du moment
-      fetchHistoriqueAll(STATE),                                              // historique matchs accumulé (blob + anciens pseudos)
-      fetchRRHistoryAll(STATE)                                                // progression RR accumulée (blob + anciens pseudos)
     ]);
+    // Historique accumulé (blob + anciens pseudos) : déjà demandé plus haut.
+    const [blobR, rrBlobR, perfR]=await storedP;
     // Si les trois appels HenrikDev ont échoué, il n'y a rien de neuf à montrer.
     const allDown = [mmrR,histR,matchR].every(r=>r.status==='rejected');
     if(allDown) throw (matchR.reason || histR.reason || mmrR.reason || new Error('indisponible'));
@@ -3761,6 +3965,7 @@ async function loadProfile(){
     const fresh=matchR.status==='fulfilled'?(matchR.value.data||[]):[];
     const blob =blobR.status==='fulfilled'?(blobR.value||[]):[];
     STATE.allMatches=combineMatches(fresh, blob).map(m=>normalizeAny(m)).filter(Boolean);
+    attachPerf(STATE.allMatches, perfR.status==='fulfilled'?perfR.value:null);
     // Join RR/rang + acte par match_id (depuis la série RR accumulée -> long terme).
     const rrIdx=rrIndexFromSeries(rrSeries);
     STATE.allMatches.forEach(M=>{ if(M&&M.id&&rrIdx[M.id]){ M.rr=rrIdx[M.id]; M.season=rrIdx[M.id].season; } });
@@ -3768,6 +3973,7 @@ async function loadProfile(){
     STATE.matches=STATE.allMatches.slice(0, PROFILE_SHOWN);
     RR_FULL = rrSeries;
 
+    live=true;
     paintProfile(mmr);
     clearStatus(); $('app').hidden=false;
     setFresh('profile','ok',{ ts:Date.now() });
@@ -3786,8 +3992,9 @@ async function loadProfile(){
     setTimeout(()=>{ if(memberKey(STATE)===memberKey(who)) saveHistorique(who.name, who.tag, region); }, 5000);
   }catch(e){
     if(painted){
-      // On garde ce qui est à l'écran : le voyant dit que c'est périmé.
-      setFresh('profile','error',{ ts:cached.ts, err:apiErrMsg(e) });
+      // On garde ce qui est à l'écran (cache ou historique stocké) : le voyant
+      // dit que le direct a échoué.
+      setFresh('profile','error',{ ts:(cached&&cached.ts)||Date.now(), err:apiErrMsg(e) });
     }else{
       setFresh('profile','error',{ ts:0, err:apiErrMsg(e) });
       status('err','<b>Erreur API :</b> '+apiErrMsg(e));
@@ -4124,6 +4331,7 @@ function computeMemberStats(member, normMatches, n) {
     kd: kSum / Math.max(dSum, 1),
     hs: Math.round(gs.reduce((s, g) => s + g.me.hs, 0) / gs.length),
     acs: Math.round(gs.reduce((s, g) => s + g.me.acs, 0) / gs.length),
+    ...(()=>{ const n=gs.filter(g=>g.me.ps!=null); return { ps: n.length ? Math.round(n.reduce((s,g)=>s+g.me.ps,0)/n.length) : null, psN:n.length }; })(),
     dd: Math.round(gs.reduce((s, g) => s + g.me.dd, 0) / gs.length),
   };
 }
@@ -4151,6 +4359,7 @@ function computeBadges() {
       kd: kSum / Math.max(dSum, 1),
       hs: norm.reduce((a,m) => a + m.me.hs, 0) / norm.length,
       acs: norm.reduce((a,m) => a + m.me.acs, 0) / norm.length,
+      ...(()=>{ const n=norm.filter(m=>m.me.ps!=null); return { ps: n.length ? n.reduce((a,m)=>a+m.me.ps,0)/n.length : null, psN:n.length }; })(),
       dd: norm.reduce((a,m) => a + m.me.dd, 0) / norm.length,
       nightCount,
     };
@@ -4168,7 +4377,11 @@ function computeBadges() {
     { emoji:'💀', title:'Bourreau',          desc:'meilleur ratio K/D',      w: max(eligible,'kd'),  key:'kd',  fmt: v => v.toFixed(2) },
     { emoji:'🎯', title:'Headhunter',        desc:'meilleur HS%',            w: max(eligible,'hs'),  key:'hs',  fmt: v => `${Math.round(v)}%` },
     { emoji:'💪', title:'Le Tank',           desc:'meilleur ΔDmg/round',    w: max(eligible,'dd'),  key:'dd',  fmt: v => `${v>=0?'+':''}${Math.round(v)}` },
-    { emoji:'⚡', title:'ACS King',          desc:'meilleur ACS moyen',     w: max(eligible,'acs'), key:'acs', fmt: v => `${Math.round(v)} ACS` },
+    // Depuis le patch 13.06, le badge suit le Performance Score — dès que tous
+    // les éligibles ont au moins 3 parties notées, sinon l'ACS comme avant.
+    (eligible.every(s=>s.psN>=3)
+      ? { emoji:'⚡', title:'Perf. King',    desc:'meilleur Performance Score moyen', w: max(eligible,'ps'), key:'ps', fmt: v => `${Math.round(v)} perf.` }
+      : { emoji:'⚡', title:'ACS King',      desc:'meilleur ACS moyen',     w: max(eligible,'acs'), key:'acs', fmt: v => `${Math.round(v)} ACS` }),
   ];
   if (eligibleKonstant.length) {
     out.push({ emoji:'🧊', title:'Le plus konstant', desc:'indice le plus stable (σ min)', w: min(eligibleKonstant,'stdev'), key:'stdev', fmt: v => `σ ${v.toFixed(1)}` });
@@ -4213,7 +4426,7 @@ function renderLeaderboard() {
     const rankHtml = (!empty && idx < 3)
       ? `<div class="lb-rank medal">${medals[idx]}</div>`
       : `<div class="lb-rank">${idx+1}.</div>`;
-    const bustSrc = esc(m.customImg || `${MEDIA}/${m.uuid}/fullportrait.png`); // bustportrait.png n'existe pas (404) chez valorant-api
+    const bustSrc = esc(m.customImg ? lightImg(m.customImg) : `${MEDIA}/${m.uuid}/fullportrait.png`); // bustportrait.png n'existe pas (404) chez valorant-api
     const bustImg = m.customImg
       ? `<img src="${bustSrc}" alt="" style="width:100%;left:0;top:0;height:100%;object-fit:cover;">`
       : `<img src="${bustSrc}" alt="">`;
@@ -4327,7 +4540,7 @@ function renderVs() {
     { label:'Indice',       va:a.avg, vb:b.avg, fmt: v => v },
     { label:'Winrate',      va:a.wr,  vb:b.wr,  fmt: v => v+'%' },
     { label:'K/D',          va:a.kd,  vb:b.kd,  fmt: v => v.toFixed(2) },
-    { label:'ACS',          va:a.acs, vb:b.acs, fmt: v => v },
+    (a.psN && b.psN ? { label:'Perf.', va:a.ps, vb:b.ps, fmt: v => v } : { label:'ACS', va:a.acs, vb:b.acs, fmt: v => v }),
     { label:'HS%',          va:a.hs,  vb:b.hs,  fmt: v => v+'%' },
     { label:'Δ Dmg/round',  va:a.dd,  vb:b.dd,  fmt: v => (v>=0?'+':'')+v },
   ];
@@ -4594,7 +4807,7 @@ function dashDayKey(ms){
 function dashActs(rrByKey){
   const first={};
   Object.values(rrByKey||{}).forEach(s=>(s||[]).forEach(e=>{
-    if(!e || !e.season) return;
+    if(!e || !isActId(e.season)) return;               // « Unknown » n'est pas un acte
     const t=num(e.ts);
     if(first[e.season]==null || t<first[e.season]) first[e.season]=t;
   }));
@@ -4749,7 +4962,9 @@ function dashTable(perMember, range){
     const d=(a,b)=>(prev && cur.n && a!=null && b!=null) ? a-b : null;
     return { key:p.key, name:p.name, n:cur.n, wins:cur.wins, winrate:cur.winrate, rrNet:cur.rrNet,
       hs:cur.hs, acs:cur.acs, adr:cur.adr, kd:cur.n?cur.kd:null, index:cur.index,
+      ps:cur.psN?cur.ps:null, psN:cur.psN,
       delta:{ winrate:d(cur.winrate, prev&&prev.winrate), hs:d(cur.hs, prev&&prev.hs), acs:d(cur.acs, prev&&prev.acs),
+              ps:(cur.psN && prev && prev.psN>=DASH_MIN_PREV) ? cur.ps-prev.ps : null,
               adr:d(cur.adr, prev&&prev.adr), kd:d(cur.kd, prev&&prev.kd), index:d(cur.index, prev&&prev.index) } };
   });
 }
@@ -4816,6 +5031,7 @@ function dashRecords(perMember, sessions, range){
     const me=M.me;
     if(num(me.shots)>=DASH_HS_MIN_SHOTS && (!rec.hs || me.hs>rec.hs.value)) rec.hs={ key, value:me.hs, t:M.startedMs, map:M.map };
     if(!rec.acs || me.acs>rec.acs.value) rec.acs={ key, value:me.acs, t:M.startedMs, map:M.map };
+    if(me.ps!=null && (!rec.ps || me.ps>rec.ps.value)) rec.ps={ key, value:Math.round(me.ps), t:M.startedMs, map:M.map, grade:me.psGrade||null };
   });
   const perDay={};
   entries.forEach(({key,M})=>{ const k=key+'|'+dashDayKey(M.startedMs); perDay[k]=(perDay[k]||0)+1; });
@@ -4874,6 +5090,330 @@ function dashKpis(table){
   const best=rr.slice().sort((a,b)=>b.rrNet-a.rrNet)[0]||null;
   return { games:n, players:act.length, winrate:n?wins/n*100:null,
     rrNet:rr.length?rr.reduce((s,r)=>s+r.rrNet,0):null, best: best && best.rrNet>0 ? best : null };
+}
+
+/* ===================== OBJECTIFS D'ACTE : CALCULS =====================
+   Un objectif = un palier à atteindre avant la fin de l'acte. Tout ce qui suit
+   est PUR et ne lit que des données réelles : la série RR du joueur, ses
+   parties de l'acte, les dates de l'acte (valorant-api). Aucun repère inventé :
+   les « leviers » comparent le joueur à LUI-MÊME (ses victoires contre ses
+   défaites), jamais à une moyenne de rang qu'on n'a pas. */
+const GOAL_MIN_GAMES = 5;          // en dessous, ni projection ni winrate requis
+const GOAL_PICK_MIN = 3;           // parties minimum pour juger un agent ou une map
+const TIER_FR = { iron:'Fer', bronze:'Bronze', silver:'Argent', gold:'Or', platinum:'Platine', diamond:'Diamant',
+  ascendant:'Ascendant', immortal:'Immortel', radiant:'Radiant' };
+function tierFr(name){
+  const m=String(name||'').trim().match(/^([a-z]+)\s*(\d)?$/i);
+  if(!m) return String(name||'');
+  return (TIER_FR[m[1].toLowerCase()]||m[1])+(m[2]?' '+m[2]:'');
+}
+// Numéro de palier d'un nom, dans la table valorant-api de l'épisode en cours.
+function tierNumOf(name, byNum){
+  const n=String(name||'').trim().toLowerCase();
+  if(!n) return null;
+  for(const k in (byNum||{})) if(String((byNum[k]&&byNum[k].name)||'').trim().toLowerCase()===n) return Number(k);
+  return null;
+}
+// L'acte en cours d'après valorant-api : { start, end, name } ou null.
+function actWindowOf(seasons, now){
+  const a=(seasons||[]).find(s=>s && /act/i.test(String(s.type||'')) && s.start<=now && now<=s.end);
+  return a ? { start:a.start, end:a.end, name:a.name||'' } : null;
+}
+
+/* Ce qui sépare les victoires des défaites, cet acte. C'est une corrélation,
+   pas une cause : on le dit comme tel (« là où elles se séparent le plus »). */
+function goalLevers(matches, act){
+  const M=(matches||[]).filter(x=>x && x.me && x.season===act && isRanked(x) && (x.result==='w' || x.result==='l'));
+  const W=M.filter(x=>x.result==='w'), L=M.filter(x=>x.result==='l');
+  if(W.length<3 || L.length<3) return [];
+  const avg=(arr,f)=>{ const v=arr.map(f).filter(x=>x!=null && !isNaN(x)); return v.length>=3 ? mean(v) : null; };
+  const defs=[
+    { k:'ps',  lab:'Note de performance', dec:0, unit:'', f:x=>x.me.ps,                                      better:1 },
+    { k:'dpr', lab:'Morts par round',     dec:2, unit:'', f:x=>x.me.rounds ? x.me.d/x.me.rounds : null,      better:-1 },
+    { k:'adr', lab:'Dégâts par round',    dec:0, unit:'', f:x=>x.me.adr,                                     better:1 },
+    { k:'hs',  lab:'HS%',                 dec:0, unit:'%', f:x=>x.me.hs,                                     better:1 },
+    { k:'kd',  lab:'K/D',                 dec:2, unit:'', f:x=>x.me.d ? x.me.k/x.me.d : x.me.k,              better:1 },
+  ];
+  return defs.map(d=>{
+    const w=avg(W,d.f), l=avg(L,d.f);
+    if(w==null || l==null) return null;
+    return Object.assign({}, d, { w, l, rel:(w-l)/Math.max(Math.abs(l),1e-6)*d.better, f:undefined });
+  }).filter(x=>x && x.rel>0.04).sort((a,b)=>b.rel-a.rel).slice(0,2);
+}
+
+// Agents et maps qui rapportent (ou coûtent) le plus de RR par partie, cet acte.
+function goalPicks(matches, act){
+  const M=(matches||[]).filter(x=>x && x.me && x.season===act && isRanked(x) && x.rr && x.rr.change!=null);
+  const group=f=>{
+    const g={};
+    M.forEach(x=>{ const k=f(x); if(!k || k==='?' || k==='—') return; const r=g[k]||(g[k]={ k, n:0, rr:0 }); r.n++; r.rr+=num(x.rr.change); });
+    return Object.values(g).filter(r=>r.n>=GOAL_PICK_MIN).map(r=>Object.assign(r,{ per:r.rr/r.n })).sort((a,b)=>b.per-a.per);
+  };
+  const ag=group(x=>x.me.agent), mp=group(x=>x.map);
+  // Le pire n'est nommé que s'il coûte vraiment (RR par partie < 0) — même
+  // seul éligible : une map à −16 RR/partie se signale, qu'il y en ait d'autres ou non.
+  const worst=a=>a.length && a[a.length-1].per<0 ? a[a.length-1] : null;
+  return { bestAgent:ag[0] && ag[0].per>0 ? ag[0] : null, worstAgent:worst(ag),
+           bestMap:mp[0] && mp[0].per>0 ? mp[0] : null, worstMap:worst(mp) };
+}
+
+/* Le plan complet. o = { series, matches, goal:{act,tier,note}, act:{start,end}|null,
+   now, byNum (TIER_BY_NUM), offset (palier = floor(elo/100) + offset) }. */
+function goalPlan(o){
+  const DAY=86400000, now=o.now;
+  const pts=(o.series||[]).filter(e=>e && e.elo!=null && num(e.ts)>0).slice().sort((a,b)=>a.ts-b.ts);
+  const cur=pts[pts.length-1];
+  const tNum=tierNumOf(o.goal && o.goal.tier, o.byNum);
+  if(!cur || tNum==null) return null;
+  const act=o.goal.act, offset=o.offset;
+  const targetElo=(tNum-offset)*100, curElo=Number(cur.elo);
+  const actPts=pts.filter(e=>e.season===act);
+  const first=actPts[0];
+  // Niveau au début de l'acte : AVANT la première partie de l'acte.
+  const startElo = first ? Number(first.elo)-(first.change!=null && !isNaN(first.change) ? Number(first.change) : 0) : curElo;
+  const remaining=targetElo-curElo, span=targetElo-startElo;
+  const progress = remaining<=0 ? 1 : (span>0 ? Math.max(0, Math.min(1, (curElo-startElo)/span)) : 0);
+
+  const ch=actPts.map(e=>e.change).filter(c=>c!=null && !isNaN(c)).map(Number);
+  const W=ch.filter(c=>c>0), L=ch.filter(c=>c<0), n=ch.length;
+  const avgWin=W.length?mean(W):null, avgLoss=L.length?-mean(L):null;
+  const netPer=n ? ch.reduce((a,c)=>a+c,0)/n : null;
+  const enough=n>=GOAL_MIN_GAMES;
+
+  const startT=(o.act && o.act.start) || (first ? first.ts : now), endT=(o.act && o.act.end) || null;
+  const daysElapsed=Math.max(1, (now-startT)/DAY);
+  const daysLeft=endT!=null ? Math.max(0, (endT-now)/DAY) : null;
+  const pace=n/daysElapsed;                                       // parties classées par jour, cet acte
+  const gamesLeft=daysLeft!=null ? pace*daysLeft : null;          // à ce rythme, d'ici la fin de l'acte
+  const projected=(enough && gamesLeft!=null) ? curElo+netPer*gamesLeft : null;
+
+  let status='unknown';
+  if(remaining<=0) status='reached';
+  else if(projected!=null) status = projected>=targetElo ? 'ontrack' : 'behind';
+
+  const gamesNeeded=(remaining>0 && enough && netPer>0) ? Math.ceil(remaining/netPer) : null;
+  const neededPace=(gamesNeeded!=null && daysLeft) ? gamesNeeded/Math.max(daysLeft,1) : null;
+  const rrPerDay=(remaining>0 && daysLeft!=null) ? remaining/Math.max(daysLeft,1) : null;
+  // Winrate qui atteint l'objectif en jouant au rythme actuel d'ici la fin :
+  // w·gainMoyen − (1−w)·perteMoyenne = RR restants / parties restantes.
+  const reqWr=(remaining>0 && enough && avgWin && avgLoss && gamesLeft>=1)
+    ? (remaining/gamesLeft+avgLoss)/(avgWin+avgLoss) : null;
+  const winsOnly=(remaining>0 && avgWin) ? Math.ceil(remaining/avgWin) : null;
+
+  // Prochain palier, et les bornes de paliers entre le départ et l'objectif.
+  const nb=(Math.floor(curElo/100)+1)*100, nbNum=Math.floor(nb/100)+offset;
+  const next=(remaining>0 && o.byNum && o.byNum[nbNum])
+    ? { name:o.byNum[nbNum].name, rr:nb-curElo, wins:avgWin ? Math.ceil((nb-curElo)/avgWin) : null } : null;
+  const steps=[];
+  for(let e=Math.ceil(Math.min(startElo,curElo)/100)*100; e<=targetElo; e+=100){
+    const tn=Math.floor(e/100)+offset;
+    steps.push({ elo:e, name:(o.byNum && o.byNum[tn] && o.byNum[tn].name)||'', passed:curElo>=e });
+  }
+  const projTier = projected!=null && o.byNum ? (o.byNum[Math.floor(projected/100)+offset]||null) : null;
+
+  return { act, tier:o.goal.tier, note:o.goal.note||'', curElo, curTier:(cur.tier && cur.tier.name)||'', curRR:cur.rr,
+    startElo, targetElo, remaining, progress, steps,
+    n, wins:W.length, losses:L.length, wr:n ? W.length/n : null, avgWin, avgLoss, netPer, enough,
+    pace, daysLeft, daysElapsed, gamesLeft, projected, projTier:projTier && projTier.name, projRR: projected!=null ? ((Math.round(projected)%100)+100)%100 : null,
+    status, gamesNeeded, neededPace, rrPerDay, reqWr, winsOnly, next,
+    levers:goalLevers(o.matches, act), picks:goalPicks(o.matches, act) };
+}
+
+/* ===================== OBJECTIFS D'ACTE : AFFICHAGE ===================== */
+let GOALS=null, SEASONS=null, GOAL_EDIT=false, GOAL_PICK=null;
+
+async function ensureSeasons(){
+  if(SEASONS) return SEASONS;
+  try{
+    const r=await fetch('https://valorant-api.com/v1/seasons');
+    if(r.ok){
+      const d=await r.json();
+      SEASONS=(d.data||[]).map(x=>({ type:String(x.type||''), name:x.displayName||'', start:Date.parse(x.startTime), end:Date.parse(x.endTime) }))
+        .filter(x=>x.start && x.end);
+    }
+  }catch(e){ /* sans dates d'acte : pas de compte à rebours, le reste marche */ }
+  return SEASONS||[];
+}
+async function loadGoals(force){
+  if(GOALS && !force) return GOALS;
+  try{
+    const r=await fetch('/.netlify/functions/goals');
+    const d=r.ok ? await r.json() : {};
+    GOALS=(d && d.goals) || {};
+  }catch(e){ GOALS=GOALS||{}; }
+  return GOALS;
+}
+
+const gFmt1 = v => v==null||isNaN(v) ? '—' : (Math.round(v*10)/10).toString().replace('.',',');
+const gPct  = v => v==null||isNaN(v) ? '—' : Math.round(v*100)+' %';
+const gSign = v => v==null||isNaN(v) ? '—' : (v>0?'+':(v<0?'−':''))+gFmt1(Math.abs(v));
+const tierIcon = name => (name && TIERS && TIERS[String(name).toLowerCase()]) || '';
+const GOAL_STATUS = {
+  reached:['✓','Objectif atteint','up'], ontrack:['▲','Dans les temps','up'],
+  behind:['▼','En retard','dn'], unknown:['…','Trop tôt pour juger','flat'],
+};
+// Les paliers qu'on peut viser : au-dessus du palier actuel, jusqu'à Radiant.
+function goalTierOptions(curName){
+  const curNum=tierNumOf(curName, TIER_BY_NUM);
+  return Object.keys(TIER_BY_NUM||{}).map(Number).sort((a,b)=>a-b)
+    .filter(n=>/^(iron|bronze|silver|gold|platinum|diamond|ascendant|immortal) [1-3]$|^radiant$/i.test(String(TIER_BY_NUM[n].name||'').trim()))
+    .filter(n=>curNum==null || n>curNum)
+    .map(n=>TIER_BY_NUM[n].name.trim());
+}
+
+function goalBodyHTML(p){
+  const st=GOAL_STATUS[p.status]||GOAL_STATUS.unknown;
+  const span=Math.max(1, p.targetElo-p.startElo);
+  const pos=e=>Math.max(0, Math.min(100, (e-p.startElo)/span*100));
+  const ticks=p.steps.filter(s=>s.elo>p.startElo && s.elo<p.targetElo).map(s=>
+    `<i class="gl-tick${s.passed?' on':''}" style="left:${pos(s.elo).toFixed(1)}%" title="${esc(tierFr(s.name))}"><em>${esc(tierShort(s.name))}</em></i>`).join('');
+  const below = p.curElo<p.startElo && p.remaining>0
+    ? `<div class="md-none">Tu es ${Math.round(p.startElo-p.curElo)} RR sous ton niveau du début d'acte : la barre repart de là.</div>` : '';
+  const tile=(lab,val,sub,cls)=>`<div class="gl-fig${cls?' '+cls:''}"><span>${lab}</span><b>${val}</b>${sub?`<em>${sub}</em>`:''}</div>`;
+  let figs=tile('Il te reste', p.remaining>0?`${Math.round(p.remaining)} RR`:'0 RR',
+    `${esc(tierFr(p.curTier))}${p.curRR!=null?` · ${p.curRR} RR`:''} → ${esc(tierFr(p.tier))}`);
+  if(p.daysLeft!=null) figs+=tile('Temps restant', `${Math.ceil(p.daysLeft)} j`, p.rrPerDay!=null?`≈ ${gFmt1(p.rrPerDay)} RR à prendre par jour`:'');
+  if(p.enough){
+    figs+=tile('Ton rythme', `${gFmt1(p.pace)} partie${p.pace>=2?'s':''}/j`, `${gSign(p.netPer)} RR par partie · ${p.wins}V ${p.losses}D`);
+    if(p.remaining>0){
+      figs+= p.gamesNeeded!=null
+        ? tile('À ce rythme', `≈ ${p.gamesNeeded} parties`, p.neededPace!=null?`soit ${gFmt1(p.neededPace)} par jour d'ici la fin`:'')
+        : tile('À ce rythme', 'tu recules', `${gSign(p.netPer)} RR par partie : il faut changer quelque chose`, 'dn');
+      if(p.reqWr!=null){
+        const reach = p.reqWr>1 ? 'hors d\'atteinte en jouant à ce rythme' : (p.reqWr<=p.wr ? 'tu es déjà au-dessus ✓' : `tu es à ${gPct(p.wr)}`);
+        figs+=tile('Winrate nécessaire', p.reqWr>1?'> 100 %':gPct(Math.max(0,p.reqWr)),
+          `${reach} · +${gFmt1(p.avgWin)} / −${gFmt1(p.avgLoss)} RR par partie`, p.reqWr>1?'dn':(p.reqWr<=p.wr?'up':''));
+      }
+    }
+    // Projection affichée seulement quand on monte : prolonger une pente
+    // négative sur 80 jours donne « Bronze 3 », un chiffre qui décourage sans
+    // rien apprendre (« tu recules » le dit déjà, juste à côté).
+    if(p.projected!=null && p.netPer>0) figs+=tile('Projection fin d\'acte', p.projTier?esc(tierFr(p.projTier)):String(Math.round(p.projected)),
+      p.projTier?`${p.projRR} RR · si tu gardes ce rythme`:'', st[2]);
+  }else{
+    figs+=tile('Projection', '—', `encore ${GOAL_MIN_GAMES-p.n} partie${GOAL_MIN_GAMES-p.n>1?'s':''} classée${GOAL_MIN_GAMES-p.n>1?'s':''} cet acte pour la calculer`);
+  }
+  const next = p.next ? `<div class="gl-line"><b>Prochain palier</b> : ${esc(tierFr(p.next.name))} dans <b>${Math.round(p.next.rr)} RR</b>${p.next.wins?` — ≈ ${p.next.wins} victoire${p.next.wins>1?'s':''} à +${gFmt1(p.avgWin)} RR`:''}.</div>` : '';
+  const fmtL=l=>`${l.dec?gFmt1(l.w).replace(/,(\d)$/,',$10'):Math.round(l.w)}${l.unit}`;
+  const levers = p.levers.length ? `<div class="gl-sub">Là où tes victoires et tes défaites se séparent le plus, cet acte</div>
+    <ul class="gl-levers">${p.levers.map(l=>`<li><b>${esc(l.lab)}</b> : ${l.dec?Number(l.w).toFixed(l.dec).replace('.',','):Math.round(l.w)}${l.unit} en victoire, ${l.dec?Number(l.l).toFixed(l.dec).replace('.',','):Math.round(l.l)}${l.unit} en défaite.</li>`).join('')}</ul>
+    <div class="md-none">C'est une comparaison de toi à toi, pas une moyenne de rang : c'est là que se joue la différence entre tes bonnes et tes mauvaises parties.</div>` : '';
+  const pk=p.picks, pick=(r,unit)=>`<b>${esc(r.k)}</b> (${gSign(r.per)} RR/partie sur ${r.n})`;
+  const picks=[pk.bestAgent&&`agent : ${pick(pk.bestAgent)}`, pk.bestMap&&`map : ${pick(pk.bestMap)}`].filter(Boolean);
+  const avoid=[pk.worstAgent&&pick(pk.worstAgent), pk.worstMap&&pick(pk.worstMap)].filter(Boolean);
+  const picksHTML=(picks.length||avoid.length) ? `<div class="gl-sub">Ce qui te fait monter, cet acte</div>
+    <div class="gl-line">${picks.length?`Le plus rentable — ${picks.join(' · ')}.`:''} ${avoid.length?`Ce qui te coûte — ${avoid.join(' · ')}.`:''}</div>` : '';
+  void fmtL;
+  return `<div class="gl-head">
+      <div class="gl-rk">${tierIcon(p.curTier)?`<img src="${esc(tierIcon(p.curTier))}" alt="">`:''}<span>${esc(tierFr(p.curTier))}${p.curRR!=null?` · ${p.curRR} RR`:''}</span></div>
+      <div class="gl-arrow">→</div>
+      <div class="gl-rk target">${tierIcon(p.tier)?`<img src="${esc(tierIcon(p.tier))}" alt="">`:''}<span>${esc(tierFr(p.tier))}</span></div>
+      <div class="gl-status ${st[2]}"><b>${st[0]}</b> ${st[1]}</div>
+    </div>
+    <div class="gl-bar" title="${Math.round(p.progress*100)} % du chemin depuis ton niveau de début d'acte">
+      <div class="gl-fill" style="width:${(p.progress*100).toFixed(1)}%"></div>${ticks}
+      <i class="gl-me" style="left:${(p.progress*100).toFixed(1)}%"></i>
+    </div>
+    <div class="gl-ends"><span>début d'acte</span><span>${Math.round(p.progress*100)} %</span><span>${esc(tierFr(p.tier))}</span></div>
+    ${below}
+    <div class="gl-figs">${figs}</div>
+    ${next}${levers}${picksHTML}
+    ${p.note?`<div class="gl-note">« ${esc(p.note)} »</div>`:''}`;
+}
+
+function goalFormHTML(g, curTier){
+  const opts=goalTierOptions(curTier);
+  const sel=GOAL_PICK || (g && g.tier) || opts[Math.min(2, opts.length-1)] || '';
+  return `<div class="gl-form">
+    <label>Palier visé <select id="glTier">${opts.map(t=>`<option value="${esc(t)}"${t.toLowerCase()===String(sel).toLowerCase()?' selected':''}>${esc(tierFr(t))}</option>`).join('')}</select></label>
+    <label>Note <em>facultatif</em> <input id="glNote" maxlength="140" placeholder="ex : Plat avant les vacances" value="${esc((g&&g.note)||'')}"></label>
+    <label>Clé <em>REFRESH_TOKEN, ou GOALS_TOKEN si tu en as créé une pour les potes</em> <input id="glKey" type="password" autocomplete="off"></label>
+    <div class="gl-actions"><button class="btn" type="button" data-goal-save>Enregistrer</button>
+      <button class="btn ghost" type="button" data-goal-cancel>Annuler</button>
+      ${g?'<button class="btn ghost" type="button" data-goal-del>Supprimer l\'objectif</button>':''}</div>
+    <div class="gl-msg" id="glMsg"></div>
+  </div>`;
+}
+
+// Propositions : le palier suivant, le début du rang suivant, et un cran au-dessus.
+function goalSuggestHTML(curName, curElo){
+  const opts=goalTierOptions(curName); if(!opts.length) return '';
+  const curNum=tierNumOf(curName, TIER_BY_NUM);
+  const pickIdx=[0, opts.findIndex(t=>/ 1$/.test(t)), opts.findIndex(t=>/ 1$/.test(t))+3].filter((x,i,a)=>x>=0 && x<opts.length && a.indexOf(x)===i);
+  const btns=pickIdx.map(i=>{
+    const t=opts[i], n=tierNumOf(t, TIER_BY_NUM);
+    const gap=(curNum!=null && curElo!=null) ? Math.round((n-ELO_TIER_OFFSET)*100-curElo) : null;
+    return `<button class="rul-btn" type="button" data-goal-pick="${esc(t)}">${esc(tierFr(t))}${gap!=null?` <em>+${gap} RR</em>`:''}</button>`;
+  }).join('');
+  return `<div class="gl-line">Pas encore d'objectif pour cet acte. Une idée :</div><div class="gl-picks">${btns}</div>`;
+}
+
+async function renderGoalCard(){
+  const host=$('goalCard'); if(!host) return;
+  const key=memberKey(STATE);
+  await Promise.all([loadGoals(), ensureSeasons(), ensureTiers()]).catch(()=>{});
+  if(memberKey(STATE)!==key) return;
+  const act=currentAct(), now=Date.now();
+  const win=actWindowOf(SEASONS, now);
+  const g=GOALS && GOALS[key];
+  const cur=(RR_FULL||[]).filter(e=>e && e.tier && e.tier.name).slice(-1)[0];
+  const curTier=cur ? cur.tier.name : '', curElo=cur && cur.elo!=null ? Number(cur.elo) : null;
+  const sub=`${act?esc(act.toUpperCase()):'acte inconnu'}${win?` · fin le ${esc(dashFmtShort(win.end))} · ${Math.ceil((win.end-now)/86400000)} jours restants`:''}`;
+  const head=`<h2 class="tabs-header"><span>Objectif d'acte <em>${sub}</em></span>${act?`<button class="rul-btn" type="button" data-goal-edit>✎ ${g&&g.act===act?'Modifier':'Fixer un objectif'}</button>`:''}</h2>`;
+  if(!act){ host.innerHTML=head+'<div class="md-none">Aucune partie classée avec un acte connu : pas d\'objectif possible pour l\'instant.</div>'; return; }
+  let body;
+  if(GOAL_EDIT) body=goalFormHTML(g && g.act===act ? g : null, curTier);
+  else if(g && g.act===act){
+    const plan=goalPlan({ series:RR_FULL, matches:STATE.allMatches, goal:g, act:win, now, byNum:TIER_BY_NUM, offset:ELO_TIER_OFFSET });
+    body=plan ? goalBodyHTML(plan) : '<div class="md-none">Objectif enregistré, mais pas assez de données RR pour le suivre.</div>';
+  }else{
+    body=(g ? `<div class="md-none">Le dernier objectif (${esc(tierFr(g.tier))}) portait sur ${esc(String(g.act).toUpperCase())}. Nouvel acte, nouvel objectif.</div>` : '')
+      + goalSuggestHTML(curTier, curElo);
+  }
+  host.innerHTML=head+body;
+}
+
+async function saveGoal(del){
+  const msg=$('glMsg');
+  const key=(($('glKey')||{}).value||'').trim();
+  if(!key){ if(msg) msg.textContent='Entre la clé (REFRESH_TOKEN ou GOALS_TOKEN).'; return; }
+  const body={ name:STATE.name, tag:STATE.tag, act:currentAct(), tier:del?'':(($('glTier')||{}).value||''), note:(($('glNote')||{}).value||'') };
+  if(msg) msg.textContent='Enregistrement…';
+  try{
+    const r=await fetch(`/.netlify/functions/goals?key=${enc(key)}`, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok || d.ok===false){ if(msg) msg.textContent='Échec : '+((d&&d.error)||('http '+r.status)); return; }
+    GOALS=d.goals||GOALS; GOAL_EDIT=false; GOAL_PICK=null;
+    renderGoalCard();
+    const dsh=$('dashboard'); if(dsh && !dsh.hidden) renderDashboard();
+  }catch(e){ if(msg) msg.textContent='Erreur réseau : '+((e&&e.message)||e); }
+}
+
+// Dashboard : les objectifs de tout le roster, d'un coup d'œil.
+function dashGoalsHTML(ctx){
+  if(!GOALS) return '';
+  const act=ctx.acts.act, win=actWindowOf(SEASONS, ctx.now);
+  const rows=[], none=[];
+  ctx.per.forEach(p=>{
+    const g=GOALS[p.key];
+    if(!g || g.act!==act){ none.push(p.name); return; }
+    const series=ctx.rrBy[p.key]||[];
+    const plan=goalPlan({ series, matches:p.matches, goal:g, act:win, now:ctx.now, byNum:TIER_BY_NUM, offset:computeEloTierOffset(series) });
+    if(!plan){ none.push(p.name); return; }
+    const st=GOAL_STATUS[plan.status]||GOAL_STATUS.unknown;
+    const mem=(ROSTER||[]).find(m=>memberKey(m)===p.key);
+    rows.push(`<div class="dsh-goal"${mem?` data-prof="${esc(mem.name+'#'+mem.tag)}" title="Ouvrir le profil de ${esc(mem.name)}"`:''}>
+      ${dashWho(ctx,p.key)}
+      <span class="dsh-gt">${esc(tierShort(plan.curTier))} → <b>${esc(tierShort(plan.tier))}</b></span>
+      <span class="gl-bar mini"><span class="gl-fill" style="width:${(plan.progress*100).toFixed(1)}%"></span></span>
+      <span class="dsh-gr">${plan.remaining>0?`${Math.round(plan.remaining)} RR`:'✓'}</span>
+      <span class="gl-status ${st[2]}"><b>${st[0]}</b> ${st[1]}${plan.projTier&&plan.status!=='reached'&&plan.netPer>0?` · proj. ${esc(tierShort(plan.projTier))}`:''}</span>
+    </div>`);
+  });
+  const sub=`${act?esc(act.toUpperCase()):''}${win?` · ${Math.ceil((win.end-ctx.now)/86400000)} jours restants`:''}`;
+  const body = rows.length ? rows.join('') : '<div class="md-none">Personne n\'a encore fixé d\'objectif pour cet acte. Ça se fait depuis le profil de chacun.</div>';
+  return `<div class="card full dsh-card"><h2 class="tabs-header"><span>Objectifs de l'acte <em>${sub}</em></span></h2>${body}
+    ${rows.length && none.length?`<div class="md-none">Sans objectif : ${none.map(esc).join(', ')}.</div>`:''}</div>`;
 }
 
 /* ===================== RÈGLE (façon TradingView) =====================
@@ -5066,10 +5606,10 @@ async function showDashboard(){
     if(!host.innerHTML.trim()) host.innerHTML='<div class="cmp-empty">Chargement de l\'historique du roster…</div>';
     if(DASH_LOADING) return;
     DASH_LOADING=true;
-    try{ await Promise.all([ ensureSquadHistories().catch(()=>null), ensureTiers().catch(()=>null) ]); }
+    try{ await Promise.all([ ensureSquadHistories().catch(()=>null), ensureTiers().catch(()=>null), loadGoals().catch(()=>null), ensureSeasons().catch(()=>null) ]); }
     finally{ DASH_LOADING=false; }
   }else{
-    await ensureTiers().catch(()=>null);
+    await Promise.all([ ensureTiers().catch(()=>null), loadGoals().catch(()=>null), ensureSeasons().catch(()=>null) ]);
   }
   if(!$('dashboard').hidden) renderDashboard();
 }
@@ -5095,6 +5635,7 @@ function renderDashboard(){
   const sessions=squadSessions(per, range);
   host.innerHTML =
       dashFormHTML(dashForm(per, acts.act), ctx)
+    + dashGoalsHTML(ctx)
     + dashFiltersHTML(ctx)
     + dashKpisHTML(dashKpis(table), ctx)
     + dashChartCardHTML(ctx)
@@ -5363,7 +5904,7 @@ function dashSessionsHTML(sessions, ctx){
 }
 
 const DASH_COLS=[['n','Parties',0],['winrate','Winrate',0],['rrNet','RR net',0],['index','Indice',0],
-  ['hs','HS%',0],['acs','ACS',0],['kd','K/D',2],['adr','ADR',0]];
+  ['hs','HS%',0],['ps','Perf.',0],['kd','K/D',2],['adr','ADR',0]];
 function dashTableHTML(table, ctx){
   const rows=table.slice().sort((a,b)=>{
     const va=a[DASH_SORT], vb=b[DASH_SORT];
@@ -5373,6 +5914,8 @@ function dashTableHTML(table, ctx){
   const cell=(r,[k,,dec])=>{
     const v=r[k];
     if(!r.n) return `<td class="dim">—</td>`;
+    // Perf. : la note Riot moyenne ; sans aucune partie notée, l'ACS, et c'est écrit.
+    if(k==='ps' && v==null) return `<td>${r.acs!=null?dashNum(r.acs):'—'}<em>ACS</em></td>`;
     let txt = k==='rrNet' ? `<span class="${(v||0)>=0?'up':'dn'}">${v==null?'—':dashSigned(v)}</span>`
             : (k==='winrate'||k==='hs') ? (v==null?'—':dashNum(v)+'%') : dashNum(v, dec);
     const dv=r.delta && r.delta[k];
@@ -5409,7 +5952,8 @@ function dashRecordsHTML(rec, ctx){
     rec.worstSession && ['Pire chute', dashSigned(rec.worstSession.value)+' RR', `${who(rec.worstSession)} · ${rec.worstSession.n} parties · ${esc(dashFmtShort(rec.worstSession.t))}`],
     rec.streak && ['Plus longue série', rec.streak.value+' victoires', `${who(rec.streak)} · jusqu'au ${esc(dashFmtShort(rec.streak.t))}`],
     rec.hs && ['Meilleur HS%', rec.hs.value+' %', `${who(rec.hs)} · ${esc(rec.hs.map||'')} · ${esc(dashFmtShort(rec.hs.t))}`],
-    rec.acs && ['Meilleur ACS', String(rec.acs.value), `${who(rec.acs)} · ${esc(rec.acs.map||'')} · ${esc(dashFmtShort(rec.acs.t))}`],
+    rec.ps ? ['Meilleure perf.', rec.ps.value+' /500', `${who(rec.ps)} · ${esc(rec.ps.map||'')} · ${esc(dashFmtShort(rec.ps.t))}${rec.ps.grade?' · '+esc(psGradeFr(rec.ps.grade)):''}`]
+           : (rec.acs && ['Meilleur ACS', String(rec.acs.value), `${who(rec.acs)} · ${esc(rec.acs.map||'')} · ${esc(dashFmtShort(rec.acs.t))}`]),
     rec.marathon && ['Plus grosse journée', rec.marathon.value+' parties', `${who(rec.marathon)} · ${esc(dashFmtShort(new Date(rec.marathon.day+'T12:00:00').getTime()))}`],
   ].filter(Boolean);
   const body=tiles.length ? `<div class="dsh-recs">${tiles.map(([l,v,s])=>`<div class="dsh-rec"><span>${l}</span><b>${v}</b><em>${s}</em></div>`).join('')}</div>`
@@ -5444,6 +5988,7 @@ function dashActivityHTML(a, ctx){
 function wireDashboard(){
   const body=$('dshBody'); if(!body) return;
   body.addEventListener('click', e=>{
+    const pf=e.target.closest('[data-prof]'); if(pf){ openProfileFrom(pf.dataset.prof); return; }
     const p=e.target.closest('[data-p]'); if(p){ DASH_PERIOD=p.dataset.p; DASH_SESS_SHOWN=0; renderDashboard(); return; }
     const mo=e.target.closest('[data-more]');
     if(mo){ DASH_SESS_SHOWN=Math.max(DASH_SESS_MAX, DASH_SESS_SHOWN)+DASH_SESS_MAX; renderDashboard(); return; }
@@ -5527,6 +6072,28 @@ async function loadRoster(){
 }
 function applyRegionDefault(){ const sel=$('region'); if(sel && DEFAULT_REGION) sel.value=DEFAULT_REGION; }
 
+/* GIF Giphy -> variantes légères de la MÊME animation. Mesuré sur le roster :
+   les GIF d'origine pesaient 12,1 Mo au chargement de l'accueil (5,1 Mo pour
+   un seul), la version MP4 4,65 Mo à pleine résolution, la version 200w.webp
+   1,2 Mo mais floue en grand. D'où : MP4 pour les grandes cartes, 200w.webp
+   pour les petites vignettes et comme aperçu immédiat. Pas un lien Giphy :
+   null, rien ne change. */
+function giphyVariants(url){
+  const m=String(url||'').match(/^(https:\/\/media\d*\.giphy\.com\/media\/[^?#]+)\/[^/?#]+\.(gif|webp|mp4)(\?[^#]*)?$/i);
+  if(!m) return null;
+  return { mp4:m[1]+'/giphy.mp4', small:m[1]+'/200w.webp', orig:String(url) };
+}
+// Petite vignette : la version légère si c'est un GIF Giphy, sinon l'image telle quelle.
+const lightImg = url => { const v=giphyVariants(url); return v ? v.small : url; };
+// Grande carte : une vidéo muette en boucle, avec l'aperçu léger pendant le
+// chargement et le GIF d'origine en secours si la vidéo échoue.
+function portraitMedia(url, cls, alt){
+  const v=giphyVariants(url);
+  if(!v) return `<img class="${cls}" src="${esc(url)}" alt="${esc(alt||'')}">`;
+  return `<video class="${cls}" src="${esc(v.mp4)}" poster="${esc(v.small)}" data-orig="${esc(v.orig)}"
+    autoplay muted loop playsinline preload="auto" aria-label="${esc(alt||'')}"></video>`;
+}
+
 // Construit les cartes de l'accueil à partir du ROSTER (plus de duplication en HTML).
 function renderRoster(){
   const host=$('roster'); if(!host) return;
@@ -5538,7 +6105,7 @@ function renderRoster(){
     return `<button class="agentcard${custom}" style="--c:${esc(m.color)}" data-idx="${i}">
       <div class="glow"></div><div class="num mono">${numTxt}</div>
       <div class="monogram">${mono}</div>
-      <img class="portrait" src="${esc(portrait)}" alt="${esc(m.agent)}">
+      ${m.customImg ? portraitMedia(portrait, 'portrait', m.agent) : `<img class="portrait" src="${esc(portrait)}" alt="${esc(m.agent)}">`}
       <div class="scrim"></div>
       <div class="info"><div class="arole">${esc(m.role)}</div><div class="aname">${esc(m.agent)}</div>
         <div class="rid">${esc(m.name)}<b>#${esc(m.tag)}</b></div><div class="rankchip" id="rank-${i}">rang…</div></div>
@@ -5927,10 +6494,21 @@ async function saveRoster(){
 
 /* ===================== WIRING ===================== */
 function wireRosterImgs(){
-  document.querySelectorAll('.agentcard .portrait').forEach(img=>{
-    const fail=()=>{img.style.display='none';const c=img.closest('.agentcard');if(c)c.classList.add('noimg');};
-    img.addEventListener('error',fail);
-    if(img.complete && img.naturalWidth===0) fail();
+  document.querySelectorAll('.agentcard .portrait').forEach(el=>{
+    const fail=img=>{img.style.display='none';const c=img.closest('.agentcard');if(c)c.classList.add('noimg');};
+    if(el.tagName==='VIDEO'){
+      // La vidéo n'a pas pu se lire : on revient au GIF d'origine, qui lui
+      // retombe sur le monogramme s'il échoue aussi.
+      el.addEventListener('error', ()=>{
+        const img=document.createElement('img');
+        img.className='portrait'; img.alt=el.getAttribute('aria-label')||''; img.src=el.dataset.orig||'';
+        img.addEventListener('error', ()=>fail(img));
+        el.replaceWith(img);
+      });
+      return;
+    }
+    el.addEventListener('error', ()=>fail(el));
+    if(el.complete && el.naturalWidth===0) fail(el);
   });
 }
 
@@ -5940,7 +6518,7 @@ function wireStatic(){
   WIRED = true;
   $('btnGear').addEventListener('click',toggleSheet);
   $('btnHome')?.addEventListener('click',showHome);
-  $('btnRanks').addEventListener('click',fillRanks);
+  $('btnRanks').addEventListener('click',()=>fillRanks(true));
   $('btnRefreshNow')?.addEventListener('click', saveAllHistory);
   // Éditeur de roster (⚙ Paramètres)
   $('btnEditRoster')?.addEventListener('click', () => {
@@ -5964,6 +6542,14 @@ function wireStatic(){
   $('btnRoulette')?.addEventListener('click',showRoulette);
   $('btnBackRou')?.addEventListener('click',showHome);
   $('btnDash')?.addEventListener('click',showDashboard);
+  $('goalCard')?.addEventListener('click', e=>{
+    const pick=e.target.closest('[data-goal-pick]');
+    if(pick){ GOAL_PICK=pick.dataset.goalPick; GOAL_EDIT=true; renderGoalCard(); return; }
+    if(e.target.closest('[data-goal-edit]')){ GOAL_EDIT=!GOAL_EDIT; GOAL_PICK=null; renderGoalCard(); return; }
+    if(e.target.closest('[data-goal-cancel]')){ GOAL_EDIT=false; GOAL_PICK=null; renderGoalCard(); return; }
+    if(e.target.closest('[data-goal-save]')){ saveGoal(false); return; }
+    if(e.target.closest('[data-goal-del]')){ saveGoal(true); return; }
+  });
   $('rrRulerBtn')?.addEventListener('click', e=>rulerToggle('prof', e.currentTarget));
   document.addEventListener('keydown', e=>{ if(e.key==='Escape') Object.values(RULERS).forEach(r=>r && r.clear()); });
   wireDashboard();
@@ -6004,7 +6590,7 @@ function wireStatic(){
   $('btnLeaderboard')?.addEventListener('click',loadLeaderboard);
   
   $('roster').addEventListener('click',e=>{const c=e.target.closest('.agentcard');if(c)openProfile(+c.dataset.idx);});
-  $('freshHome')?.addEventListener('click', ()=>{ if(FRESH.home.state!=='loading') fillRanks(); });
+  $('freshHome')?.addEventListener('click', ()=>{ if(FRESH.home.state!=='loading') fillRanks(true); });
   $('alerts')?.addEventListener('click',e=>{
     const b=e.target.closest('[data-alert-member]');
     if(b) openAlert(b.dataset.alertMember, b.dataset.alertTs);
