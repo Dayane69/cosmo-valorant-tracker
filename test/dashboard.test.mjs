@@ -128,6 +128,10 @@ test("duos : RR moyen par partie ensemble contre séparés", () => {
   assert.equal(P[0].rrTogether, 20);
   assert.equal(P[0].rrApart, (-10 - 10 + 15 - 15) / 4);
   assert.equal(P[0].gain, 20 - (-5));
+  // Le winrate aussi, ensemble contre séparés (ce que montrait le Classement) :
+  // séparés = sa (D), sb (D), vs côté a (V), vs côté b (D) -> 1 sur 4.
+  assert.equal(P[0].winrate, 100);
+  assert.equal(P[0].winrateApart, 25);
   // Sous le seuil de parties ensemble : pas de duo.
   const Q = X.dashPairs([member("a", a.slice(0, 2)), member("b", b.slice(0, 2))], X.dashRange("7", NOW, null));
   assert.equal(Q.length, 0);
