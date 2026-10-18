@@ -83,6 +83,23 @@
   .agentcard .rankchip{display:inline-flex;align-items:center;gap:6px;margin-top:9px;font-family:var(--mono);font-size:11px;background:rgba(255,255,255,.06);border:1px solid var(--line);border-radius:7px;padding:4px 9px;color:var(--amber)}
   .agentcard .rankchip .rankicon{width:20px;height:20px;object-fit:contain;flex:none}
   .agentcard .num{position:absolute;top:12px;left:14px;font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:.1em}
+  /* Téléphone : deux cartes par ligne, plus basses. Une carte par écran
+     obligeait à faire défiler ~3 000 px pour voir 7 joueurs. */
+  @media(max-width:560px){
+    .roster{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:20px}
+    .agentcard{height:250px;border-radius:13px}
+    .agentcard:hover{transform:none}
+    .agentcard .portrait{height:195px;bottom:58px}
+    .agentcard .monogram{top:70px;font-size:40px}
+    .agentcard .scrim{height:120px}
+    .agentcard .info{padding:10px 10px 11px}
+    .agentcard .arole{font-size:9px;letter-spacing:.12em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .agentcard .aname{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .agentcard .rid{font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .agentcard .rankchip{font-size:10px;gap:4px;padding:3px 6px;margin-top:6px;max-width:100%;white-space:nowrap;overflow:hidden}
+    .agentcard .rankchip .rankicon{width:15px;height:15px}
+    .agentcard .num{top:9px;left:10px;font-size:10.5px}
+  }
   .sheet{max-width:1160px;margin:18px auto 0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px}
   .sheet .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
   .field{display:flex;flex-direction:column;gap:5px}
@@ -1174,6 +1191,7 @@
   .dsh-pn{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px;font-weight:600}
   .dsh-pn .plus{color:var(--dim)}
   .dsh-pm{grid-column:1;display:flex;flex-direction:column;gap:2px;font-size:11.5px;color:var(--muted)}
+  .dsh-pm .dsh-apart{color:var(--dim);white-space:nowrap}
   .dsh-gain{grid-column:2;grid-row:1 / 3;text-align:right;font-size:20px;font-weight:700}
   .dsh-gain em{display:block;font-style:normal;font-size:10px;color:var(--muted);font-weight:400}
   .dsh-recs{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
@@ -1412,8 +1430,8 @@
         <h2 class="tabs-header">
           <span>Matchs récents <em>clique une partie pour tout voir</em></span>
           <div class="seg" id="modeTabs" style="margin:0;">
-            <button data-mode="all" class="on">Tous</button>
-            <button data-mode="competitive">Classé</button>
+            <button data-mode="competitive" class="on">Classé</button>
+            <button data-mode="all">Tous</button>
             <button data-mode="unrated">Non classé</button>
             <button data-mode="deathmatch">DM</button>
             <button data-mode="other">Autres</button>
@@ -1464,10 +1482,10 @@
       </div>
 
       <div class="hero even" id="statsSplit">
-        <div class="card"><h2 class="tabs-header"><span>Stats par agent <em>selon le filtre</em></span>
+        <div class="card"><h2 class="tabs-header"><span>Stats par agent <em>selon le filtre · sans les parties perso</em></span>
           <select id="statsSeason" class="rrsel" title="Filtrer les stats par saison / acte"><option value="all">Toutes les saisons</option></select></h2>
           <div id="agentStats"></div></div>
-        <div class="card"><h2>Stats par map <em>selon le filtre (agent + acte)</em></h2><div id="mapStats"></div></div>
+        <div class="card"><h2>Stats par map <em>selon le filtre et l'acte · sans les parties perso</em></h2><div id="mapStats"></div></div>
       </div>
       <div class="secnote" id="statsNote" hidden></div>
 
@@ -1479,7 +1497,6 @@
 <!-- ===================== TRIBUNAL (ÉQUIPE) ===================== -->
 <section id="tribunal" hidden>
   <div class="pwrap">
-    <button class="back" id="btnBackTrib">← Retour à l'accueil</button>
     <div class="phead" style="margin-bottom:12px; border-bottom:0; justify-content:center; text-align:center;">
       <div>
         <div class="eyebrow" style="color:var(--unlucky)">COSMO Tribunal</div>
@@ -1517,7 +1534,6 @@
 <!-- ===================== LEADERBOARD ===================== -->
 <section id="leaderboard" hidden>
   <div class="pwrap">
-    <button class="back" id="btnBackLb">← Retour à l'accueil</button>
     <div class="phead" style="margin-bottom:12px; border-bottom:0; justify-content:center; text-align:center;">
       <div>
         <div class="eyebrow" style="color:var(--amber)">COSMO Leaderboard</div>
@@ -1547,8 +1563,9 @@
       </div>
 
       <div class="card full" style="margin-top:14px;text-align:left;">
-        <h2 class="tabs-header"><span>Duos détectés <em>même équipe · sur tout l'historique chargé</em></span></h2>
-        <div id="duoList"></div>
+        <h2 class="tabs-header"><span>Duos <em>déplacés dans le Dashboard</em></span></h2>
+        <div class="duo-empty">Les duos sont maintenant au même endroit, avec les deux mesures : winrate et RR par partie, ensemble contre séparés.
+          <button class="btn" id="lbToDuos" type="button" style="margin-left:6px">Voir les duos →</button></div>
       </div>
     </div>
   </div>
@@ -1573,7 +1590,6 @@
 
 <section id="comps" hidden>
   <div class="pwrap">
-    <button class="back" id="btnBackCmp">← Retour à l'accueil</button>
     <div class="phead" style="margin-bottom:12px;border-bottom:0;justify-content:center;text-align:center;">
       <div>
         <div class="eyebrow" style="color:var(--amber)">Ce qui gagne, map par map</div>
@@ -1622,7 +1638,6 @@
 <!-- ===================== ROULETTE ===================== -->
 <section id="roulette" hidden>
   <div class="pwrap">
-    <button class="back" id="btnBackRou">← Retour à l'accueil</button>
     <div class="phead" style="margin-bottom:12px;border-bottom:0;justify-content:center;text-align:center;">
       <div>
         <div class="eyebrow" style="color:var(--amber)">Que le destin décide</div>

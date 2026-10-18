@@ -310,7 +310,7 @@ test("rang : sans valorant-api, le nom en texte plutôt qu'un trou", () => {
   T.setTiers(null, null);
   const b = T.tierBadge(14, "Gold 3");
   assert.doesNotMatch(b, /<img/);
-  assert.match(b, />Gold 3</);
+  assert.match(b, />Or 3</, "en français, comme dans le client");
 });
 
 test("rang : le nom venu de l'API est échappé", () => {
@@ -333,7 +333,7 @@ test("scoreboard : chaque joueur, des deux camps, porte son rang", () => {
   const { html } = T.scoreboardHTML(M);
   assert.equal((html.match(/class="tierb"/g) || []).length, 3, "trois classés, trois icônes");
   assert.equal((html.match(/tierb none/g) || []).length, 1, "le non-classé : un emplacement vide");
-  assert.match(html, /src="gold3\.png" alt="Gold 3"/);
+  assert.match(html, /src="gold3\.png" alt="Or 3"/);
   assert.equal((html.match(/src="asc1\.png"/g) || []).length, 2, "un Ascendant dans chaque camp");
 });
 

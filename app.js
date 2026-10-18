@@ -28,7 +28,7 @@ let STATE = { puuid:null, allMatches:[], matches:[], name:"", tag:"" };
 const TRIB = { matches: [], active: 0, n: 10 };
 const LB = { n: 10 };
 const VS = { a: 0, b: 1 };
-let CURRENT_MODE = 'all';
+let CURRENT_MODE = 'competitive';   // Classé par défaut : c'est là que se jouent le RR et les stats qui comptent
 const MATCH_DETAILS = {};                               // cache id -> match complet (détail chargé à la demande)
 const DETAIL_PENDING = {};                              // id -> true pendant le chargement du détail
 let SELECTED_IDX = -1;                                  // ligne d'historique actuellement ouverte
@@ -715,10 +715,10 @@ function tierIconFor(id, name){
       || '';
 }
 function tierBadge(id, name){
-  const n=String(name||'').trim(), icon=tierIconFor(id, n);
+  const raw=String(name||'').trim(), icon=tierIconFor(id, raw), n=tierFr(raw);
   if(icon) return `<img class="tierb" src="${esc(icon)}" alt="${esc(n)}" title="${esc(n)}" loading="lazy">`;
   // Pas d'icône mais un nom connu (valorant-api injoignable) : le texte.
-  if(n && !/^(unrated|unranked|non class)/i.test(n) && id!==0) return `<span class="tierb txt" title="${esc(n)}">${esc(n)}</span>`;
+  if(raw && !/^(unrated|unranked|non class)/i.test(raw) && id!==0) return `<span class="tierb txt" title="${esc(n)}">${esc(n)}</span>`;
   return `<span class="tierb none" title="Non classé"></span>`;   // garde l'alignement des pseudos
 }
 // Récupère l'icône d'un rang : priorité aux images HenrikDev, repli sur valorant-api.
@@ -952,6 +952,15 @@ function modeName(meta){
   return (meta && (meta.mode || meta.mode_id)) || '';
 }
 const modeKey = meta => String(modeName(meta)).toLowerCase();
+/* Nom de mode affiché, en français (les noms du client Valorant FR). Les
+   données gardent le nom anglais de l'API : les filtres et les tests de mode
+   (classé, deathmatch…) s'appuient dessus. */
+const MODE_FR = { 'competitive':'Classé', 'unrated':'Non classé', 'deathmatch':'Combat à mort',
+  'team deathmatch':'Combat à mort en équipe', 'custom game':'Partie perso', 'custom':'Partie perso',
+  'swiftplay':'Vélocité', 'spike rush':'Spike Rush', 'escalation':'Escalade', 'replication':'Réplication',
+  'snowball fight':'Bataille de boules de neige', 'premier':'Premier', 'unknown':'Partie perso',
+  'all random one site':'Tout aléatoire, un site' };
+const modeFr = m => { const k=String(m||'').trim(); return MODE_FR[k.toLowerCase()] || k; };
 
 /* Parties à PLUSIEURS équipes (Gauntlet: Glitched, patch 13.06 : 8 duos).
    Tout le reste du code suppose « ta team contre l'adverse » ; au-delà de deux
@@ -995,7 +1004,7 @@ const PS_ARROW = { double_up:['▲▲','up'], up:['▲','up'], neutral:['=','fla
 function isFFA(M){ return !!(M && M.ffa); }
 function resultWord(M, low){
   let w;
-  if(isFFA(M)) w = M.ffaPlace ? `${ordinalFr(M.ffaPlace)} / ${M.ffaN}` : 'Deathmatch';
+  if(isFFA(M)) w = M.ffaPlace ? `${ordinalFr(M.ffaPlace)} / ${M.ffaN}` : 'Combat à mort';
   else w = M.result==='w' ? 'Victoire' : (M.result==='l' || !M.multi ? 'Défaite' : '—');
   return isFFA(M) ? w : (low ? w.toLowerCase() : w.toUpperCase());
 }
@@ -2361,7 +2370,7 @@ function paintRank(i, r){
   const el=$('rank-'+i); if(!el || !r) return;
   if(!r.tier){ el.textContent='non classé'; return; }
   const rrTxt=r.rr!=null?' · '+r.rr+' RR':'';
-  el.innerHTML=`${r.icon?`<img class="rankicon" src="${esc(r.icon)}" alt="${esc(r.tier)}" loading="lazy">`:''}<span>${esc(r.tier)}${rrTxt}</span>`;
+  el.innerHTML=`${r.icon?`<img class="rankicon" src="${esc(r.icon)}" alt="${esc(tierFr(r.tier))}" loading="lazy">`:''}<span>${esc(tierFr(r.tier))}${rrTxt}</span>`;
 }
 
 /* Rang d'un membre d'après sa série RR stockée : le palier et le RR après sa
@@ -2489,7 +2498,7 @@ function rankTile(lab, name, icon, sub, ring){
   return `<div class="rtile">
     <div class="rt-lab">${esc(lab)}</div>
     <div class="rt-ico">${ring||''}${ic}</div>
-    <div class="rt-name">${esc(name||'Non classé')}</div>
+    <div class="rt-name">${esc(name ? tierFr(name) : 'Non classé')}</div>
     <div class="rt-sub mono">${esc(sub||'')}</div>
   </div>`;
 }
@@ -2722,7 +2731,7 @@ function wireCurveHover(box, meta, W, H){
     const scale=rect.width/W;
     const c=best.change, sign=c>=0?'+':'';
     tip.innerHTML=`<b>${esc(best.when||'partie')}</b>`
-      +`<span>${best.tier?esc(best.tier)+' · ':''}${Math.round(best.v)}${best.mode==='elo'?' elo':' RR'}</span>`
+      +`<span>${best.tier?esc(tierFr(best.tier))+' · ':''}${Math.round(best.v)}${best.mode==='elo'?' elo':' RR'}</span>`
       +(best.change!=null && !isNaN(best.change)?`<span class="d ${c>=0?'up':'dn'}">${sign}${c} RR</span>`:'');
     tip.hidden=false;
     tip.style.left=(best.px*scale)+'px';
@@ -2732,6 +2741,12 @@ function wireCurveHover(box, meta, W, H){
   hit.addEventListener('mousemove',move);
   hit.addEventListener('mouseleave',leave);
 }
+
+/* Partie personnalisée : « Custom Game », ou les cartes d'entraînement
+   « Skirmish A/B/… » (1v1, 2v2 entre potes), que l'API range parfois en mode
+   « unknown ». Elles restent dans la liste, mais pas dans les stats agent/map :
+   un 0 % sur « Skirmish A » ne dit rien du niveau de personne. */
+const isCustomMatch = M => !!M && (/custom/i.test(String(M.mode||'')) || /^unknown$/i.test(String(M.mode||'').trim()) || /^skirmish\b/i.test(String(M.map||'')));
 
 function filterByMode(matches, mode){
   const mainModes = ['competitive', 'unrated', 'deathmatch'];
@@ -2785,10 +2800,11 @@ function renderStatsTable(containerId, stats, nameLabel){
 
 function renderStatsCards(filtered){
   // Filtre par acte (comme le graphe) : ne garde que les parties de l'acte choisi.
-  const rows = STATS_SEASON==='all' ? filtered : filtered.filter(M => M && M.season===STATS_SEASON);
+  const noCustom = (filtered||[]).filter(M => !isCustomMatch(M));
+  const rows = STATS_SEASON==='all' ? noCustom : noCustom.filter(M => M && M.season===STATS_SEASON);
   renderStatsTable('agentStats', groupStats(rows, M => M.me.agent), 'Agent');
   renderStatsTable('mapStats',   groupStats(rows, M => M.map),      'Map');
-  renderStatsNote(filtered, rows);
+  renderStatsNote(noCustom, rows);
   markScrollable();
 }
 
@@ -2837,8 +2853,8 @@ function renderPeakActs(){
       const pk=tierFromElo(a.peak), fin=tierFromElo(a.lastElo);
       return `<div class="peak-cell">
         <div class="pa">${esc(seasonLabel(sh))}</div>
-        <div class="pk">${pk&&pk.icon?`<img src="${esc(pk.icon)}" alt="" loading="lazy">`:''}<span>${esc(pk?pk.name:'—')}</span></div>
-        <div class="pf mono">fin : ${esc(fin?fin.name:'—')} · ${a.n} partie${a.n>1?'s':''}</div>
+        <div class="pk">${pk&&pk.icon?`<img src="${esc(pk.icon)}" alt="" loading="lazy">`:''}<span>${esc(pk?tierFr(pk.name):'—')}</span></div>
+        <div class="pf mono">fin : ${esc(fin?tierFr(fin.name):'—')} · ${a.n} partie${a.n>1?'s':''}</div>
       </div>`;
     }).join('') + `</div>`;
 }
@@ -2861,7 +2877,7 @@ function rrChip(rr){
   const now=rr.rr!=null ? `<span class="mc-rrnow">${num(rr.rr)}</span>` : '';
   const promo=rr.promo ? `<span class="mc-promo ${rr.promo>0?'up':'dn'}" aria-hidden="true">${rr.promo>0?'▲':'▼'}</span>` : '';
   const promoTxt=rr.promo ? (rr.promo>0?' · palier gagné':' · palier perdu') : '';
-  return `<span class="mc-rr" title="${esc(rr.tierName||'')}${rr.rr!=null?' · '+rr.rr+' RR dans le palier':''}${promoTxt}">
+  return `<span class="mc-rr" title="${esc(tierFr(rr.tierName||''))}${rr.rr!=null?' · '+rr.rr+' RR dans le palier':''}${promoTxt}">
     <span class="mc-rrv"><span class="mrr-delta ${c>=0?'up':'dn'}">${sign}${c}</span>${now}</span>
     <span class="mc-ring">${ring}${icon}${promo}</span>
   </span>`;
@@ -2884,7 +2900,9 @@ function renderList(){
   renderStatsCards(filtered);
 
   if(!filtered.length) {
-     $('ml').innerHTML = '<div class="vh-line" style="padding:15px; text-align:center;">Aucun match trouvé pour ce mode.</div>';
+     $('ml').innerHTML = `<div class="vh-line" style="padding:15px; text-align:center;">${CURRENT_MODE==='competitive' && (STATE.matches||[]).length
+       ? 'Aucune partie classée récente. L\'onglet <b>Tous</b> montre les autres modes.'
+       : 'Aucun match trouvé pour ce mode.'}</div>`;
      return;
   }
 
@@ -2895,7 +2913,7 @@ function renderList(){
     const art = agentArt(s);
     return `<div class="mrow ${M.result}" data-idx="${i}">
       <div class="mc-top">
-        <span class="mc-mode">${esc(M.mode)}</span>${M.mvp?'<span class="mc-mvp" title="MVP de la partie (meilleur Performance Score)">MVP</span>':''}
+        <span class="mc-mode">${esc(modeFr(M.mode))}</span>${M.mvp?'<span class="mc-mvp" title="MVP de la partie (meilleur Performance Score)">MVP</span>':''}
         <span class="mc-when">${esc(relTime(M.started))}</span>
         ${rrChip(M.rr)}
       </div>
@@ -3141,7 +3159,7 @@ function openSessionReport(key){
   // Mini-graphe : indice de chaque partie de la session, dans l'ordre.
   const bars=s.matches.filter(M=>M.me).map((M,i)=>{
     const v=M.me.score100, h=Math.max(6, Math.round(v));
-    return `<div class="sx-bar ${M.result}" style="height:${h}%" title="${esc(M.map)} · ${esc(M.mode)} · indice ${v}${M.rr&&M.rr.change!=null?' · '+signed(M.rr.change)+' RR':''}"><i>${v}</i></div>`;
+    return `<div class="sx-bar ${M.result}" style="height:${h}%" title="${esc(M.map)} · ${esc(modeFr(M.mode))} · indice ${v}${M.rr&&M.rr.change!=null?' · '+signed(M.rr.change)+' RR':''}"><i>${v}</i></div>`;
   }).join('');
 
   const shareURL=sessionShareURL(s);
@@ -3223,7 +3241,7 @@ function openSessionReport(key){
       const mt=tierOf(M.me.score100);
       return `<tr>
         <td>${i+1}</td>
-        <td><b>${esc(M.map)}</b><br><em class="sx-mode">${esc(M.mode)}</em></td>
+        <td><b>${esc(M.map)}</b><br><em class="sx-mode">${esc(modeFr(M.mode))}</em></td>
         <td>${esc(M.me.agent)}</td>
         <td class="${M.result==='w'?'w':'l'}"><b>${M.myScore}–${M.oppScore}</b>${M.forfeit?' <em>ff</em>':''}</td>
         <td>${M.me.k}/${M.me.d}/${M.me.a}</td>
@@ -3440,7 +3458,7 @@ function scoreboardHTML(M){
     const rr = memberRR(mem, detail.id);
     if(rr) rrShown = true;
     const rrTag = rr
-      ? `<span class="pn-rr ${rr.change>=0?'up':'dn'}" title="${esc(rr.tierName||'')}">${rr.change>=0?'+':''}${rr.change} RR</span>`
+      ? `<span class="pn-rr ${rr.change>=0?'up':'dn'}" title="${esc(tierFr(rr.tierName||''))}">${rr.change>=0?'+':''}${rr.change} RR</span>`
       : '';
     // Un membre du roster (hors soi-même) mène à son profil d'un clic.
     const prof = (mem && !mem.guest && !me) ? ` data-prof="${esc(mem.name+'#'+mem.tag)}" title="Ouvrir le profil de ${esc(mem.name)}"` : '';
@@ -3596,7 +3614,7 @@ function factsHTML(f){
           ${rows.map(p=>`<div class="mt-r${p.isMe?' me':''}">
             <span class="mt-n">${esc(p.name)}<small>#${esc(p.tag)}</small></span>
             <span class="mt-a mono">${esc(p.agent||'')}</span>
-            <span class="mt-t mono">${tierIconFor(p.tierId, p.tier)?`<img class="tieri" src="${esc(tierIconFor(p.tierId, p.tier))}" alt="" loading="lazy">`:''}${esc(p.tier||'—')}</span>
+            <span class="mt-t mono">${tierIconFor(p.tierId, p.tier)?`<img class="tieri" src="${esc(tierIconFor(p.tierId, p.tier))}" alt="" loading="lazy">`:''}${esc(p.tier?tierFr(p.tier):'—')}</span>
             ${p.group?`<span class="mt-g" title="A queue avec le groupe ${p.group}">G${p.group}</span>`:'<span class="mt-g none"></span>'}
           </div>`).join('')}</div>`;
       }).join('')}
@@ -3619,7 +3637,7 @@ function renderMatchModal(i){
       <div>
         <div class="sd-tier" style="color:${M.result==='w'?'var(--win)':(isFFA(M)?'var(--amber)':'var(--loss)')}">${resultWord(M)} ${scoreText(M)}</div>
         <h3>${esc(M.map)}</h3>
-        <div class="sd-sub mono">${esc(M.mode)}${M.me?' · '+esc(M.me.agent):''} · ${esc(relTime(M.started))}${dur?' · '+dur:''}${rr}</div>
+        <div class="sd-sub mono">${esc(modeFr(M.mode))}${M.me?' · '+esc(M.me.agent):''} · ${esc(relTime(M.started))}${dur?' · '+dur:''}${rr}</div>
       </div>
     </div>
 
@@ -3750,8 +3768,8 @@ function openProfile(idx){
   renderPHead(m);
   $('home').hidden=true; $('tribunal').hidden=true; $('leaderboard').hidden=true; if($('roulette')) $('roulette').hidden=true; if($('comps')) $('comps').hidden=true; if($('dashboard')) $('dashboard').hidden=true; $('profile').hidden=false; window.scrollTo(0,0);
 
-  CURRENT_MODE = 'all';
-  document.querySelectorAll('#modeTabs button').forEach(x => x.classList.toggle('on', x.dataset.mode === 'all'));
+  CURRENT_MODE = 'competitive';
+  document.querySelectorAll('#modeTabs button').forEach(x => x.classList.toggle('on', x.dataset.mode === 'competitive'));
   renderFresh();   // le voyant vient d'être recréé avec le phead
   loadProfile();
 }
@@ -4411,7 +4429,6 @@ function renderLeaderboard() {
   renderBadges();
   renderVsPickers();
   renderVs();
-  renderDuos();
   const ranked = TRIB.matches
     .map(tm => computeMemberStats(tm.member, tm.norm, LB.n))
     .sort((a, b) => (b.count ? b.avg : -1) - (a.count ? a.avg : -1));
@@ -4437,73 +4454,6 @@ function renderLeaderboard() {
       <div class="lb-stat"><div class="v" style="color:${empty?'var(--dim)':t.c}">${empty?'—':s.avg}</div><div class="l">indice</div></div>
       <div class="lb-stat hide-sm"><div class="v" style="color:${empty?'var(--dim)':wrColor}">${empty?'—':s.wr+'%'}</div><div class="l">winrate</div></div>
       <div class="lb-stat"><div class="v">${s.wins}/${s.count}</div><div class="l">parties</div></div>
-    </div>`;
-  }).join('');
-}
-
-/* ===================== DUOS DÉTECTÉS =====================
-   Deux membres retrouvés dans la MÊME équipe sur une même partie (croisement
-   par match_id, comme pour les sessions). L'intérêt n'est pas le winrate brut
-   du duo mais son ÉCART avec le winrate de chacun quand il joue sans l'autre. */
-const DUO_MIN_GAMES = 3;
-
-function computeDuos(squads, minGames){
-  const min = minGames!=null ? minGames : DUO_MIN_GAMES;
-  const byMatch={}, byKey={};
-  (squads||[]).forEach(sq=>{
-    if(!sq || !sq.member) return;
-    const k=memberKey(sq.member);
-    byKey[k]=sq;
-    (sq.norm||[]).forEach(M=>{ if(M && M.id) (byMatch[M.id]=byMatch[M.id]||[]).push({k, M}); });
-  });
-
-  const pairs={};
-  Object.keys(byMatch).forEach(id=>{
-    const l=byMatch[id];
-    for(let i=0;i<l.length;i++) for(let j=i+1;j<l.length;j++){
-      if(l[i].M.myTeamId!==l[j].M.myTeamId) continue;         // adversaires : pas un duo
-      const x = l[i].k < l[j].k ? l[i] : l[j];
-      const y = l[i].k < l[j].k ? l[j] : l[i];
-      const pk = x.k+'|'+y.k;
-      const p = pairs[pk] || (pairs[pk]={ a:x.k, b:y.k, n:0, wins:0, ids:{} });
-      if(p.ids[id]) continue;                                  // une partie ne compte qu'une fois
-      p.ids[id]=true; p.n++;
-      if(x.M.result==='w') p.wins++;
-    }
-  });
-
-  return Object.keys(pairs).map(pk=>{
-    const p=pairs[pk], A=byKey[p.a], B=byKey[p.b];
-    if(!A || !B) return null;
-    // Winrate de chacun SANS l'autre : la vraie référence.
-    const solo=sq=>{
-      const rest=(sq.norm||[]).filter(M=>M && M.id && !p.ids[M.id]);
-      return rest.length ? rest.filter(M=>M.result==='w').length/rest.length*100 : null;
-    };
-    const sa=solo(A), sb=solo(B);
-    const base=(sa!=null && sb!=null) ? (sa+sb)/2 : (sa!=null?sa:sb);
-    const wr=p.n ? p.wins/p.n*100 : 0;
-    return { a:A.member, b:B.member, n:p.n, wins:p.wins, wr, base,
-             delta: base!=null ? wr-base : null };
-  }).filter(d=>d && d.n>=min).sort((x,y)=>y.n-x.n || y.wr-x.wr);
-}
-
-function renderDuos(){
-  const host=$('duoList'); if(!host) return;
-  const duos=computeDuos(TRIB.matches);
-  if(!duos.length){
-    host.innerHTML=`<div class="duo-empty">Aucun duo sur les parties chargées — il en faut au moins ${DUO_MIN_GAMES} dans la même équipe.</div>`;
-    return;
-  }
-  host.innerHTML=duos.map(d=>{
-    const wrC = d.wr>=50 ? 'var(--win)' : 'var(--loss)';
-    const dl = d.delta==null ? '<b>—</b><span>vs séparés</span>'
-      : `<b style="color:${d.delta>=0?'var(--win)':'var(--loss)'}">${d.delta>=0?'+':''}${Math.round(d.delta)}</b><span>vs séparés</span>`;
-    return `<div class="duo-row">
-      <div class="duo-pair"><b style="color:${esc(d.a.color)}">${esc(d.a.name)}</b><span class="duo-x">+</span><b style="color:${esc(d.b.color)}">${esc(d.b.name)}</b></div>
-      <div class="duo-stat"><b>${d.n}</b><span>ensemble</span></div>
-      <div class="duo-stat"><b style="color:${wrC}">${Math.round(d.wr)}%</b><span>winrate</span></div>
-      <div class="duo-stat hide-sm">${dl}</div>
     </div>`;
   }).join('');
 }
@@ -4985,7 +4935,7 @@ function dashPairs(perMember, range){
   const keys=(perMember||[]).map(p=>p.key), out=[];
   for(let i=0;i<keys.length;i++) for(let j=i+1;j<keys.length;j++){
     const a=keys[i], b=keys[j];
-    const tog={ n:0, wins:0, rr:0, rrN:0 }, apart={ rr:0, rrN:0 };
+    const tog={ n:0, wins:0, rr:0, rrN:0 }, apart={ n:0, wins:0, rr:0, rrN:0 };
     const seen=new Set();
     entries.forEach(({key,M})=>{
       if(key!==a && key!==b) return;
@@ -4996,11 +4946,15 @@ function dashPairs(perMember, range){
       if(isTog){
         if(!seen.has(M.id)){ seen.add(M.id); tog.n++; if(M.result==='w') tog.wins++; }
         if(rc!=null){ tog.rr+=rc; tog.rrN++; }
-      }else if(rc!=null){ apart.rr+=rc; apart.rrN++; }
+      }else{
+        apart.n++; if(M.result==='w') apart.wins++;
+        if(rc!=null){ apart.rr+=rc; apart.rrN++; }
+      }
     });
     if(tog.n<DASH_PAIR_MIN) continue;
     const per=x=>x.rrN?x.rr/x.rrN:null;
     out.push({ a, b, n:tog.n, wins:tog.wins, winrate:tog.wins/tog.n*100,
+      winrateApart: apart.n ? apart.wins/apart.n*100 : null,
       rrTogether:per(tog), rrApart:per(apart), apartN:apart.rrN,
       gain:(per(tog)!=null && per(apart)!=null) ? per(tog)-per(apart) : null });
   }
@@ -5101,7 +5055,7 @@ function dashKpis(table){
 const GOAL_MIN_GAMES = 5;          // en dessous, ni projection ni winrate requis
 const GOAL_PICK_MIN = 3;           // parties minimum pour juger un agent ou une map
 const TIER_FR = { iron:'Fer', bronze:'Bronze', silver:'Argent', gold:'Or', platinum:'Platine', diamond:'Diamant',
-  ascendant:'Ascendant', immortal:'Immortel', radiant:'Radiant' };
+  ascendant:'Ascendant', immortal:'Immortel', radiant:'Radiant', unrated:'Non classé', unranked:'Non classé' };
 function tierFr(name){
   const m=String(name||'').trim().match(/^([a-z]+)\s*(\d)?$/i);
   if(!m) return String(name||'');
@@ -5937,12 +5891,12 @@ function dashPairsHTML(pairs, ctx){
   const list=pairs.slice(0, DASH_PAIRS_MAX);
   const body=list.length ? list.map(p=>`<div class="dsh-pair">
       <div class="dsh-pn">${dashWho(ctx,p.a)}<span class="plus">+</span>${dashWho(ctx,p.b)}</div>
-      <div class="dsh-pm"><span>${p.n} partie${p.n>1?'s':''} ensemble · ${dashNum(p.winrate)} % de victoires${p.n<DASH_PAIR_SOLID?' · <i class="dsh-small">échantillon court</i>':''}</span>
+      <div class="dsh-pm"><span>${p.n} partie${p.n>1?'s':''} ensemble · ${dashNum(p.winrate)}&nbsp;% de victoires${p.winrateApart!=null?` <span class="dsh-apart">(séparés ${dashNum(p.winrateApart)}&nbsp;%)</span>`:''}${p.n<DASH_PAIR_SOLID?' · <i class="dsh-small">échantillon court</i>':''}</span>
         <span>Ensemble <b class="${(p.rrTogether||0)>=0?'up':'dn'}">${dashSigned(p.rrTogether,1)}</b> RR/partie · séparés <b class="${(p.rrApart||0)>=0?'up':'dn'}">${dashSigned(p.rrApart,1)}</b>${p.apartN?'':' (aucune partie séparée)'}</span></div>
       ${p.gain!=null?`<div class="dsh-gain ${p.gain>=0?'up':'dn'}">${dashSigned(p.gain,1)}<em>RR/partie</em></div>`:'<div class="dsh-gain"></div>'}
     </div>`).join('')
     : `<div class="md-none">Aucun duo n'a joué au moins ${DASH_PAIR_MIN} parties classées ensemble sur la période.</div>`;
-  return `<div class="card full dsh-card"><h2 class="tabs-header"><span>Duos rentables <em>RR moyen par partie ensemble, contre séparés</em></span></h2>${body}</div>`;
+  return `<div class="card full dsh-card" id="dshDuos"><h2 class="tabs-header"><span>Duos <em>winrate et RR moyen par partie, ensemble contre séparés</em></span></h2>${body}</div>`;
 }
 
 function dashRecordsHTML(rec, ctx){
@@ -6535,13 +6489,16 @@ function wireStatic(){
   $('edMembers')?.addEventListener('click', edClick);
   $('edSave')?.addEventListener('click', saveRoster);
   $('btnBack').addEventListener('click',showHome);
-  $('btnBackTrib').addEventListener('click',showHome);
-  $('btnBackLb').addEventListener('click',showHome);
   // On tolère l'absence de ces boutons (page allégée / variante d'UI).
   $('btnTribunal')?.addEventListener('click',loadTribunal);
   $('btnRoulette')?.addEventListener('click',showRoulette);
-  $('btnBackRou')?.addEventListener('click',showHome);
   $('btnDash')?.addEventListener('click',showDashboard);
+  // Classement -> les duos vivent dans le Dashboard (une seule mesure, au même endroit).
+  $('lbToDuos')?.addEventListener('click', async ()=>{
+    await showDashboard();
+    for(let i=0;i<40 && !$('dshDuos');i++) await new Promise(r=>setTimeout(r,100));
+    $('dshDuos')?.scrollIntoView({ behavior:'smooth', block:'start' });
+  });
   $('goalCard')?.addEventListener('click', e=>{
     const pick=e.target.closest('[data-goal-pick]');
     if(pick){ GOAL_PICK=pick.dataset.goalPick; GOAL_EDIT=true; renderGoalCard(); return; }
@@ -6554,7 +6511,6 @@ function wireStatic(){
   document.addEventListener('keydown', e=>{ if(e.key==='Escape') Object.values(RULERS).forEach(r=>r && r.clear()); });
   wireDashboard();
   $('btnComps')?.addEventListener('click',showComps);
-  $('btnBackCmp')?.addEventListener('click',showHome);
   $('cmpMaps')?.addEventListener('click',e=>{ const b=e.target.closest('[data-cmap]');
     if(b){ COMPO_MAP=b.dataset.cmap; renderComps(); } });
   $('cmpScope')?.addEventListener('click',e=>{ const b=e.target.closest('button[data-scope]');

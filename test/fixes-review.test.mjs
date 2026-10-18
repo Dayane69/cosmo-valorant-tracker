@@ -65,7 +65,7 @@ test("deathmatch compact : ni victoire ni défaite (cas réel : équipe = puuid,
   const M = F.normalizeAny(dm, { name: "Yakuza", tag: "2826" });
   assert.equal(M.ffa, true);
   assert.equal(M.result, "?");
-  assert.equal(F.resultWord(M), "Deathmatch", "avant : « DÉFAITE »");
+  assert.equal(F.resultWord(M), "Combat à mort", "avant : « DÉFAITE »");
   assert.equal(F.scoreText(M), "");
 });
 
@@ -157,7 +157,7 @@ test("accueil : les rangs viennent de l'historique stocké — zéro appel à l'
   await T.fillRanks();
   assert.equal(calls.valo, 0, "avant : un appel par joueur à chaque chargement de l'accueil");
   const chip = doc.getElementById("rank-0").textContent;
-  assert.match(chip, /Gold/, "le rang est bien peint depuis le stocké");
+  assert.match(chip, /Or \d/, "le rang est bien peint depuis le stocké (en français)");
   assert.equal(T.fresh().home.state, "stored", "le voyant dit d'où vient le rang");
   // Sur demande (clic sur le voyant), l'API est interrogée pour tout le monde.
   await T.fillRanks(true);

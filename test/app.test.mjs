@@ -642,7 +642,7 @@ test("peak par acte : un bloc par acte avec le meilleur rang atteint", async () 
   const cells = doc.querySelectorAll("#peakActs .peak-cell");
   assert.equal(cells.length, 2, "un bloc par acte (e8a2, e8a3)");
   // peak = max elo de chaque acte -> tier Gold 2 (elo ~1300-1345 -> palier 13)
-  assert.ok([...doc.querySelectorAll("#peakActs .pk")].every((el) => /Gold 2/.test(el.textContent)), "le peak est un rang");
+  assert.ok([...doc.querySelectorAll("#peakActs .pk")].every((el) => /Or 2/.test(el.textContent)), "le peak est un rang, en français");
 });
 
 test("stats agent/map filtrables par acte", async () => {
