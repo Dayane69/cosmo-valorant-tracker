@@ -8,6 +8,16 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
+# Récap Discord : le rendu PNG a besoin du moteur resvg en WebAssembly (son
+# fichier .wasm doit voyager tel quel, d'où external_node_modules) et des
+# polices Inter (OFL), embarquées seulement dans les deux fonctions concernées.
+[functions."discord-recap"]
+  external_node_modules = ["@resvg/resvg-wasm"]
+  included_files = ["netlify/functions/assets/**"]
+[functions."discord-recap-preview"]
+  external_node_modules = ["@resvg/resvg-wasm"]
+  included_files = ["netlify/functions/assets/**"]
+
 # Toujours revalider les fichiers clés pour qu'un nouveau déploiement arrive
 # tout de suite dans le navigateur (évite un app.js mis en cache trop longtemps).
 [[headers]]

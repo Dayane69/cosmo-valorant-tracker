@@ -66,17 +66,20 @@ async function fetchJSON(fetchImpl, url, headers, { retries = 2, sleep } = {}) {
 // le cache HenrikDev côté serveur — puis récupère tout l'historique stocké.
 // trigger=false quand l'appel v4 a déjà été fait juste avant (ex: ouverture de
 // profil côté front) : on économise alors une requête.
-export async function refreshMember(member, { fetchImpl, apiKey, region, trigger = true, sleep, retries }) {
+export async function refreshMember(member, { fetchImpl, apiKey, region, trigger = true, sleep, retries, collect }) {
   const headers = { Authorization: apiKey };
   const r = region || member.region || "eu";
   const opts = { sleep, retries };
   if (trigger) {
     // matches v4 — alimente le stockage HenrikDev (peu importe qui déclenche l'appel)
-    await fetchJSON(
+    const v4 = await fetchJSON(
       fetchImpl,
       `${HENRIK_BASE}/valorant/v4/matches/${r}/pc/${enc(member.name)}/${enc(member.tag)}?size=10`,
       headers, opts
     ).catch(() => null); // un échec ici ne doit pas empêcher la lecture du stock existant
+    // Cette réponse était jetée. Elle porte pourtant ce que l'historique
+    // stocké n'a pas : le Performance Score de chaque partie (patch 13.06).
+    if (collect && v4) collect.perf = extractPerf(v4.data || v4, member);
   }
   // stored-matches — tout l'historique déjà stocké pour ce joueur
   const stored = await fetchJSON(
@@ -85,6 +88,42 @@ export async function refreshMember(member, { fetchImpl, apiKey, region, trigger
     headers, opts
   );
   return (stored && stored.data) || [];
+}
+
+/* ===================== PERFORMANCE SCORE (patch 13.06) =====================
+   Depuis le patch 13.06, Riot note chaque joueur sur 500 (« Performance
+   Score ») à la place de l'ACS. HenrikDev le renvoie dans les parties
+   complètes (players[].performance), pas dans l'historique compact. On en
+   garde l'essentiel, par partie : la note, la mention, l'appréciation par axe
+   et le MVP. */
+const PERF_KEEP = 800;   // ~ plusieurs mois de parties : de quoi couvrir un acte
+
+export function extractPerf(matches, member) {
+  const me = (p) => p && (String(p.name || "").toLowerCase() === String(member.name).toLowerCase()
+    && String(p.tag || "").toLowerCase() === String(member.tag).toLowerCase());
+  return (Array.isArray(matches) ? matches : []).map((m) => {
+    const id = matchID(m);
+    const p = (m && Array.isArray(m.players) ? m.players : []).find(me);
+    const pf = p && p.performance;
+    if (!id || !pf || pf.score == null || Number.isNaN(Number(pf.score))) return null;
+    const rt = pf.ratings || {};
+    const mvp = m.metadata && m.metadata.mvp;
+    return {
+      id, ts: matchTime(m),
+      ps: Math.round(Number(pf.score) * 10) / 10,
+      g: rt.grade || null,
+      r: Object.assign({}, rt.combat || {}, rt.utility || {}),
+      mvp: !!(mvp && ((mvp.puuid && mvp.puuid === p.puuid) || me(mvp))),
+    };
+  }).filter(Boolean);
+}
+
+// Fusionne deux listes de notes par id de partie (la plus récente gagne), bornée.
+export function mergePerf(existing, fresh) {
+  const byId = new Map();
+  (existing || []).forEach((e) => { if (e && e.id) byId.set(e.id, e); });
+  (fresh || []).forEach((e) => { if (e && e.id) byId.set(e.id, e); });
+  return [...byId.values()].sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, PERF_KEEP);
 }
 
 /* ===================== HISTORIQUE RR (long terme) ===================== */
@@ -146,7 +185,8 @@ export async function fetchMmrHistory(member, { fetchImpl, apiKey, region, sleep
 export async function refreshOne({ member, getStore, fetchImpl, apiKey, region, trigger = true, sleep, retries }) {
   const store = getStore("cosmo-history");
   const key = blobKey(member.name, member.tag);
-  const fresh = await refreshMember(member, { fetchImpl, apiKey, region, trigger, sleep, retries });
+  const collect = {};
+  const fresh = await refreshMember(member, { fetchImpl, apiKey, region, trigger, sleep, retries, collect });
   const existing = (await store.get(key, { type: "json" })) || [];
   const merged = mergeStored(existing, fresh);
   await store.setJSON(key, merged);
@@ -161,6 +201,15 @@ export async function refreshOne({ member, getStore, fetchImpl, apiKey, region, 
     await rrStore.setJSON(key, rrMerged);
     rrTotal = rrMerged.length;
   } catch (e) { /* pas de RR cette fois, tant pis */ }
+
+  // Performance Score : bonus aussi, jamais bloquant.
+  if (collect.perf && collect.perf.length) {
+    try {
+      const pStore = getStore("cosmo-perf");
+      const pExisting = (await pStore.get(key, { type: "json" })) || [];
+      await pStore.setJSON(key, mergePerf(pExisting, collect.perf));
+    } catch (e) { /* tant pis cette fois */ }
+  }
 
   return { added: Math.max(0, merged.length - existing.length), total: merged.length, rrTotal };
 }
