@@ -32,7 +32,8 @@ export function shareURL(site, member, startMs, gapMin = 120) {
 export function discordContent(recap, link, tz = "Europe/Paris") {
   const day = new Date(recap.start).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", timeZone: tz });
   const rr = recap.members.filter((m) => m.rr != null).reduce((a, m) => a + m.rr, 0);
-  return `**Récap COSMO · ${day}** — ${recap.games} partie${recap.games > 1 ? "s" : ""} ensemble, ${recap.wins}V-${recap.losses}D`
+  const tog = recap.together != null && recap.together < recap.games ? ` (dont ${recap.together} ensemble)` : (recap.together != null ? " ensemble" : "");
+  return `**Récap COSMO · ${day}** — ${recap.games} partie${recap.games > 1 ? "s" : ""} classée${recap.games > 1 ? "s" : ""}${tog}, ${recap.wins}V-${recap.losses}D`
     + ` · ${rr >= 0 ? "+" : ""}${rr} RR pour la squad\n${link ? `Rapport complet : <${link}>` : ""}`;
 }
 
