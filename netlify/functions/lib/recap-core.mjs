@@ -60,14 +60,21 @@ export function normCompact(e) {
   };
 }
 
-/* Sessions de la squad : les parties classées JOUÉES ENSEMBLE (au moins deux
-   membres dans la même équipe), coupées à l'écart GAP_MS.
-   Pourquoi « ensemble » : avec les parties solo de chacun, la chaîne ne se
-   coupe jamais — l'un joue à 11 h, l'autre à 12 h 30, un troisième à 14 h… et
-   la « session » du samedi 17 octobre durait 14 heures. Le récap raconte la
-   soirée de la squad, pas la journée de chacun.
+/* Sessions de la squad.
+   1. Le CŒUR : les parties classées JOUÉES ENSEMBLE (au moins deux membres dans
+      la même équipe), coupées à l'écart GAP_MS. C'est lui qui dit quand la
+      squad a joué : en enchaînant les parties solo de chacun, la chaîne ne se
+      coupait jamais (l'un à 11 h, l'autre à 12 h 30, un troisième à 14 h…) et
+      la « session » du samedi 17 octobre durait 14 heures.
+   2. Puis TOUT ce qu'ont joué les présents autour (withSolo, par défaut) :
+      chaque membre qui a joué pendant le cœur (avec la squad ou en même temps
+      qu'elle) compte toutes ses parties classées jouées jusqu'à GAP_MS avant
+      ou après. Lundi 19 octobre : SevenDayy avait 2 parties avec Gogemine et 3
+      en solo autour ; le récap n'en montrait que 2.
+      La marge ne s'enchaîne pas : une partie à 4 h de la squad n'y entre pas.
+   La clé (s.key) reste celle du cœur : un récap déjà posté ne repart pas.
    perMember = [{ member, matches (compactes), rr, perf }]. */
-export function squadSessions(perMember, gapMs = RECAP.GAP_MS, { togetherOnly = true } = {}) {
+export function squadSessions(perMember, gapMs = RECAP.GAP_MS, { togetherOnly = true, withSolo = true } = {}) {
   const entries = [];
   (perMember || []).forEach(({ member, matches, rr, perf }) => {
     const rrBy = {}; (rr || []).forEach((e) => { if (e && e.id) rrBy[e.id] = e; });
@@ -87,22 +94,38 @@ export function squadSessions(perMember, gapMs = RECAP.GAP_MS, { togetherOnly = 
       entries.push({ member, M });
     });
   });
+  const all = entries.slice().sort((a, b) => a.M.t - b.M.t);
+  let core = all;
   if (togetherOnly) {
     const by = {};
-    entries.forEach((en) => { const k = en.M.id + "|" + en.M.team; (by[k] = by[k] || new Set()).add(key(en.member)); });
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const e = entries[i];
-      if (by[e.M.id + "|" + e.M.team].size < 2) entries.splice(i, 1);
-    }
+    all.forEach((en) => { const k = en.M.id + "|" + en.M.team; (by[k] = by[k] || new Set()).add(key(en.member)); });
+    all.forEach((en) => { en.M.together = by[en.M.id + "|" + en.M.team].size >= 2; });
+    core = all.filter((en) => en.M.together);
   }
-  entries.sort((a, b) => a.M.t - b.M.t);
   const out = []; let cur = null;
-  entries.forEach((en) => {
+  core.forEach((en) => {
     if (!cur || en.M.t - cur.end > gapMs) { cur = { start: en.M.t, end: 0, entries: [] }; out.push(cur); }
     cur.entries.push(en);
     cur.end = Math.max(cur.end, en.M.t + en.M.durMs);
   });
-  out.forEach((s) => { s.key = "s" + s.start; });
+  out.forEach((s) => { s.key = "s" + s.start; s.coreStart = s.start; s.coreEnd = s.end; });
+
+  if (togetherOnly && withSolo) {
+    const taken = new Set(core);
+    out.forEach((s) => {
+      // Présents : ceux qui ont joué pendant le cœur, ensemble ou à côté.
+      const present = new Set(s.entries.map((e) => key(e.member)));
+      all.forEach((en) => { if (en.M.t >= s.coreStart && en.M.t <= s.coreEnd) present.add(key(en.member)); });
+      all.forEach((en) => {
+        if (taken.has(en) || !present.has(key(en.member))) return;
+        if (en.M.t < s.coreStart - gapMs || en.M.t > s.coreEnd + gapMs) return;
+        taken.add(en); s.entries.push(en);
+      });
+      s.entries.sort((a, b) => a.M.t - b.M.t);
+      s.start = s.entries[0].M.t;
+      s.end = Math.max(...s.entries.map((e) => e.M.t + e.M.durMs));
+    });
+  }
   return out;
 }
 
@@ -160,6 +183,7 @@ export function buildRecap(s) {
       adr: G.reduce((a, g) => a + g.dmg, 0) / rounds,
       agentId: agent, agent: (G.find((g) => g.agentId === agent) || {}).agent || "",
       mvps: G.filter((g) => g.mvp).length,
+      together: G.filter((g) => g.together).length,
       tierAfter: (G.filter((g) => g.tierAfter).slice(-1)[0] || {}).tierAfter || null,
     };
   });
@@ -171,6 +195,7 @@ export function buildRecap(s) {
   const seen = new Map();
   s.entries.forEach(({ M }) => { if (!seen.has(M.id)) seen.set(M.id, M); });
   const games = [...seen.values()];
+  const togetherIds = new Set(s.entries.filter(({ M }) => M.together).map(({ M }) => M.id));
   // La meilleure partie individuelle.
   let best = null;
   s.entries.forEach(({ member, M }) => {
@@ -181,6 +206,7 @@ export function buildRecap(s) {
   return {
     key: s.key, start: s.start, end: s.end,
     games: games.length,
+    together: togetherIds.size,
     wins: games.filter((g) => g.result === "w").length,
     losses: games.filter((g) => g.result === "l").length,
     maps: [...new Set(games.map((g) => g.map).filter(Boolean))],

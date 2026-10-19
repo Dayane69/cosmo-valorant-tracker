@@ -171,7 +171,8 @@ test("runRecap : poste l'image et ne retient la session qu'après succès", asyn
   const post = calls.find((c) => c.url.startsWith("https://discord"));
   assert.ok(post.url.endsWith("?wait=true"));
   const payload = JSON.parse(post.init.body.get("payload_json"));
-  assert.match(payload.content, /2 parties ensemble, 1V-0D|2 parties ensemble, 2V-0D/);
+  // « Solo » a joué pendant la session de la squad : sa partie compte aussi.
+  assert.match(payload.content, /3 parties classées \(dont 2 ensemble\), 3V-0D/);
   assert.deepEqual(payload.allowed_mentions, { parse: [] }, "jamais de @everyone");
   assert.equal(post.init.body.get("files[0]").type, "image/png");
   assert.ok(calls.some((c) => c.url.includes("fonts.googleapis") && c.url.includes(encodeURIComponent("影"))), "police de repli pour 影");
@@ -199,10 +200,11 @@ test("runRecap : sans webhook, rien n'est envoyé", async () => {
 });
 
 test("discordContent / shareURL", () => {
-  const recap = { start: T0, games: 3, wins: 2, losses: 1, members: [{ rr: 30 }, { rr: -12 }, { rr: null }] };
+  const recap = { start: T0, games: 3, together: 3, wins: 2, losses: 1, members: [{ rr: 30 }, { rr: -12 }, { rr: null }] };
   const txt = discordContent(recap, "https://x/?s=1");
   assert.match(txt, /samedi 17 octobre/);
-  assert.match(txt, /3 parties ensemble, 2V-1D · \+18 RR/);
+  assert.match(txt, /3 parties classées ensemble, 2V-1D · \+18 RR/);
+  assert.match(discordContent({ ...recap, together: 1 }, ""), /3 parties classées \(dont 1 ensemble\)/);
   const u = new URL(shareURL("https://cosmo-valo.netlify.app/", A, T0));
   assert.equal(u.searchParams.get("s"), "Yaku#ZA");
   assert.equal(u.searchParams.get("t"), String(T0));
@@ -245,4 +247,41 @@ test("runRecap : sans lecture forte possible, lecture normale (les récaps conti
   S.getStore("cosmo-discord").noStrong = true;
   assert.equal((await run(S)).r.status, "posté");
   assert.equal((await run(S)).r.status, "rien à poster");
+});
+
+test("le récap compte tout : les parties solo des présents autour de la session (cas réel du lundi 19)", () => {
+  const at = (h) => Date.parse(`2026-10-19T${h}:00Z`);
+  const G = (id, h, my, opp, team = "red") => game(id, at(h), { my, opp, team });
+  const seven = { member: { name: "SevenDayy", tag: "6340" },
+    matches: [G("s1", "07:02", 8, 13), G("s2", "07:35", 9, 13), G("t1", "08:43", 13, 9), G("t2", "09:22", 9, 13), G("s3", "09:57", 9, 13)],
+    rr: [["s1", -23], ["s2", -24], ["t1", 18], ["t2", -19], ["s3", -21]].map(([id, change]) => ({ id, change })) };
+  const gog = { member: { name: "Gogemine", tag: "0202" },
+    matches: [G("t1", "08:43", 13, 9), G("t2", "09:22", 9, 13)],
+    rr: [{ id: "t1", change: 16 }, { id: "t2", change: -20 }] };
+  // Joue en même temps que la squad, sans elle : présent, ses parties comptent.
+  const side = { member: { name: "Joker", tag: "1" }, matches: [G("j1", "09:00", 13, 5, "blue")], rr: [{ id: "j1", change: 20 }] };
+  // A joué seulement avant la squad, pas pendant : il n'était pas là.
+  const early = { member: { name: "Yakuza", tag: "2" }, matches: [G("y1", "07:30", 13, 11)], rr: [{ id: "y1", change: 15 }] };
+  // Le soir, 5 h plus tard : une autre histoire.
+  const late = { member: { name: "kingsto", tag: "0" }, matches: [G("k1", "15:30", 13, 2)], rr: [{ id: "k1", change: 20 }] };
+
+  const S = squadSessions([seven, gog, side, early, late]);
+  assert.equal(S.length, 1);
+  assert.equal(S[0].key, "s" + at("08:43"), "même clé qu'avant : un récap déjà posté ne repart pas");
+  const R = buildRecap(S[0]);
+  const by = Object.fromEntries(R.members.map((m) => [m.name, m]));
+  assert.equal(by.SevenDayy.n, 5, "ses 3 parties solo autour comptent");
+  assert.equal(by.SevenDayy.rr, -69);
+  assert.equal(by.SevenDayy.together, 2);
+  assert.equal(by.Gogemine.rr, -4);
+  assert.equal(by.Joker.n, 1, "présent pendant la session");
+  assert.equal(by.Yakuza, undefined, "absent pendant la session");
+  assert.equal(by.kingsto, undefined);
+  assert.equal(R.games, 6);
+  assert.equal(R.together, 2);
+  const svg = recapSVG(R, { tz: "Europe/Paris", site: "x" });
+  assert.match(svg, /6 parties classées · dont 2 ensemble/);
+  assert.match(svg, /1V 4D · 2 ens\./);
+  // Sans les solos (ancien comportement), toujours disponible.
+  assert.equal(buildRecap(squadSessions([seven, gog], RECAP.GAP_MS, { withSolo: false })[0]).games, 2);
 });
