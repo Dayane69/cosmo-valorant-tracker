@@ -45,7 +45,7 @@ afin de garder la clé API **hors du navigateur**.
 
   Déclencheurs et seuils sont **calibrés sur les sessions réelles de la squad** (mesurées : 2 à 7 parties, RR net de −46 à +68) : à ≥ 6 parties et ±40 RR, des soirées à +68 RR ne déclenchaient rien. Un **récapitulatif** est par ailleurs toujours produit pour la session du jour (« 5 parties hier après-midi — 2V-3D, −10 RR, indice 73 ») : sa gravité est sous celle de tous les autres cas, il ne prend donc la place que si rien de plus marquant n'a eu lieu. Et une soirée qui **rapporte du RR** n'est jamais accusée d'être « partie en vrille ».
 
-  > Source : les **blobs d'historique**, donc aucun appel HenrikDev sur l'accueil et aucun risque de rate limit. Le cron passant **toutes les heures**, la session qu'on vient de jouer apparaît dans le bandeau sans rien ouvrir. Et les parties fraîches d'un profil qu'on ouvre sont de toute façon **injectées dans l'index** au passage : pas besoin d'attendre l'heure suivante.
+  > Source : les **blobs d'historique**, donc aucun appel HenrikDev sur l'accueil et aucun risque de rate limit. Le serveur vérifiant **toutes les 5 minutes** qui vient de jouer, la session qu'on vient de jouer apparaît dans le bandeau sans rien ouvrir. Et les parties fraîches d'un profil qu'on ouvre sont de toute façon **injectées dans l'index** au passage.
 - **Compos par map** — 🗺 quelles compositions gagnent, map par map, avec **deux échelles**.
 
   **Le problème de départ.** Les blobs d'historique viennent de `stored-matches`, qui ne renvoie **qu'un seul joueur par partie** : on y connaît l'agent d'un membre COSMO, jamais celui des neuf autres. Aucune compo n'en sort. Les compos viennent donc d'une **seconde source** : `/valorant/v4/match/{region}/{id}`, rejoué partie par partie, qui donne les 10 joueurs. Chaque partie fournit ainsi **deux compos réelles avec leur résultat** — la nôtre et celle d'en face.
@@ -118,52 +118,47 @@ afin de garder la clé API **hors du navigateur**.
 - **Stats joueurs/matchs** : [HenrikDev API](https://docs.henrikdev.xyz/) via le proxy Netlify.
 - **Historique accumulé** : endpoint `stored-matches` de HenrikDev, agrégé jour après jour dans **Netlify Blobs** (store `cosmo-history`).
 
-## 🔄 Rafraîchissement automatique horaire
+## 🔄 Rafraîchissement automatique (toutes les 5 minutes)
 
 `netlify/functions/refresh-matches.mjs` est une **fonction planifiée Netlify**
-(disponible sur tous les plans, y compris gratuit) qui tourne **toutes les
-heures, à l'heure pile**.
+qui tourne **toutes les 5 minutes** (`watchRefresh` dans `lib/refresh-core.mjs`).
 
-> **Pourquoi chaque heure.** Le profil qu'on ouvre est déjà frais : le front
-> appelle `matches` v4 en direct pour ce joueur. Ce qui dépendait du cron, c'est
-> ce qui se lit **sans ouvrir un profil** — le **bandeau d'alertes** de
-> l'accueil, qui ne lit que les blobs. À 04:00, la session du soir n'y
-> apparaissait que le lendemain ; désormais elle est là dans l'heure, y compris
-> si on ouvre le tracker juste après une partie.
+> **Pourquoi 5 minutes, et pourquoi pas avant.** Une mise à jour complète
+> coûte 3 appels HenrikDev par joueur (~22 s et 21 appels pour le roster, sur
+> une limite de 30 par minute). Une fois par heure et sous un budget de temps,
+> chaque passage n'en servait que 2 ou 3 : il fallait **jusqu'à 3 h** pour que
+> tout le roster soit à jour, et le récap Discord ou le rapport de session
+> lisaient un historique en retard (seule l'ouverture d'un profil forçait la
+> mise à jour d'un joueur).
 
-Pour chaque membre du roster, elle :
-1. appelle `matches` v4 — ce qui pousse HenrikDev à interroger Riot et à **stocker**
-   la partie (peu importe qui déclenche l'appel) ;
-2. lit `stored-matches` (tout l'historique stocké pour ce joueur) ;
-3. fusionne par `matchid` avec le blob existant et le réécrit.
+Chaque passage :
+1. **Détecte** qui vient de jouer : l'historique RR de chaque joueur, un petit
+   appel. Une partie classée inconnue = il sort de partie (son RR est
+   enregistré au passage).
+2. Pour ceux-là seulement, récupère leurs **parties récentes** (`matches` v4, un
+   appel) et les range directement dans l'historique, converties au format de
+   `stored-matches` (`v4ToCompact`) : plus besoin d'attendre qu'HenrikDev les
+   ait stockées. La note de performance suit.
+3. Fait le **tour complet** d'un joueur, à tour de rôle (v4 + `stored-matches` +
+   RR) : c'est ce qui rattrape les parties non classées et le deathmatch, que
+   l'historique RR ne voit pas. Tout le roster y passe en ~35 minutes.
 
-Résultat : l'historique grossit tout seul, **sans dépendre d'une visite humaine**.
-Le front combine ensuite cet historique (`/.netlify/functions/historique`) avec les
-parties fraîches de `matches` v4, dédoublonnées par `matchid`.
+Coût : ~10 appels par passage au calme, 17 au pire si tout le monde sort de
+partie en même temps, sous les 30 par minute, avec de la place pour le site.
+Un budget de temps (18 s, une fonction planifiée est coupée à 30 s) borne
+chaque passage ; le joueur du prochain tour complet est noté dans le blob
+`cosmo-refresh`, avec le bilan du dernier passage.
 
-> Les appels du cron sont **séquentiels et espacés** pour rester dans le rate limit
-> HenrikDev (30 req/min en Basic, 90 en Advanced). L'échec d'un membre est loggé
-> sans interrompre la boucle. Un passage complet, c'est 8 membres × 3 appels =
-> **24 appels**, qui tiennent dans une fenêtre d'une minute — et il n'y en a
-> qu'un par heure.
+**Vérifier que ça tourne** : `/.netlify/functions/refresh-now?key=REFRESH_TOKEN&state=1`
+donne l'heure du dernier passage et ce qu'il a fait (qui sortait de partie,
+parties ajoutées), sans lancer aucun appel.
 
-### Budget et relais
+Le **backfill des compos** reste **quotidien** : un seul passage, le premier de
+04:00 UTC. C'est la partie coûteuse (jusqu'à 20 appels de plus, ~370 Ko
+chacun) ; la surveillance lui laisse alors une partie de son budget.
 
-Une fonction Netlify est **coupée net à 10 s**, et un passage complet du roster
-tourne autour de 9 s : pile sur le fil. Plutôt que de parier dessus, chaque
-exécution travaille sous un **budget de temps** et enregistre dans un blob
-(`cosmo-refresh`) **le membre par lequel reprendre** ; la suivante repart de là.
-
-Conséquences : aucun membre n'est jamais affamé, le plafond réel de la
-plateforme n'a plus d'importance, et un curseur périmé (membre retiré, renommé)
-fait simplement recommencer par le début au lieu de tout bloquer. Un budget
-serré fait toujours avancer d'**au moins un membre**, sinon le roster resterait
-figé pour toujours.
-
-Le **backfill des compos** reste **quotidien** (04:00 UTC) : c'est la partie
-coûteuse — jusqu'à 20 appels de plus, ~370 Ko chacun — et elle ne sert pas une
-lecture « je viens de finir une game ». À cette heure-là, les deux travaux se
-**partagent** le budget au lieu de s'additionner.
+Le **récap Discord** (`discord-recap.mjs`) passe tous les quarts d'heure : il
+part entre 2 h et 2 h 15 après la dernière partie jouée ensemble.
 
 ### Déclenchement manuel (sans attendre le cron)
 
