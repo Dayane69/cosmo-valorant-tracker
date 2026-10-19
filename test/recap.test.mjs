@@ -127,7 +127,10 @@ function fakeStores(data) {
   const stores = {};
   const getStore = (name) => (stores[name] = stores[name] || {
     data: data[name] || {},
-    async get(k) { return this.data[k] === undefined ? null : JSON.parse(JSON.stringify(this.data[k])); },
+    gets: [],
+    async get(k, o) { this.gets.push({ k, o }); if (this.failGet) throw new Error("blobs indisponible");
+      if (this.noStrong && o && o.consistency === "strong") throw new Error("uncachedEdgeURL manquant");
+      return this.data[k] === undefined ? null : JSON.parse(JSON.stringify(this.data[k])); },
     async setJSON(k, v) { this.data[k] = v; },
   });
   return { getStore, stores };
@@ -220,4 +223,26 @@ test("netlify.toml : le moteur .wasm est embarqué dans les deux fonctions du r�
     assert.match(block, /included_files = \[[^\]]*"node_modules\/@resvg\/resvg-wasm\/index_bg\.wasm"/, fn);
     assert.match(block, /"netlify\/functions\/assets\/\*\*"/, fn + " : les polices");
   }
+});
+
+test("runRecap : la liste des sessions postées est relue en lecture forte", async () => {
+  const S = fakeStores(world());
+  await run(S);
+  const g = S.stores["cosmo-discord"].gets.find((x) => x.k === "posted");
+  assert.equal(g.o.consistency, "strong", "sinon une copie vieille d'une minute laisse reposter la même session");
+});
+
+test("runRecap : mémoire illisible = rien n'est posté (pas de spam toutes les heures)", async () => {
+  const S = fakeStores(world());
+  S.getStore("cosmo-discord").failGet = true;
+  const { r, calls } = await run(S);
+  assert.match(r.status, /illisible/);
+  assert.equal(calls.filter((c) => c.url.startsWith("https://discord")).length, 0);
+});
+
+test("runRecap : sans lecture forte possible, lecture normale (les récaps continuent)", async () => {
+  const S = fakeStores(world());
+  S.getStore("cosmo-discord").noStrong = true;
+  assert.equal((await run(S)).r.status, "posté");
+  assert.equal((await run(S)).r.status, "rien à poster");
 });
