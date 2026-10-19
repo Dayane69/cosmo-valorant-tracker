@@ -1,0 +1,257 @@
+[
+ {
+  "metadata": {
+   "match_id": "f5157616-8676-4c87-8339-738d05e58f07",
+   "map": {
+    "id": "92584fbe-486a-b1b2-9faa-39b0f486b498",
+    "name": "Sunset"
+   },
+   "game_version": "release-13.08-shipping-19-5698904",
+   "started_at": "2026-10-19T09:57:13.612Z",
+   "queue": {
+    "id": "competitive",
+    "name": "Competitive",
+    "mode_type": "Standard"
+   },
+   "season": {
+    "id": "d816f426-48ea-f052-117f-9697a155b319",
+    "short": "e11a6"
+   },
+   "region": "eu",
+   "cluster": "Frankfurt"
+  },
+  "players": [
+   {
+    "puuid": "00000000-0000-0000-0000-000000000001",
+    "name": "Inconnu1",
+    "tag": "0000",
+    "team_id": "Blue",
+    "account_level": 356,
+    "agent": {
+     "id": "22697a3d-45bf-8dd7-4fec-84a9e28c69d7",
+     "name": "Chamber"
+    },
+    "stats": {
+     "score": 3034,
+     "kills": 11,
+     "deaths": 18,
+     "assists": 3,
+     "headshots": 5,
+     "bodyshots": 17,
+     "legshots": 0,
+     "damage": {
+      "dealt": 1999,
+      "received": 3326
+     }
+    },
+    "tier": {
+     "id": 13,
+     "name": "Gold 2"
+    }
+   },
+   {
+    "puuid": "00000000-0000-0000-0000-000000000002",
+    "name": "Inconnu2",
+    "tag": "0000",
+    "team_id": "Blue",
+    "account_level": 265,
+    "agent": {
+     "id": "9f0d8ba9-4140-b941-57d3-a7ad57c6b417",
+     "name": "Brimstone"
+    },
+    "stats": {
+     "score": 5408,
+     "kills": 18,
+     "deaths": 13,
+     "assists": 14,
+     "headshots": 15,
+     "bodyshots": 34,
+     "legshots": 0,
+     "damage": {
+      "dealt": 3516,
+      "received": 2534
+     }
+    },
+    "tier": {
+     "id": 17,
+     "name": "Platinum 3"
+    }
+   },
+   {
+    "puuid": "1f07503f-7247-5bd6-8a94-3139ecaab34c",
+    "name": "SevenDayy",
+    "tag": "6340",
+    "team_id": "Red",
+    "account_level": 192,
+    "agent": {
+     "id": "9f0d8ba9-4140-b941-57d3-a7ad57c6b417",
+     "name": "Brimstone"
+    },
+    "stats": {
+     "score": 3313,
+     "kills": 9,
+     "deaths": 18,
+     "assists": 13,
+     "headshots": 5,
+     "bodyshots": 35,
+     "legshots": 4,
+     "damage": {
+      "dealt": 2463,
+      "received": 3402
+     }
+    },
+    "tier": {
+     "id": 15,
+     "name": "Platinum 1"
+    }
+   }
+  ],
+  "teams": [
+   {
+    "team_id": "Red",
+    "rounds": {
+     "won": 9,
+     "lost": 13
+    }
+   },
+   {
+    "team_id": "Blue",
+    "rounds": {
+     "won": 13,
+     "lost": 9
+    }
+   }
+  ]
+ },
+ {
+  "metadata": {
+   "match_id": "12183b2f-db85-431a-8f98-1f3697cfc174",
+   "map": {
+    "id": "92584fbe-486a-b1b2-9faa-39b0f486b498",
+    "name": "Sunset"
+   },
+   "game_version": "release-13.08-shipping-19-5698904",
+   "started_at": "2026-10-19T08:12:56.051Z",
+   "queue": {
+    "id": "deathmatch",
+    "name": "Deathmatch",
+    "mode_type": "Deathmatch"
+   },
+   "season": {
+    "id": "d816f426-48ea-f052-117f-9697a155b319",
+    "short": "e11a6"
+   },
+   "region": "eu",
+   "cluster": "Paris"
+  },
+  "players": [
+   {
+    "puuid": "00000000-0000-0000-0000-000000000001",
+    "name": "Inconnu1",
+    "tag": "0000",
+    "team_id": "00000000-0000-0000-0000-000000000001",
+    "account_level": 71,
+    "agent": {
+     "id": "5f8d3a7f-467b-97f3-062c-13acf203c006",
+     "name": "Breach"
+    },
+    "stats": {
+     "score": 3974,
+     "kills": 12,
+     "deaths": 24,
+     "assists": 8,
+     "headshots": 0,
+     "bodyshots": 0,
+     "legshots": 0,
+     "damage": {
+      "dealt": 0,
+      "received": 0
+     }
+    },
+    "tier": {
+     "id": 0,
+     "name": "Unrated"
+    }
+   },
+   {
+    "puuid": "00000000-0000-0000-0000-000000000002",
+    "name": "Inconnu2",
+    "tag": "0000",
+    "team_id": "00000000-0000-0000-0000-000000000002",
+    "account_level": 82,
+    "agent": {
+     "id": "eb93336a-449b-9c1b-0a54-a891f7921d69",
+     "name": "Phoenix"
+    },
+    "stats": {
+     "score": 9554,
+     "kills": 32,
+     "deaths": 21,
+     "assists": 2,
+     "headshots": 0,
+     "bodyshots": 0,
+     "legshots": 0,
+     "damage": {
+      "dealt": 0,
+      "received": 0
+     }
+    },
+    "tier": {
+     "id": 0,
+     "name": "Unrated"
+    }
+   },
+   {
+    "puuid": "1f07503f-7247-5bd6-8a94-3139ecaab34c",
+    "name": "SevenDayy",
+    "tag": "6340",
+    "team_id": "1f07503f-7247-5bd6-8a94-3139ecaab34c",
+    "account_level": 192,
+    "agent": {
+     "id": "efba5359-4016-a1e5-7626-b1ae76895940",
+     "name": "Vyse"
+    },
+    "stats": {
+     "score": 4570,
+     "kills": 13,
+     "deaths": 27,
+     "assists": 9,
+     "headshots": 0,
+     "bodyshots": 0,
+     "legshots": 0,
+     "damage": {
+      "dealt": 0,
+      "received": 0
+     }
+    },
+    "tier": {
+     "id": 0,
+     "name": "Unrated"
+    }
+   }
+  ],
+  "teams": [
+   {
+    "team_id": "00000000-0000-0000-0000-000000000001",
+    "rounds": {
+     "won": 0,
+     "lost": 0
+    }
+   },
+   {
+    "team_id": "00000000-0000-0000-0000-000000000002",
+    "rounds": {
+     "won": 0,
+     "lost": 0
+    }
+   },
+   {
+    "team_id": "1f07503f-7247-5bd6-8a94-3139ecaab34c",
+    "rounds": {
+     "won": 0,
+     "lost": 0
+    }
+   }
+  ]
+ }
+]

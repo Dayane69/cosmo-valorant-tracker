@@ -1372,7 +1372,7 @@
       <div class="row" style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px;">
         <button class="btn" id="btnRefreshNow">⟳ Sauvegarder l'historique de la squad</button>
       </div>
-      <div class="secnote" id="refreshStatus">Sauvegarde l'historique de chaque joueur un par un (espacé pour respecter la limite de l'API). Sinon c'est automatique chaque jour à 04:00 UTC.</div>
+      <div class="secnote" id="refreshStatus">Sauvegarde l'historique de chaque joueur un par un (espacé pour respecter la limite de l'API). Sinon c'est automatique : le serveur vérifie toutes les 5 minutes qui vient de jouer.</div>
 
       <div class="row" style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px;">
         <button class="btn" id="btnEditRoster" type="button">✎ Modifier le roster</button>
@@ -1586,7 +1586,7 @@
       <div>
         <div class="eyebrow" style="color:var(--amber)">COSMO Dashboard</div>
         <h1>Le roster d'un coup d'œil</h1>
-        <div class="tag">RR, forme, sessions et duos · historique stocké, mis à jour toutes les heures</div>
+        <div class="tag">RR, forme, sessions et duos · historique stocké, mis à jour toutes les 5 minutes</div>
       </div>
     </div>
     <div id="dshBody"></div>

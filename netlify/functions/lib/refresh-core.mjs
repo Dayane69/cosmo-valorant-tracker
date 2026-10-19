@@ -62,6 +62,47 @@ async function fetchJSON(fetchImpl, url, headers, { retries = 2, sleep } = {}) {
   }
 }
 
+/* Partie v4 (complète) -> format compact de stored-matches v1, pour UN joueur.
+   Pourquoi : stored-matches n'a une partie qu'une fois qu'HenrikDev l'a rangée,
+   avec du retard. matches v4, lui, l'a dès la fin de la partie, et on l'appelle
+   de toute façon : autant en garder les parties tout de suite, au même format
+   que l'historique (le site et le récap ne voient pas la différence). */
+export function v4ToCompact(m, member) {
+  const md = (m && m.metadata) || null;
+  if (!md || !md.match_id || !member) return null;
+  const n = String(member.name || "").toLowerCase(), t = String(member.tag || "").toLowerCase();
+  const p = (Array.isArray(m.players) ? m.players : []).find((x) => x
+    && String(x.name || "").toLowerCase() === n && String(x.tag || "").toLowerCase() === t);
+  if (!p) return null;
+  const st = p.stats || {}, dmg = st.damage || {}, q = md.queue || {};
+  const won = {};
+  (Array.isArray(m.teams) ? m.teams : []).forEach((tm) => {
+    const k = String((tm && tm.team_id) || "").toLowerCase();
+    if (k === "red" || k === "blue") won[k] = Number((tm.rounds && tm.rounds.won) || 0);
+  });
+  return {
+    meta: {
+      id: md.match_id, map: md.map || null, version: md.game_version || null,
+      mode: q.name || (q.id === "custom" ? "Custom Game" : q.id) || "",
+      started_at: md.started_at || null, season: md.season || null,
+      region: md.region || null, cluster: md.cluster || null,
+    },
+    stats: {
+      puuid: p.puuid || null, name: "", tag: "", team: p.team_id || null, level: p.account_level || null,
+      character: { id: (p.agent && p.agent.id) || null, name: (p.agent && p.agent.name) || null },
+      tier: p.tier && p.tier.id != null ? p.tier.id : null,
+      score: Number(st.score || 0), kills: Number(st.kills || 0), deaths: Number(st.deaths || 0), assists: Number(st.assists || 0),
+      shots: { head: Number(st.headshots || 0), body: Number(st.bodyshots || 0), leg: Number(st.legshots || 0) },
+      damage: { made: Number(dmg.dealt || 0), received: Number(dmg.received || 0) },
+    },
+    teams: { red: won.red || 0, blue: won.blue || 0 },
+  };
+}
+const v4Compacts = (v4, member) => {
+  const list = (v4 && (v4.data || v4)) || [];
+  return (Array.isArray(list) ? list : []).map((m) => v4ToCompact(m, member)).filter(Boolean);
+};
+
 // Pour un membre : déclenche (optionnellement) matches v4 — ce qui fait grossir
 // le cache HenrikDev côté serveur — puis récupère tout l'historique stocké.
 // trigger=false quand l'appel v4 a déjà été fait juste avant (ex: ouverture de
@@ -79,7 +120,10 @@ export async function refreshMember(member, { fetchImpl, apiKey, region, trigger
     ).catch(() => null); // un échec ici ne doit pas empêcher la lecture du stock existant
     // Cette réponse était jetée. Elle porte pourtant ce que l'historique
     // stocké n'a pas : le Performance Score de chaque partie (patch 13.06).
-    if (collect && v4) collect.perf = extractPerf(v4.data || v4, member);
+    if (collect && v4) {
+      collect.perf = extractPerf(v4.data || v4, member);
+      collect.recent = v4Compacts(v4, member);   // les parties du jour, sans attendre stored-matches
+    }
   }
   // stored-matches — tout l'historique déjà stocké pour ce joueur
   const stored = await fetchJSON(
@@ -188,7 +232,7 @@ export async function refreshOne({ member, getStore, fetchImpl, apiKey, region, 
   const collect = {};
   const fresh = await refreshMember(member, { fetchImpl, apiKey, region, trigger, sleep, retries, collect });
   const existing = (await store.get(key, { type: "json" })) || [];
-  const merged = mergeStored(existing, fresh);
+  const merged = mergeStored(existing, fresh.concat(collect.recent || []));
   await store.setJSON(key, merged);
 
   // RR long terme : bonus, un échec ne doit pas faire rater la sauvegarde des matchs.
@@ -212,6 +256,95 @@ export async function refreshOne({ member, getStore, fetchImpl, apiKey, region, 
   }
 
   return { added: Math.max(0, merged.length - existing.length), total: merged.length, rrTotal };
+}
+
+/* Mise à jour rapide d'un membre qui vient de jouer : UN appel (matches v4),
+   ses parties converties au format compact et fusionnées dans l'historique,
+   plus sa note de performance. */
+export async function pullRecent({ member, getStore, fetchImpl, apiKey, region, sleep, retries }) {
+  const r = region || member.region || "eu";
+  const v4 = await fetchJSON(fetchImpl,
+    `${HENRIK_BASE}/valorant/v4/matches/${r}/pc/${enc(member.name)}/${enc(member.tag)}?size=10`,
+    { Authorization: apiKey }, { sleep, retries });
+  const key = blobKey(member.name, member.tag);
+  const store = getStore("cosmo-history");
+  const existing = (await store.get(key, { type: "json" })) || [];
+  const merged = mergeStored(existing, v4Compacts(v4, member));
+  if (merged.length !== existing.length) await store.setJSON(key, merged);
+  const perf = extractPerf(v4.data || v4, member);
+  if (perf.length) {
+    try {
+      const pStore = getStore("cosmo-perf");
+      await pStore.setJSON(key, mergePerf((await pStore.get(key, { type: "json" })) || [], perf));
+    } catch (e) { /* la note attendra le prochain passage */ }
+  }
+  return { added: merged.length - existing.length };
+}
+
+/* LA SURVEILLANCE (toutes les 5 minutes)
+
+   Le problème : une mise à jour complète coûte 3 appels par joueur (~22 s et
+   21 appels pour le roster, sur une limite de 30 par minute). Une fois par
+   heure, elle ne servait que 2 ou 3 joueurs par passage : il fallait jusqu'à
+   3 h pour que tout le monde soit à jour, et le récap ou le rapport de session
+   tombaient sur des parties manquantes.
+
+   Ce qui la rend assez légère pour tourner toutes les 5 minutes :
+   1. Détection : l'historique RR de chaque joueur, un petit appel. Une partie
+      classée inconnue = il vient de jouer. (Le RR, au passage, est enregistré.)
+   2. Ceux-là seulement : leurs parties récentes (un appel, matches v4).
+   3. Un joueur par passage, à tour de rôle : la mise à jour complète, pour les
+      parties non classées et le deathmatch, que le RR ne voit pas. Tout le
+      roster y passe en ~35 minutes.
+   Soit ~10 appels par passage au calme, 17 au plus si tout le monde sort de
+   partie en même temps : sous les 30 par minute, avec de la place pour le site.
+
+   `budgetMs` borne le temps (une fonction planifiée est coupée à 30 s). */
+export async function watchRefresh({ roster, region, getStore, fetchImpl, apiKey, sweepKey = null,
+  budgetMs = 18000, now = () => Date.now(), log = console, sleep, retries = 1 }) {
+  if (!apiKey) throw new Error("HENRIK_KEY manquante");
+  const list = Array.isArray(roster) ? roster.filter(Boolean) : [];
+  const started = now(), over = () => budgetMs && now() - started >= budgetMs;
+  const rrStore = getStore("cosmo-rr");
+  const out = { checked: 0, played: [], pulled: 0, added: 0, swept: null, fail: 0, nextSweep: null };
+
+  // 1. Qui vient de jouer ?
+  const dirty = [];
+  for (const m of list) {
+    if (over()) break;
+    const key = blobKey(m.name, m.tag);
+    try {
+      const fresh = await fetchMmrHistory(m, { fetchImpl, apiKey, region, sleep, retries });
+      const existing = (await rrStore.get(key, { type: "json" })) || [];
+      const known = new Set(existing.map(rrKey));
+      if (fresh.some((e) => !known.has(rrKey(e)))) {
+        await rrStore.setJSON(key, mergeRR(existing, fresh));
+        dirty.push(m); out.played.push(key);
+      }
+      out.checked++;
+    } catch (e) { out.fail++; log.error(`[watch] RR ${key}: ${(e && e.message) || e}`); }
+  }
+
+  // 2. Leurs parties, tout de suite.
+  for (const m of dirty) {
+    if (over()) break;
+    try { const r = await pullRecent({ member: m, getStore, fetchImpl, apiKey, region, sleep, retries }); out.pulled++; out.added += r.added; }
+    catch (e) { out.fail++; log.error(`[watch] parties ${blobKey(m.name, m.tag)}: ${(e && e.message) || e}`); }
+  }
+
+  // 3. Le tour complet d'un joueur (à tour de rôle).
+  const order = rotateFrom(list, sweepKey);
+  const sweep = order[0] || null;
+  if (sweep && !over()) {
+    try {
+      const r = await refreshOne({ member: sweep, getStore, fetchImpl, apiKey, region, trigger: true, sleep, retries });
+      out.swept = blobKey(sweep.name, sweep.tag); out.added += r.added;
+    } catch (e) { out.fail++; log.error(`[watch] tour complet ${blobKey(sweep.name, sweep.tag)}: ${(e && e.message) || e}`); }
+  }
+  // Le suivant, même si celui-ci a échoué : un joueur en panne ne bloque pas le tour.
+  out.nextSweep = order[1] ? blobKey(order[1].name, order[1].tag) : (sweep ? blobKey(sweep.name, sweep.tag) : null);
+  log.log(`[watch] ${out.checked}/${list.length} vérifiés, ${out.played.length} sortent de partie, +${out.added} parties, tour complet : ${out.swept || "—"}`);
+  return out;
 }
 
 /* Réordonne le roster pour commencer par un membre donné (sa clé de blob), le

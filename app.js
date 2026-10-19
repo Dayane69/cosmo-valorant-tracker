@@ -1932,7 +1932,7 @@ function sessionRecords(sessions, ctx){
 
    Source : les blobs d'historique uniquement (aucun appel HenrikDev sur
    l'accueil). Conséquence assumée : une session jouée ce soir n'apparaît
-   qu'une fois le blob rafraîchi (cron de 04:00 UTC, ou ouverture du profil). */
+   qu'une fois le blob rafraîchi (toutes les 5 minutes, ou ouverture du profil). */
 const ALERT_DAYS = 2;          // au-delà de 48 h, on ne montre rien
 // Seuils recalibrés sur les sessions réelles de la squad (mesurées : 2 à 7
 // parties, RR net entre -46 et +68). À 6 parties et ±40 RR, des soirées à
@@ -2370,7 +2370,7 @@ function renderFresh(){
     el.title = f.state==='error'
       ? `Dernier rafraîchissement échoué : ${f.err}. Clique pour réessayer.`
       : f.state==='stored'
-      ? "Lu dans l'historique stocké, que le serveur met à jour toutes les heures — sans appel à l'API. Clique pour interroger l'API maintenant."
+      ? "Lu dans l'historique stocké, que le serveur met à jour toutes les 5 minutes — sans appel à l'API. Clique pour interroger l'API maintenant."
       : (f.state==='loading' ? 'Mise à jour en cours…'
         : `Données ${f.state==='ok'?'à jour':'affichées depuis le cache'}${age?' ('+age+')':''}. Clique pour rafraîchir.`);
   });
@@ -5621,7 +5621,7 @@ function renderDashboard(){
 
   if(!per.some(p=>rankedOnly(p.matches).length)){
     host.innerHTML=dashFormHTML([], ctx)+dashFiltersHTML(ctx)
-      +'<div class="cmp-empty">Aucune partie classée dans l\'historique stocké du roster pour l\'instant. Le cron le remplit toutes les heures.</div>';
+      +'<div class="cmp-empty">Aucune partie classée dans l\'historique stocké du roster pour l\'instant. Le serveur le remplit toutes les 5 minutes.</div>';
     return;
   }
   const table=dashTable(per, range);
@@ -6130,10 +6130,9 @@ async function loadHomeAlerts(){
   }catch(e){ /* pas d'alertes : l'accueil reste parfaitement utilisable */ }
 }
 
-// Les parties fraîches (matches v4) ne sont PAS encore dans le blob : le cron ne
-// passe qu'à 04:00. Sans ça, une session jouée ce soir n'apparaîtrait dans le
-// bandeau que le lendemain. On les injecte donc dans l'index de squad dès qu'on
-// ouvre un profil, le frais l'emportant sur le stocké.
+// Les parties fraîches (matches v4) ne sont peut-être pas encore dans le blob
+// (le serveur passe toutes les 5 minutes). On les injecte dans l'index de squad
+// dès qu'on ouvre un profil, le frais l'emportant sur le stocké.
 function feedSquadHist(key, matches){
   if(!SQUAD_HIST) SQUAD_HIST={};
   const byId={};

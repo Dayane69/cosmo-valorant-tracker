@@ -1,4 +1,5 @@
-// Déclenchement manuel du rafraîchissement (même logique que le cron quotidien).
+// Déclenchement manuel du rafraîchissement complet de tout le roster.
+// ?state=1 : l'état de la mise à jour automatique (toutes les 5 minutes), sans rien lancer.
 // Protégé par un secret REFRESH_TOKEN pour que personne ne puisse le spammer.
 //
 // Appel : GET ou POST /.netlify/functions/refresh-now?key=LE_SECRET
@@ -20,6 +21,16 @@ export default async (req) => {
   const url = new URL(req.url);
   const provided = url.searchParams.get("key") || req.headers.get("x-refresh-token") || "";
   if (provided !== token) return json({ ok: false, error: "non autorisé" }, 401);
+
+  // État de la mise à jour automatique : quand elle est passée, et ce qu'elle a
+  // fait (qui sortait de partie, combien de parties ajoutées). Aucun appel API.
+  if (url.searchParams.get("state") === "1") {
+    try {
+      const c = await getStore("cosmo-refresh").get("cursor", { type: "json", consistency: "strong" });
+      const ago = c && c.at ? Math.round((Date.now() - c.at) / 1000) : null;
+      return json({ ok: true, lastRun: c && c.at ? new Date(c.at).toISOString() : null, secondsAgo: ago, ...(c || {}) }, 200);
+    } catch (e) { return json({ ok: false, error: String((e && e.message) || e) }, 500); }
+  }
 
   const apiKey = process.env.HENRIK_KEY;
   if (!apiKey) return json({ ok: false, error: "HENRIK_KEY manquante" }, 500);
