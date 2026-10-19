@@ -324,6 +324,12 @@
   .mc-rrv{display:flex;flex-direction:column;align-items:flex-end;line-height:1.2}
   .mrr-delta{font-family:var(--mono);font-size:13px;font-weight:800;letter-spacing:.01em}
   .mrr-delta.up{color:var(--win)} .mrr-delta.dn{color:var(--loss)}
+  /* RR hors partie (bonus de montée, protection de rang) : orange, à part du
+     ±RR de la partie, pour qu'on voie d'où vient la différence. */
+  .rr-bonus{display:inline-block;margin-left:4px;padding:0 4px;border-radius:5px;font-family:var(--mono);font-size:10px;
+    font-weight:800;line-height:1.5;color:var(--amber);background:color-mix(in srgb,var(--amber) 14%,transparent);
+    border:1px solid color-mix(in srgb,var(--amber) 40%,transparent);cursor:help;vertical-align:middle}
+  .rr-bonus-t{color:var(--amber)}
   .mc-rrnow{font-family:var(--mono);font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
   .mc-ring{position:relative;width:32px;height:32px;flex:none;display:grid;place-items:center}
   .mc-ringsvg{position:absolute;inset:0;width:32px;height:32px}

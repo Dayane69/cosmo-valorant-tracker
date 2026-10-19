@@ -1146,11 +1146,44 @@ function normalizeAny(raw, targetState = STATE, opts){
   return normMatch(raw, targetState, opts); // repli défensif (guards en place)
 }
 
+/* RR « hors partie » : ce que Riot ajoute ou retient en dehors du ±RR annoncé
+   par la partie. Deux cas réels :
+   - bonus de montée : Gogemine, Platine 2 · 87, gagne une partie à +13 et se
+     retrouve Platine 3 · 10 (pas · 0) : +10 offerts en passant le palier ;
+   - protection de rang : à Platine 3 · 10, une défaite à −14 s'arrête à
+     Platine 3 · 0 : +4 rendus.
+   Additionner les ±RR des parties donnait +12 sur sa journée, alors que son
+   niveau a monté de +26. On lit l'écart sur l'elo (niveau continu) entre la
+   partie et la précédente, et on ne le retient que si l'un de ces deux cas
+   s'est produit (palier changé, ou défaite arrêtée à 0) : un écart sans
+   raison, c'est plutôt une partie manquante dans l'historique. */
+const RR_BONUS_MAX = 40;
+function rrBonus(prev, e){
+  if(!prev || !e || prev.elo==null || e.elo==null || e.change==null) return 0;
+  const pe=Number(prev.elo), ee=Number(e.elo), c=Number(e.change);
+  if([pe,ee,c].some(isNaN)) return 0;
+  const diff=(ee-pe)-c;
+  if(!diff || Math.abs(diff)>RR_BONUS_MAX) return 0;
+  const tid=x=>(x && x.tier && x.tier.id!=null && !isNaN(x.tier.id)) ? Number(x.tier.id) : null;
+  const tp=tid(prev), te=tid(e);
+  const tierMoved = tp!=null && te!=null && tp!==te;
+  const shield = c<0 && diff>0 && e.rr!=null && Number(e.rr)===0;
+  return (tierMoved || shield) ? diff : 0;
+}
+// Ce que la partie a vraiment fait bouger : son ±RR + le bonus éventuel.
+const rrGain = rr => rr ? num(rr.change)+num(rr.bonus) : 0;
+// Pastille orange à côté du ±RR de la partie : « +10 », avec l'explication au survol.
+const rrBonusChip = (rr, cls='rr-bonus') => (rr && num(rr.bonus))
+  ? `<span class="${cls}" title="${esc(rrBonusLabel(num(rr.bonus), rr.promo))}">${num(rr.bonus)>0?'+':''}${num(rr.bonus)}</span>` : '';
+const rrBonusLabel = (b, promo) => b>0
+  ? (promo>0 ? `+${b} RR de bonus en montant de palier` : `+${b} RR rendus par la protection de rang`)
+  : `${b} RR en changeant de palier`;
+
 // Index match_id -> infos RR/rang, depuis la série RR normalisée (blob + live).
 // change = RR gagné/perdu sur la game, tierName/icon = rang du joueur à ce moment-là.
 function rrIndexFromSeries(series){
   const idx={};
-  let prevTier=null;
+  let prevTier=null, prevElo=null;
   (series||[]).forEach(e=>{
     const tid = (e && e.tier && e.tier.id!=null && !isNaN(e.tier.id)) ? Number(e.tier.id) : null;
     if(e && e.id){
@@ -1160,8 +1193,10 @@ function rrIndexFromSeries(series){
       // de la précédente. La série est triée chronologiquement (mergeRRclient),
       // donc « précédente » veut bien dire quelque chose.
       const promo = (tid!=null && prevTier!=null && tid!==prevTier) ? (tid>prevTier ? 1 : -1) : 0;
-      idx[e.id]={ change:e.change, tierName, icon, rr:e.rr, season:e.season||null, promo };
+      const bonus=rrBonus(prevElo, e);
+      idx[e.id]={ change:e.change, tierName, icon, rr:e.rr, season:e.season||null, promo, bonus };
     }
+    if(e && e.elo!=null) prevElo=e;
     // Hors du `if` : une entrée sans match_id fait quand même avancer le palier
     // de référence, sinon une comparaison sauterait par-dessus.
     if(tid!=null) prevTier=tid;
@@ -1256,7 +1291,8 @@ function sessionStats(list){
   // RR : uniquement les parties classées dont on connaît la variation.
   const rr=P.filter(M=>isRanked(M) && M.rr && M.rr.change!=null);
   st.rrGames=rr.length;
-  st.rrNet=rr.length?rr.reduce((s,M)=>s+num(M.rr.change),0):null;
+  st.rrNet=rr.length?rr.reduce((s,M)=>s+rrGain(M.rr),0):null;
+  st.rrBonus=rr.reduce((s,M)=>s+num(M.rr.bonus),0);         // dont : bonus de montée / protection
   return st;
 }
 
@@ -2878,7 +2914,7 @@ function rrChip(rr){
   const promo=rr.promo ? `<span class="mc-promo ${rr.promo>0?'up':'dn'}" aria-hidden="true">${rr.promo>0?'▲':'▼'}</span>` : '';
   const promoTxt=rr.promo ? (rr.promo>0?' · palier gagné':' · palier perdu') : '';
   return `<span class="mc-rr" title="${esc(tierFr(rr.tierName||''))}${rr.rr!=null?' · '+rr.rr+' RR dans le palier':''}${promoTxt}">
-    <span class="mc-rrv"><span class="mrr-delta ${c>=0?'up':'dn'}">${sign}${c}</span>${now}</span>
+    <span class="mc-rrv"><span class="mrr-delta ${c>=0?'up':'dn'}">${sign}${c}</span>${rrBonusChip(rr)}${now}</span>
     <span class="mc-ring">${ring}${icon}${promo}</span>
   </span>`;
 }
@@ -3211,7 +3247,7 @@ function openSessionReport(key){
     <div class="md-tiles">
       ${sxTile('Parties', st.n, `${st.roundsWon}–${st.roundsLost} en rounds`)}
       ${sxTile('Bilan', `<i class="wv">${st.wins}</i>–<i class="lv">${st.losses}</i>`, st.winrate!=null?Math.round(st.winrate)+'% de victoires':'')}
-      ${sxTile('RR', st.rrNet!=null?signed(st.rrNet):'—', st.rrGames?`sur ${st.rrGames} classée${st.rrGames>1?'s':''}`:'aucune classée', st.rrNet!=null?(st.rrNet>=0?'var(--win)':'var(--loss)'):'')}
+      ${sxTile('RR', st.rrNet!=null?signed(st.rrNet):'—', st.rrGames?`sur ${st.rrGames} classée${st.rrGames>1?'s':''}${st.rrBonus?` · <span class="rr-bonus-t">dont ${signed(st.rrBonus)} hors partie</span>`:''}`:'aucune classée', st.rrNet!=null?(st.rrNet>=0?'var(--win)':'var(--loss)'):'')}
       ${sxTile('Indice moyen', Math.round(st.index||0), esc(t.label)+dl(st.index, base&&base.index), t.c)}
       ${st.psN ? sxTile('Perf.', Math.round(st.ps), (base&&base.psN ? dl(st.ps, base.ps) : `${st.psN} partie${st.psN>1?'s':''} notée${st.psN>1?'s':''}`))
                : sxTile('ACS', Math.round(st.acs||0), dl(st.acs, base&&base.acs))}
@@ -3247,7 +3283,7 @@ function openSessionReport(key){
         <td>${M.me.k}/${M.me.d}/${M.me.a}</td>
         <td>${(()=>{ const pv=perfVal(M.me); return pv.v+(pv.ps?'':' <em class="sx-acs">ACS</em>'); })()}${M.mvp?' <span class="pn-mvp">MVP</span>':''}</td>
         <td class="scell" style="color:${mt.c}">${M.me.score100}</td>
-        <td class="${M.rr&&M.rr.change>=0?'up':'dn'}">${M.rr&&M.rr.change!=null?signed(M.rr.change):'—'}</td>
+        <td class="${M.rr&&M.rr.change>=0?'up':'dn'}">${M.rr&&M.rr.change!=null?signed(M.rr.change):'—'}${rrBonusChip(M.rr)}</td>
       </tr>`;
     }).join('')}</tbody></table></div>
 
@@ -3458,7 +3494,7 @@ function scoreboardHTML(M){
     const rr = memberRR(mem, detail.id);
     if(rr) rrShown = true;
     const rrTag = rr
-      ? `<span class="pn-rr ${rr.change>=0?'up':'dn'}" title="${esc(tierFr(rr.tierName||''))}">${rr.change>=0?'+':''}${rr.change} RR</span>`
+      ? `<span class="pn-rr ${rr.change>=0?'up':'dn'}" title="${esc(tierFr(rr.tierName||''))}">${rr.change>=0?'+':''}${rr.change} RR</span>${rrBonusChip(rr)}`
       : '';
     // Un membre du roster (hors soi-même) mène à son profil d'un clic.
     const prof = (mem && !mem.guest && !me) ? ` data-prof="${esc(mem.name+'#'+mem.tag)}" title="Ouvrir le profil de ${esc(mem.name)}"` : '';
@@ -4881,7 +4917,7 @@ function squadSessions(perMember, range, gapMs){
     s.entries.forEach(({key,M})=>{
       const r=members[key]||(members[key]={ key, n:0, wins:0, losses:0, rr:0, rrGames:0 });
       r.n++; if(M.result==='w') r.wins++; else if(M.result==='l') r.losses++;
-      if(M.rr && M.rr.change!=null){ r.rr+=num(M.rr.change); r.rrGames++; }
+      if(M.rr && M.rr.change!=null){ r.rr+=rrGain(M.rr); r.bonus=(r.bonus||0)+num(M.rr.bonus); r.rrGames++; }
     });
     // Groupes « ensemble » : par partie, les membres de la même équipe.
     const groups={};
@@ -4942,7 +4978,7 @@ function dashPairs(perMember, range){
       const other=key===a?b:a;
       const m=mates[M.id+'|'+key];
       const isTog=!!(m && m.has(other));
-      const rc=(M.rr && M.rr.change!=null) ? num(M.rr.change) : null;
+      const rc=(M.rr && M.rr.change!=null) ? rrGain(M.rr) : null;
       if(isTog){
         if(!seen.has(M.id)){ seen.add(M.id); tog.n++; if(M.result==='w') tog.wins++; }
         if(rc!=null){ tog.rr+=rc; tog.rrN++; }
@@ -5030,7 +5066,7 @@ function dashActivity(perMember, range, now){
     const day=dashDayKey(M.startedMs);
     if(days.indexOf(day)<0) return;
     const c=cells[key+'|'+day]||(cells[key+'|'+day]={ n:0, rr:0 });
-    c.n++; if(M.rr && M.rr.change!=null) c.rr+=num(M.rr.change);
+    c.n++; if(M.rr && M.rr.change!=null) c.rr+=rrGain(M.rr);
     if(c.n>max) max=c.n;
   });
   return { days:[...new Set(days)], cells, max };
@@ -5100,7 +5136,7 @@ function goalPicks(matches, act){
   const M=(matches||[]).filter(x=>x && x.me && x.season===act && isRanked(x) && x.rr && x.rr.change!=null);
   const group=f=>{
     const g={};
-    M.forEach(x=>{ const k=f(x); if(!k || k==='?' || k==='—') return; const r=g[k]||(g[k]={ k, n:0, rr:0 }); r.n++; r.rr+=num(x.rr.change); });
+    M.forEach(x=>{ const k=f(x); if(!k || k==='?' || k==='—') return; const r=g[k]||(g[k]={ k, n:0, rr:0 }); r.n++; r.rr+=rrGain(x.rr); });
     return Object.values(g).filter(r=>r.n>=GOAL_PICK_MIN).map(r=>Object.assign(r,{ per:r.rr/r.n })).sort((a,b)=>b.per-a.per);
   };
   const ag=group(x=>x.me.agent), mp=group(x=>x.map);
@@ -5124,7 +5160,10 @@ function goalPlan(o){
   const actPts=pts.filter(e=>e.season===act);
   const first=actPts[0];
   // Niveau au début de l'acte : AVANT la première partie de l'acte.
-  const startElo = first ? Number(first.elo)-(first.change!=null && !isNaN(first.change) ? Number(first.change) : 0) : curElo;
+  // La partie d'avant si on l'a (exact, bonus compris), sinon elo − ±RR.
+  const before = first ? pts[pts.indexOf(first)-1] : null;
+  const startElo = !first ? curElo : (before ? Number(before.elo)
+    : Number(first.elo)-(first.change!=null && !isNaN(first.change) ? Number(first.change) : 0));
   const remaining=targetElo-curElo, span=targetElo-startElo;
   const progress = remaining<=0 ? 1 : (span>0 ? Math.max(0, Math.min(1, (curElo-startElo)/span)) : 0);
 
@@ -5837,11 +5876,11 @@ function dashSessionsHTML(sessions, ctx){
   const body=list.map(s=>{
     const rows=s.members.map(m=>{
       const w=Math.min(50, Math.abs(m.rr)/maxAbs*50);
-      const rrTxt=m.rrGames?`${dashSigned(m.rr)} RR`:'RR inconnu';
+      const rrTxt=m.rrGames?`${dashSigned(m.rr)} RR${m.bonus?` (dont ${dashSigned(m.bonus)} hors partie : bonus de montée ou protection de rang)`:''}`:'RR inconnu';
       return `<div class="dsh-srow" data-tip="${esc((ctx.names[m.key]||m.key)+' · '+m.n+' partie'+(m.n>1?'s':'')+' · '+m.wins+' V – '+m.losses+' D · '+rrTxt)}">
         ${dashWho(ctx,m.key)}
         <span class="dsh-bar">${m.rrGames?`<i class="${m.rr>=0?'pos':'neg'}" style="width:${w.toFixed(1)}%"></i>`:''}</span>
-        <span class="dsh-val ${m.rr>=0?'up':'dn'}">${m.rrGames?dashSigned(m.rr):'—'}</span>
+        <span class="dsh-val ${m.rr>=0?'up':'dn'}">${m.rrGames?dashSigned(m.rr):'—'}${m.bonus?'<sup class="rr-bonus-t">*</sup>':''}</span>
         <span class="dsh-wl">${m.wins}V ${m.losses}D</span>
       </div>`;
     }).join('');

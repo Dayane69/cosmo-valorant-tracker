@@ -85,7 +85,10 @@ export function recapSVG(recap, opts = {}) {
     }
     out.push(text(520, y + 46, String(m.n), { size: 26, weight: 800, anchor: "end" }));
     out.push(text(520, y + 70, `${m.w}V ${m.l}D`, { size: 15, fill: C.muted, anchor: "end" }));
-    out.push(text(650, y + 56, m.rr == null ? "—" : signed(m.rr), { size: 26, weight: 800, anchor: "end", fill: m.rr == null ? C.dim : (m.rr >= 0 ? C.win : C.loss) }));
+    out.push(text(650, y + (m.rrBonus ? 46 : 56), m.rr == null ? "—" : signed(m.rr), { size: 26, weight: 800, anchor: "end", fill: m.rr == null ? C.dim : (m.rr >= 0 ? C.win : C.loss) }));
+    // La part hors parties (bonus de montée, protection de rang), en orange :
+    // sinon « +26 » ne colle pas avec les +13 / −14 / +13 que chacun a vus en jeu.
+    if (m.rrBonus) out.push(text(650, y + 70, `dont ${signed(m.rrBonus)} bonus`, { size: 14, weight: 600, anchor: "end", fill: C.amber }));
     const pv = usePS ? m.ps : m.acs;
     out.push(text(780, y + 56, pv == null ? "—" : String(Math.round(pv)), { size: 26, weight: 800, anchor: "end" }));
     out.push(text(900, y + 56, f2(m.kd), { size: 24, weight: 600, anchor: "end" }));

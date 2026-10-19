@@ -16,6 +16,28 @@ const num = (v, f = 0) => (v === undefined || v === null || Number.isNaN(Number(
 const isRanked = (mode) => /competitive|class[ée]|comp[ée]titif/i.test(String(mode || ""));
 const key = (m) => `${String(m.name).toLowerCase()}#${String(m.tag).toLowerCase()}`;
 
+/* RR « hors partie » : bonus de montée de palier, ou protection de rang (une
+   défaite arrêtée à 0). Même règle que le site (app.js, rrBonus) : l'écart
+   d'elo avec la partie précédente, moins le ±RR annoncé, retenu seulement si
+   le palier a changé ou si la défaite s'est arrêtée à 0. Cas réel : Gogemine,
+   Platine 2 · 87 -> Platine 3 · 13, soit +26, quand ses parties annonçaient
+   +13, −14, +13 = +12. */
+export function rrBonuses(rr) {
+  const tid = (x) => (x && x.tier && x.tier.id != null && !Number.isNaN(Number(x.tier.id)) ? Number(x.tier.id) : null);
+  const out = {};
+  let prev = null;
+  (rr || []).filter((e) => e && num(e.ts) > 0).slice().sort((a, b) => num(a.ts) - num(b.ts)).forEach((e) => {
+    if (e.id && prev && e.elo != null && e.change != null && prev.elo != null) {
+      const diff = (num(e.elo) - num(prev.elo)) - num(e.change);
+      const moved = tid(prev) != null && tid(e) != null && tid(prev) !== tid(e);
+      const shield = num(e.change) < 0 && diff > 0 && e.rr != null && num(e.rr) === 0;
+      if (diff && Math.abs(diff) <= 40 && (moved || shield)) out[e.id] = diff;
+    }
+    if (e.elo != null) prev = e;
+  });
+  return out;
+}
+
 /* Partie compacte (stored-matches v1) -> ce dont le récap a besoin. */
 export function normCompact(e) {
   const meta = (e && e.meta) || {}, st = (e && e.stats) || {}, tms = (e && e.teams) || {};
@@ -49,12 +71,15 @@ export function squadSessions(perMember, gapMs = RECAP.GAP_MS, { togetherOnly = 
   const entries = [];
   (perMember || []).forEach(({ member, matches, rr, perf }) => {
     const rrBy = {}; (rr || []).forEach((e) => { if (e && e.id) rrBy[e.id] = e; });
+    const bonusBy = rrBonuses(rr);
     const pfBy = {}; (perf || []).forEach((e) => { if (e && e.id) pfBy[e.id] = e; });
     (matches || []).forEach((raw) => {
       const M = normCompact(raw);
       if (!M || !isRanked(M.mode)) return;
       const r = rrBy[M.id], p = pfBy[M.id];
-      M.rr = r && r.change != null ? num(r.change) : null;
+      // RR réellement gagné : ±RR de la partie + bonus éventuel (montée, protection).
+      M.rrBonus = r && r.change != null ? num(bonusBy[M.id]) : 0;
+      M.rr = r && r.change != null ? num(r.change) + M.rrBonus : null;
       M.tierAfter = r && r.tier ? r.tier.name : null;
       M.ps = p && p.ps != null ? num(p.ps) : null;
       M.grade = p ? p.g || null : null;
@@ -127,6 +152,7 @@ export function buildRecap(s) {
       name: r.name, tag: r.tag, color: r.color, n,
       w: G.filter((g) => g.result === "w").length, l: G.filter((g) => g.result === "l").length,
       rr: rrG.length ? rrG.reduce((a, g) => a + g.rr, 0) : null,
+      rrBonus: rrG.reduce((a, g) => a + num(g.rrBonus), 0),
       ps: psG.length ? psG.reduce((a, g) => a + g.ps, 0) / psG.length : null,
       acs: G.reduce((a, g) => a + g.score, 0) / rounds,
       kd: d ? k / d : k, k, d,
