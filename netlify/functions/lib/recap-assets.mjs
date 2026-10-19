@@ -16,10 +16,11 @@ export function readFont(file) {
   throw new Error("police introuvable : " + file);
 }
 export function readWasm() {
-  const req = createRequire(import.meta.url);
+  // Le fichier n'est dans le paquet de la fonction que grâce à included_files
+  // (netlify.toml) : rien ne l'importe, l'empaqueteur ne le trouverait pas seul.
   const tries = [];
-  try { tries.push(req.resolve("@resvg/resvg-wasm/index_bg.wasm")); } catch (e) { /* suite */ }
+  try { tries.push(createRequire(import.meta.url).resolve("@resvg/resvg-wasm/index_bg.wasm")); } catch (e) { /* suite */ }
   tries.push(join(process.cwd(), "node_modules", "@resvg", "resvg-wasm", "index_bg.wasm"));
   for (const p of tries) if (p && existsSync(p)) return readFileSync(p);
-  throw new Error("moteur de rendu introuvable (@resvg/resvg-wasm/index_bg.wasm)");
+  throw new Error("moteur de rendu introuvable (essayé : " + tries.join(", ") + ")");
 }

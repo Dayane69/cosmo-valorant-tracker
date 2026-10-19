@@ -114,9 +114,10 @@ const DOMS = [];
 after(async () => { await new Promise((r) => setTimeout(r, 150)); DOMS.forEach((d) => { try { d.window.close(); } catch (e) {} }); });
 const jsonRes = (o) => ({ ok: true, status: 200, json: async () => o });
 
-async function boot({ valoFails = false } = {}) {
+async function boot({ valoFails = false, play = null } = {}) {
   const dom = new JSDOM(readFileSync(join(root, "index.html"), "utf8"), { runScripts: "outside-only", url: "https://cosmo-valo.netlify.app/" });
   DOMS.push(dom);
+  if (play) dom.window.HTMLMediaElement.prototype.play = play;
   const c = dom.getInternalVMContext();
   dom.window.scrollTo = () => {};
   const calls = { valo: 0 };
@@ -173,4 +174,31 @@ test("profil : API saturée, il s'affiche quand même depuis l'historique stock�
   assert.ok(T.getState().allMatches.length >= 2, "les parties du stocké sont là");
   assert.ok(doc.querySelectorAll("#ml .mrow").length >= 2);
   assert.equal(T.fresh().profile.state, "error", "le voyant dit que le direct a échoué");
+});
+
+/* ---------- 5 (suite). iPhone en mode économie : la vidéo est refusée */
+
+test("GIF du roster : lecture refusée (iPhone économie d'énergie) -> WebP animé, sans bouton ▶", async () => {
+  const refuse = function () { const e = new Error("autoplay refusé"); e.name = "NotAllowedError"; return Promise.reject(e); };
+  const { doc } = await boot({ play: refuse });
+  await new Promise((r) => setTimeout(r, 20));
+  const custom = [...doc.querySelectorAll(".agentcard.custom .portrait")];
+  assert.ok(custom.length > 0, "le roster de test a des GIF");
+  assert.ok(custom.every((el) => el.tagName === "IMG"), "plus aucune vidéo bloquée sur les cartes");
+  assert.ok(custom.every((el) => /\/giphy\.webp$/.test(el.getAttribute("src"))), "le WebP animé, pas le GIF de 12 Mo");
+  // Le WebP échoue aussi : le GIF d'origine prend le relais.
+  const img = custom[0];
+  img.dispatchEvent(new doc.defaultView.Event("error"));
+  assert.match(img.getAttribute("src"), /\/giphy\.gif$/);
+});
+
+test("GIF du roster : lecture acceptée -> la vidéo reste (le plus léger)", async () => {
+  const { doc } = await boot({ play: () => Promise.resolve() });
+  await new Promise((r) => setTimeout(r, 20));
+  const custom = [...doc.querySelectorAll(".agentcard.custom .portrait")];
+  assert.ok(custom.length > 0 && custom.every((el) => el.tagName === "VIDEO"));
+  // Une autre erreur que le refus (pause interrompue…) ne fait rien basculer.
+  const { doc: d2 } = await boot({ play: () => { const e = new Error("x"); e.name = "AbortError"; return Promise.reject(e); } });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok([...d2.querySelectorAll(".agentcard.custom .portrait")].every((el) => el.tagName === "VIDEO"));
 });

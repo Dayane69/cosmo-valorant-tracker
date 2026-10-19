@@ -6035,16 +6035,19 @@ function applyRegionDefault(){ const sel=$('region'); if(sel && DEFAULT_REGION) 
 function giphyVariants(url){
   const m=String(url||'').match(/^(https:\/\/media\d*\.giphy\.com\/media\/[^?#]+)\/[^/?#]+\.(gif|webp|mp4)(\?[^#]*)?$/i);
   if(!m) return null;
-  return { mp4:m[1]+'/giphy.mp4', small:m[1]+'/200w.webp', orig:String(url) };
+  return { mp4:m[1]+'/giphy.mp4', anim:m[1]+'/giphy.webp', small:m[1]+'/200w.webp', orig:String(url) };
 }
 // Petite vignette : la version légère si c'est un GIF Giphy, sinon l'image telle quelle.
 const lightImg = url => { const v=giphyVariants(url); return v ? v.small : url; };
-// Grande carte : une vidéo muette en boucle, avec l'aperçu léger pendant le
-// chargement et le GIF d'origine en secours si la vidéo échoue.
+// Grande carte : une vidéo muette en boucle (le plus léger), avec l'aperçu
+// léger pendant le chargement. Si le téléphone refuse de la lancer (iPhone en
+// mode économie d'énergie : bouton ▶ par-dessus) ou ne sait pas la lire, on
+// passe au WebP animé — une simple image, jamais bloquée, deux fois plus
+// léger que le GIF — puis au GIF d'origine en dernier recours.
 function portraitMedia(url, cls, alt){
   const v=giphyVariants(url);
   if(!v) return `<img class="${cls}" src="${esc(url)}" alt="${esc(alt||'')}">`;
-  return `<video class="${cls}" src="${esc(v.mp4)}" poster="${esc(v.small)}" data-orig="${esc(v.orig)}"
+  return `<video class="${cls}" src="${esc(v.mp4)}" poster="${esc(v.small)}" data-anim="${esc(v.anim)}" data-orig="${esc(v.orig)}"
     autoplay muted loop playsinline preload="auto" aria-label="${esc(alt||'')}"></video>`;
 }
 
@@ -6451,14 +6454,27 @@ function wireRosterImgs(){
   document.querySelectorAll('.agentcard .portrait').forEach(el=>{
     const fail=img=>{img.style.display='none';const c=img.closest('.agentcard');if(c)c.classList.add('noimg');};
     if(el.tagName==='VIDEO'){
-      // La vidéo n'a pas pu se lire : on revient au GIF d'origine, qui lui
-      // retombe sur le monogramme s'il échoue aussi.
-      el.addEventListener('error', ()=>{
+      // Vidéo illisible ou lecture refusée : WebP animé, puis GIF d'origine,
+      // puis le monogramme.
+      let swapped=false;
+      const toImg=()=>{
+        if(swapped || !el.isConnected) return; swapped=true;
         const img=document.createElement('img');
-        img.className='portrait'; img.alt=el.getAttribute('aria-label')||''; img.src=el.dataset.orig||'';
-        img.addEventListener('error', ()=>fail(img));
+        img.className='portrait'; img.alt=el.getAttribute('aria-label')||'';
+        const chain=[el.dataset.anim, el.dataset.orig].filter(Boolean);
+        const next=()=>{ const u=chain.shift(); if(u) img.src=u; else fail(img); };
+        img.addEventListener('error', next);
+        next();
         el.replaceWith(img);
-      });
+      };
+      el.addEventListener('error', toImg);
+      // L'attribut autoplay ne dit rien quand il est refusé : play() si.
+      // NotAllowedError = lecture automatique interdite (mode économie
+      // d'énergie sur iPhone, réglages du navigateur).
+      try{
+        const p=el.play && el.play();
+        if(p && typeof p.catch==='function') p.catch(e=>{ if(e && e.name==='NotAllowedError') toImg(); });
+      }catch(e){ /* navigateur sans play() promis : l'attribut autoplay suffit */ }
       return;
     }
     el.addEventListener('error', ()=>fail(el));
