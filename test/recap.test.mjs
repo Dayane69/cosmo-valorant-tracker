@@ -210,3 +210,14 @@ test("le PNG de la fonction ne dépend pas du rendu factice", () => {
   const f = readFileSync(new URL("../netlify/functions/assets/fonts/Inter-800.ttf", import.meta.url));
   assert.equal(f.readUInt32BE(0), 0x00010000);
 });
+
+test("netlify.toml : le moteur .wasm est embarqué dans les deux fonctions du récap", () => {
+  // Sans cette ligne, la fonction répondait « moteur de rendu introuvable » en
+  // production : external_node_modules n'embarque que le JS du paquet.
+  const toml = readFileSync(new URL("../netlify.toml", import.meta.url), "utf8");
+  for (const fn of ["discord-recap", "discord-recap-preview"]) {
+    const block = toml.split(`[functions."${fn}"]`)[1].split("\n[")[0];
+    assert.match(block, /included_files = \[[^\]]*"node_modules\/@resvg\/resvg-wasm\/index_bg\.wasm"/, fn);
+    assert.match(block, /"netlify\/functions\/assets\/\*\*"/, fn + " : les polices");
+  }
+});

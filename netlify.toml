@@ -8,15 +8,18 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
-# Récap Discord : le rendu PNG a besoin du moteur resvg en WebAssembly (son
-# fichier .wasm doit voyager tel quel, d'où external_node_modules) et des
-# polices Inter (OFL), embarquées seulement dans les deux fonctions concernées.
+# Récap Discord : le rendu PNG a besoin du moteur resvg en WebAssembly et des
+# polices Inter (OFL), embarqués seulement dans les deux fonctions concernées.
+# Le .wasm doit être listé À LA MAIN dans included_files : external_node_modules
+# n'embarque que les fichiers JS trouvés en suivant les imports, et rien
+# n'importe le .wasm (on le lit comme un fichier). Sans cette ligne, la
+# fonction répondait « moteur de rendu introuvable » en production.
 [functions."discord-recap"]
   external_node_modules = ["@resvg/resvg-wasm"]
-  included_files = ["netlify/functions/assets/**"]
+  included_files = ["netlify/functions/assets/**", "node_modules/@resvg/resvg-wasm/index_bg.wasm"]
 [functions."discord-recap-preview"]
   external_node_modules = ["@resvg/resvg-wasm"]
-  included_files = ["netlify/functions/assets/**"]
+  included_files = ["netlify/functions/assets/**", "node_modules/@resvg/resvg-wasm/index_bg.wasm"]
 
 # Toujours revalider les fichiers clés pour qu'un nouveau déploiement arrive
 # tout de suite dans le navigateur (évite un app.js mis en cache trop longtemps).
