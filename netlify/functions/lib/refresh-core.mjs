@@ -306,7 +306,8 @@ export async function watchRefresh({ roster, region, getStore, fetchImpl, apiKey
   const list = Array.isArray(roster) ? roster.filter(Boolean) : [];
   const started = now(), over = () => budgetMs && now() - started >= budgetMs;
   const rrStore = getStore("cosmo-rr");
-  const out = { checked: 0, played: [], pulled: 0, added: 0, swept: null, fail: 0, nextSweep: null };
+  const out = { checked: 0, played: [], pulled: 0, added: 0, swept: null, fail: 0, nextSweep: null, errors: [] };
+  const oops = (what, key, e) => { out.fail++; const msg = `${what} ${key}: ${(e && e.message) || e}`; out.errors.push(msg); log.error(`[watch] ${msg}`); };
 
   // 1. Qui vient de jouer ?
   const dirty = [];
@@ -322,14 +323,14 @@ export async function watchRefresh({ roster, region, getStore, fetchImpl, apiKey
         dirty.push(m); out.played.push(key);
       }
       out.checked++;
-    } catch (e) { out.fail++; log.error(`[watch] RR ${key}: ${(e && e.message) || e}`); }
+    } catch (e) { oops("RR", key, e); }
   }
 
   // 2. Leurs parties, tout de suite.
   for (const m of dirty) {
     if (over()) break;
     try { const r = await pullRecent({ member: m, getStore, fetchImpl, apiKey, region, sleep, retries }); out.pulled++; out.added += r.added; }
-    catch (e) { out.fail++; log.error(`[watch] parties ${blobKey(m.name, m.tag)}: ${(e && e.message) || e}`); }
+    catch (e) { oops("parties", blobKey(m.name, m.tag), e); }
   }
 
   // 3. Le tour complet d'un joueur (à tour de rôle).
@@ -339,7 +340,7 @@ export async function watchRefresh({ roster, region, getStore, fetchImpl, apiKey
     try {
       const r = await refreshOne({ member: sweep, getStore, fetchImpl, apiKey, region, trigger: true, sleep, retries });
       out.swept = blobKey(sweep.name, sweep.tag); out.added += r.added;
-    } catch (e) { out.fail++; log.error(`[watch] tour complet ${blobKey(sweep.name, sweep.tag)}: ${(e && e.message) || e}`); }
+    } catch (e) { oops("tour complet", blobKey(sweep.name, sweep.tag), e); }
   }
   // Le suivant, même si celui-ci a échoué : un joueur en panne ne bloque pas le tour.
   out.nextSweep = order[1] ? blobKey(order[1].name, order[1].tag) : (sweep ? blobKey(sweep.name, sweep.tag) : null);

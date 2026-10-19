@@ -82,7 +82,7 @@ export default async () => {
     if (cursorStore) {
       try {
         await cursorStore.setJSON(CURSOR_KEY, { next: res.nextSweep, at: Date.now(),
-          last: { checked: res.checked, played: res.played, added: res.added, swept: res.swept, fail: res.fail } });
+          last: { checked: res.checked, played: res.played, added: res.added, swept: res.swept, fail: res.fail, errors: res.errors } });
       } catch (e) { console.error(`[refresh] curseur non enregistré: ${(e && e.message) || e}`); }
     }
     let comps = null;
