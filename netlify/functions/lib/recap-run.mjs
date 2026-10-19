@@ -36,6 +36,15 @@ export function discordContent(recap, link, tz = "Europe/Paris") {
     + ` · ${rr >= 0 ? "+" : ""}${rr} RR pour la squad\n${link ? `Rapport complet : <${link}>` : ""}`;
 }
 
+/* Sessions déjà postées. Lecture forte d'abord ; si l'environnement ne la
+   permet pas, lecture normale plutôt que plus aucun récap. */
+export async function readPosted(mem) {
+  let v;
+  try { v = await mem.get("posted", { type: "json", consistency: "strong" }); }
+  catch (e) { v = await mem.get("posted", { type: "json" }); }
+  return Array.isArray(v) ? v : [];
+}
+
 /* opts : { getStore, fetchImpl, now, webhook, post, force, readFile, wasmBytes, resvg?, site, tz, minMembers }
    Renvoie { status, recap?, png?, posted? }. */
 export async function runRecap(opts) {
@@ -46,8 +55,15 @@ export async function runRecap(opts) {
   const per = await Promise.all(members.map(async (m) => ({
     member: m, matches: await readAll(hist, m), rr: await readAll(rrS, m), perf: await readAll(pfS, m),
   })));
-  let posted = [];
-  try { posted = (await mem.get("posted", { type: "json" })) || []; } catch (e) { posted = []; }
+  // Lecture FORTE : par défaut, Netlify Blobs peut relire une copie vieille
+  // d'une minute. Deux envois rapprochés (aperçu &post=1 relancé, ou aperçu
+  // puis tâche planifiée) voyaient alors une liste sans la session qui venait
+  // de partir, et la postaient une deuxième fois.
+  // Mémoire illisible : on ne poste pas — mieux vaut un récap en retard
+  // qu'un salon spammé à chaque heure.
+  let posted;
+  try { posted = await readPosted(mem); }
+  catch (e) { if (post) return { status: "mémoire des récaps illisible : rien n'est envoyé (" + String((e && e.message) || e) + ")" }; posted = []; }
   const sessions = squadSessions(per);
   const s = pickSession(sessions, { now, posted, force, ...(minMembers ? { minMembers } : {}) });
   if (!s) return { status: "rien à poster" };
@@ -76,6 +92,7 @@ export async function runRecap(opts) {
   const res = await fetchImpl(webhook + (webhook.includes("?") ? "&" : "?") + "wait=true", { method: "POST", body: form });
   if (!res.ok) return { status: `Discord a refusé l'envoi (HTTP ${res.status})`, recap, png };
   // On ne se souvient de la session qu'une fois l'envoi réussi.
-  try { await mem.setJSON("posted", [...posted.filter((k) => k !== s.key), s.key].slice(-POSTED_KEEP)); } catch (e) { /* tant pis */ }
+  try { await mem.setJSON("posted", [...posted.filter((k) => k !== s.key), s.key].slice(-POSTED_KEEP)); }
+  catch (e) { return { status: "posté, mais pas mémorisé : risque de doublon (" + String((e && e.message) || e) + ")", recap, png, posted: s.key }; }
   return { status: "posté", recap, png, posted: s.key };
 }
