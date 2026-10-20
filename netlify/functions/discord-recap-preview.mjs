@@ -3,6 +3,8 @@
 //                          (même déjà postée : c'est un aperçu)
 //   GET ?key=…&post=1   -> la poste vraiment sur le webhook
 //   GET ?key=…&state=1  -> les sessions déjà postées (rien n'est envoyé)
+//   GET ?key=…&day=1    -> l'image du bilan de la dernière journée terminée
+//   GET ?key=…&day=2026-10-19 -> celle d'une journée précise (aperçu seulement)
 // Une fonction planifiée ne s'appelle pas par URL : celle-ci sert à voir la
 // carte et à tester le webhook sans attendre la prochaine heure.
 import { getStore } from "@netlify/blobs";
@@ -22,7 +24,9 @@ export default async (req) => {
     catch (e) { return json({ ok: false, error: String((e && e.message) || e) }, 500); }
   }
   try {
-    const r = await runRecap({ getStore, webhook: process.env.DISCORD_WEBHOOK_URL, post, force: !post,
+    const dayQ = url.searchParams.get("day");
+    const day = !dayQ ? null : (/^\d{4}-\d{2}-\d{2}$/.test(dayQ) ? dayQ : true);
+    const r = await runRecap({ getStore, webhook: process.env.DISCORD_WEBHOOK_URL, post, force: !post, day: post ? null : day,
       readFile: readFont, wasmBytes: readWasm(), site: process.env.URL || "https://cosmo-valo.netlify.app/",
       tz: process.env.RECAP_TZ || "Europe/Paris", minMembers: Number(process.env.DISCORD_MIN_PLAYERS) || undefined });
     if (!r.png) return json({ ok: true, status: r.status }, 200);

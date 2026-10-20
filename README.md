@@ -160,6 +160,15 @@ chacun) ; la surveillance lui laisse alors une partie de son budget.
 Le **récap Discord** (`discord-recap.mjs`) passe tous les quarts d'heure : il
 part entre 2 h et 2 h 15 après la dernière partie jouée ensemble.
 
+**Bilan du jour.** Quand personne n'a joué ensemble, il n'y a pas de session de
+squad, donc pas de récap. Le bilan du jour couvre alors toutes les parties
+classées de tout le monde, sur une journée de 6 h à 6 h (heure de Paris : une
+partie à 2 h du matin appartient à la soirée de la veille). Il part après 6 h,
+une seule fois, et seulement si la journée contient des parties qui n'étaient
+pas déjà dans un récap de squad posté. Aperçu :
+`/.netlify/functions/discord-recap-preview?key=REFRESH_TOKEN&day=1` (dernière
+journée terminée) ou `&day=2026-10-19`.
+
 ### Déclenchement manuel (sans attendre le cron)
 
 - **Depuis le site (recommandé)** : ⚙ Paramètres → **« ⟳ Sauvegarder l'historique
