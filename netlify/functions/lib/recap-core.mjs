@@ -74,7 +74,9 @@ export function normCompact(e) {
       La marge ne s'enchaîne pas : une partie à 4 h de la squad n'y entre pas.
    La clé (s.key) reste celle du cœur : un récap déjà posté ne repart pas.
    perMember = [{ member, matches (compactes), rr, perf }]. */
-export function squadSessions(perMember, gapMs = RECAP.GAP_MS, { togetherOnly = true, withSolo = true } = {}) {
+/* Toutes les parties classées des membres, normalisées, triées, chacune
+   marquée « ensemble » (M.together) si un autre membre était dans son équipe. */
+export function collectEntries(perMember) {
   const entries = [];
   (perMember || []).forEach(({ member, matches, rr, perf }) => {
     const rrBy = {}; (rr || []).forEach((e) => { if (e && e.id) rrBy[e.id] = e; });
@@ -94,14 +96,16 @@ export function squadSessions(perMember, gapMs = RECAP.GAP_MS, { togetherOnly = 
       entries.push({ member, M });
     });
   });
-  const all = entries.slice().sort((a, b) => a.M.t - b.M.t);
-  let core = all;
-  if (togetherOnly) {
-    const by = {};
-    all.forEach((en) => { const k = en.M.id + "|" + en.M.team; (by[k] = by[k] || new Set()).add(key(en.member)); });
-    all.forEach((en) => { en.M.together = by[en.M.id + "|" + en.M.team].size >= 2; });
-    core = all.filter((en) => en.M.together);
-  }
+  const all = entries.sort((a, b) => a.M.t - b.M.t);
+  const by = {};
+  all.forEach((en) => { const k = en.M.id + "|" + en.M.team; (by[k] = by[k] || new Set()).add(key(en.member)); });
+  all.forEach((en) => { en.M.together = by[en.M.id + "|" + en.M.team].size >= 2; });
+  return all;
+}
+
+export function squadSessions(perMember, gapMs = RECAP.GAP_MS, { togetherOnly = true, withSolo = true } = {}) {
+  const all = collectEntries(perMember);
+  const core = togetherOnly ? all.filter((en) => en.M.together) : all;
   const out = []; let cur = null;
   core.forEach((en) => {
     if (!cur || en.M.t - cur.end > gapMs) { cur = { start: en.M.t, end: 0, entries: [] }; out.push(cur); }
@@ -149,6 +153,69 @@ export function pickSession(sessions, { now, posted = [], gapMs = RECAP.GAP_MS, 
     return members.size >= minMembers && playedTogether(s);
   });
   return ok.length ? ok[ok.length - 1] : null;
+}
+
+/* ===================== BILAN DU JOUR =====================
+   Quand personne ne joue ensemble, il n'y a pas de session de squad, donc pas
+   de récap (lundi 19 : joker et DN4 ont joué chacun de leur côté, rien n'est
+   parti). Le bilan du jour couvre toutes les parties classées de tout le monde.
+   Une « journée » va de 6 h à 6 h le lendemain (heure locale) : une partie à
+   2 h du matin appartient à la soirée de la veille. Le bilan part après 6 h. */
+export const DAY_CUT_HOUR = 6;
+
+// Décalage du fuseau à un instant donné (ms), sans bibliothèque.
+export function tzOffsetMs(ms, tz) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    .formatToParts(new Date(ms)).map((p) => [p.type, p.value]));
+  const asUTC = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour % 24, +parts.minute, +parts.second);
+  return asUTC - Math.floor(ms / 1000) * 1000;
+}
+// Instant UTC de « date locale à hh:00 » dans le fuseau.
+function localToUTC(y, m, d, h, tz) {
+  const guess = Date.UTC(y, m, d, h);
+  return guess - tzOffsetMs(guess - tzOffsetMs(guess, tz), tz);
+}
+/* La journée (6 h -> 6 h) : celle d'une date « AAAA-MM-JJ », ou la dernière
+   terminée à l'instant `now`. */
+export function dayWindow({ now, tz = "Europe/Paris", date = null, cutHour = DAY_CUT_HOUR }) {
+  let y, m, d;
+  if (date) { [y, m, d] = String(date).split("-").map(Number); m -= 1; }
+  else {
+    const local = new Date(now - cutHour * 3600000 + tzOffsetMs(now, tz));   // « jour de jeu » en cours
+    const prev = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() - 1));
+    y = prev.getUTCFullYear(); m = prev.getUTCMonth(); d = prev.getUTCDate();
+  }
+  const start = localToUTC(y, m, d, cutHour, tz);
+  const next = new Date(Date.UTC(y, m, d + 1));
+  const end = localToUTC(next.getUTCFullYear(), next.getUTCMonth(), next.getUTCDate(), cutHour, tz);
+  const iso = `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  return { key: "d" + iso, date: iso, start, end };
+}
+
+/* Le bilan à poster, ou null :
+   - aucune partie classée ce jour-là : rien ;
+   - déjà posté : rien ;
+   - toutes les parties du jour étaient déjà dans des récaps de squad postés :
+     rien (le bilan répéterait la même chose) ;
+   - une session de squad du jour pas encore postée et pas finie : on attend
+     qu'elle parte d'abord. */
+export function pickDay(perMember, { now, tz = "Europe/Paris", posted = [], date = null, force = false, gapMs = RECAP.GAP_MS } = {}) {
+  const w = dayWindow({ now, tz, date });
+  if (!force && now < w.end) return null;
+  const done = new Set(posted || []);
+  if (!force && done.has(w.key)) return null;
+  const entries = collectEntries(perMember).filter((en) => en.M.t >= w.start && en.M.t < w.end);
+  if (!entries.length) return null;
+  if (!force) {
+    const sessions = squadSessions(perMember, gapMs).filter((s) => s.coreStart < w.end && s.end > w.start);
+    if (sessions.some((s) => !done.has(s.key) && now - s.end < gapMs)) return null;
+    const covered = new Set();
+    sessions.filter((s) => done.has(s.key)).forEach((s) => s.entries.forEach((e) => covered.add(key(e.member) + "|" + e.M.id)));
+    if (entries.every((e) => covered.has(key(e.member) + "|" + e.M.id))) return null;
+  }
+  return { key: w.key, kind: "day", date: w.date, dayStart: w.start, start: entries[0].M.t,
+    end: Math.max(...entries.map((e) => e.M.t + e.M.durMs)), entries };
 }
 
 const mostCommon = (arr) => {
@@ -204,7 +271,7 @@ export function buildRecap(s) {
   });
   const rrRank = members.filter((m) => m.rr != null).slice().sort((a, b) => b.rr - a.rr);
   return {
-    key: s.key, start: s.start, end: s.end,
+    key: s.key, kind: s.kind || "session", dayStart: s.dayStart || null, start: s.start, end: s.end,
     games: games.length,
     together: togetherIds.size,
     wins: games.filter((g) => g.result === "w").length,

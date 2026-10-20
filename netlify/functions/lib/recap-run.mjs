@@ -5,7 +5,7 @@
 
 import { blobKey } from "./refresh-core.mjs";
 import { loadRoster } from "./roster-source.mjs";
-import { squadSessions, pickSession, buildRecap } from "./recap-core.mjs";
+import { squadSessions, pickSession, pickDay, buildRecap } from "./recap-core.mjs";
 import { recapSVG, renderPNG, missingChars, fallbackFont } from "./recap-card.mjs";
 
 const POSTED_KEEP = 60;
@@ -30,10 +30,11 @@ export function shareURL(site, member, startMs, gapMin = 120) {
 }
 
 export function discordContent(recap, link, tz = "Europe/Paris") {
-  const day = new Date(recap.start).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", timeZone: tz });
+  const day = new Date(recap.kind === "day" && recap.dayStart ? recap.dayStart : recap.start).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", timeZone: tz });
   const rr = recap.members.filter((m) => m.rr != null).reduce((a, m) => a + m.rr, 0);
-  const tog = recap.together != null && recap.together < recap.games ? ` (dont ${recap.together} ensemble)` : (recap.together != null ? " ensemble" : "");
-  return `**Récap COSMO · ${day}** — ${recap.games} partie${recap.games > 1 ? "s" : ""} classée${recap.games > 1 ? "s" : ""}${tog}, ${recap.wins}V-${recap.losses}D`
+  const tog = !recap.together ? "" : (recap.together < recap.games ? ` (dont ${recap.together} ensemble)` : " ensemble");
+  const title = recap.kind === "day" ? "Bilan du jour COSMO" : "Récap COSMO";
+  return `**${title} · ${day}** — ${recap.games} partie${recap.games > 1 ? "s" : ""} classée${recap.games > 1 ? "s" : ""}${tog}, ${recap.wins}V-${recap.losses}D`
     + ` · ${rr >= 0 ? "+" : ""}${rr} RR pour la squad\n${link ? `Rapport complet : <${link}>` : ""}`;
 }
 
@@ -46,11 +47,12 @@ export async function readPosted(mem) {
   return Array.isArray(v) ? v : [];
 }
 
-/* opts : { getStore, fetchImpl, now, webhook, post, force, readFile, wasmBytes, resvg?, site, tz, minMembers }
+/* opts : { getStore, fetchImpl, now, webhook, post, force, day?, readFile, wasmBytes, resvg?, site, tz, minMembers }
+   day : true (dernière journée terminée) ou "AAAA-MM-JJ" -> seulement le bilan du jour.
    Renvoie { status, recap?, png?, posted? }. */
 export async function runRecap(opts) {
   const { getStore, fetchImpl = fetch, now = Date.now(), webhook, post = false, force = false,
-    readFile, wasmBytes, resvg, site = "https://cosmo-valo.netlify.app/", tz = "Europe/Paris", minMembers } = opts;
+    readFile, wasmBytes, resvg, site = "https://cosmo-valo.netlify.app/", tz = "Europe/Paris", minMembers, day = null } = opts;
   const { members } = await loadRoster(getStore);
   const hist = getStore("cosmo-history"), rrS = getStore("cosmo-rr"), pfS = getStore("cosmo-perf"), mem = getStore("cosmo-discord");
   const per = await Promise.all(members.map(async (m) => ({
@@ -65,8 +67,9 @@ export async function runRecap(opts) {
   let posted;
   try { posted = await readPosted(mem); }
   catch (e) { if (post) return { status: "mémoire des récaps illisible : rien n'est envoyé (" + String((e && e.message) || e) + ")" }; posted = []; }
-  const sessions = squadSessions(per);
-  const s = pickSession(sessions, { now, posted, force, ...(minMembers ? { minMembers } : {}) });
+  // D'abord une session de squad terminée ; sinon le bilan de la journée.
+  let s = day ? null : pickSession(squadSessions(per), { now, posted, force, ...(minMembers ? { minMembers } : {}) });
+  if (!s) s = pickDay(per, { now, tz, posted, force: force && !!day, date: typeof day === "string" ? day : null });
   if (!s) return { status: "rien à poster" };
   const recap = buildRecap(s);
 
@@ -88,7 +91,8 @@ export async function runRecap(opts) {
   if (!webhook) return { status: "DISCORD_WEBHOOK_URL absent : rien n'est envoyé", recap, png };
   const mvp = recap.mvp && members.find((m) => m.name === recap.mvp.name && m.tag === recap.mvp.tag);
   const form = new FormData();
-  form.append("payload_json", JSON.stringify({ content: discordContent(recap, mvp ? shareURL(site, mvp, recap.start) : "", tz), allowed_mentions: { parse: [] } }));
+  const link = recap.kind === "day" ? "" : (mvp ? shareURL(site, mvp, recap.start) : "");
+  form.append("payload_json", JSON.stringify({ content: discordContent(recap, link, tz), allowed_mentions: { parse: [] } }));
   form.append("files[0]", new Blob([png], { type: "image/png" }), "recap-cosmo.png");
   const res = await fetchImpl(webhook + (webhook.includes("?") ? "&" : "?") + "wait=true", { method: "POST", body: form });
   if (!res.ok) return { status: `Discord a refusé l'envoi (HTTP ${res.status})`, recap, png };

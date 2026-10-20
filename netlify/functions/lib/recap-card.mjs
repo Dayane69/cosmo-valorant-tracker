@@ -56,13 +56,15 @@ export function recapSVG(recap, opts = {}) {
   // --- En-tête : logo, date, horaires ; à droite le bilan.
   out.push(`<path d="M60 44 H200 L188 92 H48 Z" fill="${C.red}"/>`);
   out.push(text(124, 79, "COSMO", { size: 30, weight: 800, anchor: "middle", fill: "#ffffff", ls: 4 }));
-  out.push(text(222, 64, "RÉCAP DE SESSION", { size: 15, weight: 600, fill: C.amber, ls: 3 }));
-  const solo = recap.together != null && recap.together < recap.games;
+  const isDay = recap.kind === "day";
+  out.push(text(222, 64, isDay ? "BILAN DU JOUR" : "RÉCAP DE SESSION", { size: 15, weight: 600, fill: C.amber, ls: 3 }));
+  const solo = !!recap.together && recap.together < recap.games;
   out.push(text(222, 90, `${recap.members.length} joueurs · ${recap.games} partie${recap.games > 1 ? "s" : ""} classée${recap.games > 1 ? "s" : ""}`
     + (solo ? ` · dont ${recap.together} ensemble` : ""), { size: 17, fill: C.muted }));
-  out.push(text(60, 156, fmtDate(recap.start, tz), { size: 44, weight: 800 }));
+  // Bilan du jour : la date de la journée (6 h -> 6 h), pas celle de la première partie.
+  out.push(text(60, 156, fmtDate(isDay && recap.dayStart ? recap.dayStart : recap.start, tz), { size: 44, weight: 800 }));
   const maps = recap.maps.length ? " · " + cut(recap.maps.join(", "), 46) : "";
-  out.push(text(60, 192, `${fmtTime(recap.start, tz)} → ${fmtTime(recap.end, tz)} · ${fmtDur(recap.end - recap.start)}${maps}`, { size: 20, fill: C.muted }));
+  out.push(text(60, 192, `${fmtTime(recap.start, tz)} → ${fmtTime(recap.end, tz)}${isDay ? "" : " · " + fmtDur(recap.end - recap.start)}${maps}`, { size: 20, fill: C.muted }));
   out.push(text(W - 60, 150, `${recap.wins}`, { size: 72, weight: 800, anchor: "end", fill: C.win }).replace("</text>", `<tspan fill="${C.dim}">\u00A0–\u00A0</tspan><tspan fill="${C.loss}">${recap.losses}</tspan></text>`));
   out.push(text(W - 60, 186, recap.games ? `${Math.round(recap.wins / recap.games * 100)} % de victoires` : "", { size: 18, fill: C.muted, anchor: "end" }));
 
@@ -87,7 +89,7 @@ export function recapSVG(recap, opts = {}) {
     }
     out.push(text(520, y + 46, String(m.n), { size: 26, weight: 800, anchor: "end" }));
     // Parties solo comprises : on dit combien ont été jouées avec la squad.
-    out.push(text(520, y + 70, `${m.w}V ${m.l}D` + (m.together != null && m.together < m.n ? ` · ${m.together} ens.` : ""), { size: 15, fill: C.muted, anchor: "end" }));
+    out.push(text(520, y + 70, `${m.w}V ${m.l}D` + (m.together && m.together < m.n ? ` · ${m.together} ens.` : ""), { size: 15, fill: C.muted, anchor: "end" }));
     out.push(text(650, y + (m.rrBonus ? 46 : 56), m.rr == null ? "—" : signed(m.rr), { size: 26, weight: 800, anchor: "end", fill: m.rr == null ? C.dim : (m.rr >= 0 ? C.win : C.loss) }));
     // La part hors parties (bonus de montée, protection de rang), en orange :
     // sinon « +26 » ne colle pas avec les +13 / −14 / +13 que chacun a vus en jeu.
@@ -109,8 +111,8 @@ export function recapSVG(recap, opts = {}) {
   };
   const b = recap.best;
   if (b) card(40, 540, "MEILLEURE PARTIE", `${cut(b.name, 14)} · ${Math.round(b.v)} ${b.ps ? "perf." : "ACS"}`, cut(`${b.agent} · ${b.map} · ${b.k}/${b.d}/${b.a}`, 46));
-  if (recap.topRR) card(600, 270, "PLUS GROS GAIN", `${cut(recap.topRR.name, 11)} ${signed(recap.topRR.rr)}`, "RR sur la session", C.win);
-  if (recap.worstRR) card(890, 270, "PLUS GROSSE PERTE", `${cut(recap.worstRR.name, 11)} ${signed(recap.worstRR.rr)}`, "RR sur la session", C.loss);
+  if (recap.topRR) card(600, 270, "PLUS GROS GAIN", `${cut(recap.topRR.name, 11)} ${signed(recap.topRR.rr)}`, isDay ? "RR sur la journée" : "RR sur la session", C.win);
+  if (recap.worstRR) card(890, 270, "PLUS GROSSE PERTE", `${cut(recap.worstRR.name, 11)} ${signed(recap.worstRR.rr)}`, isDay ? "RR sur la journée" : "RR sur la session", C.loss);
   out.push(text(W - 44, H - 22, site, { size: 15, fill: C.dim, anchor: "end" }));
   out.push(`</g></svg>`);
   return out.join("\n");
