@@ -169,6 +169,21 @@ pas déjà dans un récap de squad posté. Aperçu :
 `/.netlify/functions/discord-recap-preview?key=REFRESH_TOKEN&day=1` (dernière
 journée terminée) ou `&day=2026-10-19`.
 
+**Récap de la semaine.** Le lundi matin (après 6 h), une grande image
+(1200 px de large, ~4 500 de haut) pour la semaine du lundi 6 h au lundi
+suivant 6 h : chiffres clés (parties, temps de jeu, RR de la squad, paliers
+montés et descendus) ; montées et descentes de chacun avec les icônes de rang
+(niveau du lundi → niveau de fin de semaine) ; une courbe de RR par joueur, en
+marches, avec les paliers et des ▲ ▼ là où il a changé de rang ; stats ;
+activité jour par jour ; trophées (MVP, plus grosse montée, semaine difficile,
+meilleure partie, plus longue série, le plus actif, roi du headshot, meilleur
+duo) ; maps. Le RR de la semaine est la différence de **niveau** (elo) : il
+compte aussi le bonus de montée, la protection de rang et les pénalités sans
+partie. Chaque joueur garde la couleur du Dashboard. Calcul :
+`lib/weekly-core.mjs`, dessin : `lib/weekly-card.mjs`. Aperçu :
+`discord-recap-preview?key=REFRESH_TOKEN&week=1` (dernière semaine terminée)
+ou `&week=2026-10-26` (un lundi).
+
 ### Déclenchement manuel (sans attendre le cron)
 
 - **Depuis le site (recommandé)** : ⚙ Paramètres → **« ⟳ Sauvegarder l'historique
