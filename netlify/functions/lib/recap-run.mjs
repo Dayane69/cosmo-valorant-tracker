@@ -7,6 +7,8 @@ import { blobKey } from "./refresh-core.mjs";
 import { loadRoster } from "./roster-source.mjs";
 import { squadSessions, pickSession, pickDay, buildRecap } from "./recap-core.mjs";
 import { recapSVG, renderPNG, missingChars, fallbackFont } from "./recap-card.mjs";
+import { pickWeek, tierIdOfElo } from "./weekly-core.mjs";
+import { weeklySVG, memberColors } from "./weekly-card.mjs";
 
 const POSTED_KEEP = 60;
 const identities = (m) => {
@@ -33,6 +35,12 @@ export function discordContent(recap, link, tz = "Europe/Paris") {
   const day = new Date(recap.kind === "day" && recap.dayStart ? recap.dayStart : recap.start).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", timeZone: tz });
   const rr = recap.members.filter((m) => m.rr != null).reduce((a, m) => a + m.rr, 0);
   const tog = !recap.together ? "" : (recap.together < recap.games ? ` (dont ${recap.together} ensemble)` : " ensemble");
+  if (recap.kind === "week") {
+    const w = recap.window, f = (ms) => new Date(ms).toLocaleDateString("fr-FR", { day: "numeric", month: "long", timeZone: tz });
+    const tog = recap.together ? ` (dont ${recap.together} ensemble)` : "";
+    return `**Récap de la semaine COSMO · du ${f(w.start)} au ${f(w.end - 7 * 3600000)}** — ${recap.games} partie${recap.games > 1 ? "s" : ""} classée${recap.games > 1 ? "s" : ""}${tog}, `
+      + `${recap.wins}V-${recap.losses}D · ${recap.rrNet >= 0 ? "+" : ""}${recap.rrNet} RR pour la squad · ▲ ${recap.rankUps} montée${recap.rankUps > 1 ? "s" : ""} ▼ ${recap.rankDowns} descente${recap.rankDowns > 1 ? "s" : ""}\n${link ? `<${link}>` : ""}`;
+  }
   const title = recap.kind === "day" ? "Bilan du jour COSMO" : "Récap COSMO";
   return `**${title} · ${day}** — ${recap.games} partie${recap.games > 1 ? "s" : ""} classée${recap.games > 1 ? "s" : ""}${tog}, ${recap.wins}V-${recap.losses}D`
     + ` · ${rr >= 0 ? "+" : ""}${rr} RR pour la squad\n${link ? `Rapport complet : <${link}>` : ""}`;
@@ -47,12 +55,28 @@ export async function readPosted(mem) {
   return Array.isArray(v) ? v : [];
 }
 
-/* opts : { getStore, fetchImpl, now, webhook, post, force, day?, readFile, wasmBytes, resvg?, site, tz, minMembers }
+/* Icônes de rang (valorant-api) pour les paliers demandés, en data URI. */
+const TIERS_FALLBACK_UUID = "03621f52-342b-cf4e-4f86-9350a49c6d04";
+async function tierIconsFor(ids, fetchImpl) {
+  let uuid = TIERS_FALLBACK_UUID;
+  try { const d = await (await fetchImpl("https://valorant-api.com/v1/competitivetiers")).json(); uuid = (d.data[d.data.length - 1] || {}).uuid || uuid; } catch (e) { /* l'épisode connu */ }
+  const out = {};
+  await Promise.all([...ids].map(async (id) => {
+    try {
+      const r = await fetchImpl(`https://media.valorant-api.com/competitivetiers/${uuid}/${id}/smallicon.png`);
+      if (r.ok) out[id] = "data:image/png;base64," + Buffer.from(await r.arrayBuffer()).toString("base64");
+    } catch (e) { /* pas d'icône : le nom suffit */ }
+  }));
+  return out;
+}
+
+/* opts : { getStore, fetchImpl, now, webhook, post, force, day?, week?, readFile, wasmBytes, resvg?, site, tz, minMembers }
    day : true (dernière journée terminée) ou "AAAA-MM-JJ" -> seulement le bilan du jour.
+   week : true (dernière semaine terminée) ou "AAAA-MM-JJ" (un lundi) -> seulement le récap de la semaine.
    Renvoie { status, recap?, png?, posted? }. */
 export async function runRecap(opts) {
   const { getStore, fetchImpl = fetch, now = Date.now(), webhook, post = false, force = false,
-    readFile, wasmBytes, resvg, site = "https://cosmo-valo.netlify.app/", tz = "Europe/Paris", minMembers, day = null } = opts;
+    readFile, wasmBytes, resvg, site = "https://cosmo-valo.netlify.app/", tz = "Europe/Paris", minMembers, day = null, week = null } = opts;
   const { members } = await loadRoster(getStore);
   const hist = getStore("cosmo-history"), rrS = getStore("cosmo-rr"), pfS = getStore("cosmo-perf"), mem = getStore("cosmo-discord");
   const per = await Promise.all(members.map(async (m) => ({
@@ -67,11 +91,20 @@ export async function runRecap(opts) {
   let posted;
   try { posted = await readPosted(mem); }
   catch (e) { if (post) return { status: "mémoire des récaps illisible : rien n'est envoyé (" + String((e && e.message) || e) + ")" }; posted = []; }
-  // D'abord une session de squad terminée ; sinon le bilan de la journée.
-  let s = day ? null : pickSession(squadSessions(per), { now, posted, force, ...(minMembers ? { minMembers } : {}) });
-  if (!s) s = pickDay(per, { now, tz, posted, force: force && !!day, date: typeof day === "string" ? day : null });
-  if (!s) return { status: "rien à poster" };
-  const recap = buildRecap(s);
+  // Dans l'ordre : une session de squad terminée, le bilan de la journée, puis
+  // (le lundi matin) le récap de la semaine. Un seul envoi par passage : les
+  // suivants partent au quart d'heure d'après.
+  let s = null, recap = null;
+  if (week) {
+    recap = pickWeek(per, { now, tz, posted, force, monday: typeof week === "string" ? week : null });
+  } else {
+    s = day ? null : pickSession(squadSessions(per), { now, posted, force, ...(minMembers ? { minMembers } : {}) });
+    if (!s) s = pickDay(per, { now, tz, posted, force: force && !!day, date: typeof day === "string" ? day : null });
+    if (s) recap = buildRecap(s);
+    else if (!day) recap = pickWeek(per, { now, tz, posted });
+  }
+  if (!recap) return { status: "rien à poster" };
+  s = s || { key: recap.key };
 
   // Portraits d'agents (valorant-api), intégrés à l'image.
   const icons = {};
@@ -81,9 +114,15 @@ export async function runRecap(opts) {
       if (r.ok) icons[id] = "data:image/png;base64," + Buffer.from(await r.arrayBuffer()).toString("base64");
     } catch (e) { /* pas de portrait : un carré neutre à la place */ }
   }));
-  const svg = recapSVG(recap, { icons, tz, site: new URL(site).host });
+  let svg;
+  if (recap.kind === "week") {
+    const ids = new Set();
+    recap.members.forEach((m) => [m.startElo, m.endElo].forEach((e) => { if (e != null) ids.add(tierIdOfElo(e)); }));
+    const tierIcons = await tierIconsFor(ids, fetchImpl);
+    svg = weeklySVG(recap, { icons, tierIcons, colors: memberColors(members), tz, site: new URL(site).host });
+  } else svg = recapSVG(recap, { icons, tz, site: new URL(site).host });
   const fonts = [400, 600, 800].map((w) => readFile(`Inter-${w}.ttf`));
-  const extra = await fallbackFont(missingChars(recap.members.map((m) => m.name).concat(recap.best ? [recap.best.name] : [])), fetchImpl);
+  const extra = await fallbackFont(missingChars(recap.members.map((m) => m.name).concat(recap.best && recap.best.name ? [recap.best.name] : [])), fetchImpl);
   if (extra) fonts.push(extra);
   const png = await renderPNG(svg, { wasm: wasmBytes, fonts, resvg });
 
@@ -91,9 +130,9 @@ export async function runRecap(opts) {
   if (!webhook) return { status: "DISCORD_WEBHOOK_URL absent : rien n'est envoyé", recap, png };
   const mvp = recap.mvp && members.find((m) => m.name === recap.mvp.name && m.tag === recap.mvp.tag);
   const form = new FormData();
-  const link = recap.kind === "day" ? "" : (mvp ? shareURL(site, mvp, recap.start) : "");
+  const link = recap.kind === "week" ? site : (recap.kind === "day" ? "" : (mvp ? shareURL(site, mvp, recap.start) : ""));
   form.append("payload_json", JSON.stringify({ content: discordContent(recap, link, tz), allowed_mentions: { parse: [] } }));
-  form.append("files[0]", new Blob([png], { type: "image/png" }), "recap-cosmo.png");
+  form.append("files[0]", new Blob([png], { type: "image/png" }), recap.kind === "week" ? "recap-semaine-cosmo.png" : "recap-cosmo.png");
   const res = await fetchImpl(webhook + (webhook.includes("?") ? "&" : "?") + "wait=true", { method: "POST", body: form });
   if (!res.ok) return { status: `Discord a refusé l'envoi (HTTP ${res.status})`, recap, png };
   // On ne se souvient de la session qu'une fois l'envoi réussi.
